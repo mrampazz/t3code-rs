@@ -239,6 +239,23 @@ async fn e2e_chat_diff_and_model() {
     .await;
     wait_idle(&env, &thread_id).await;
     println!("showcase items: {:?}", kinds(&view.state.lock().unwrap()));
+    {
+        let v = view.state.lock().unwrap();
+        let summaries: Vec<String> = crate::timeline::group_rows(v.items())
+            .iter()
+            .map(|row| match row {
+                crate::timeline::Row::Item(i) => i.kind.clone(),
+                crate::timeline::Row::Group { items, .. } => {
+                    format!("[{}]", crate::timeline::summarize_group(items))
+                }
+            })
+            .collect();
+        println!("timeline rows: {summaries:?}");
+        assert!(
+            summaries.iter().any(|s| s.starts_with('[')),
+            "showcase work folds into a group"
+        );
+    }
 
     let found = env
         .client

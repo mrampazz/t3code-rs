@@ -1164,10 +1164,14 @@ impl T3App {
         } else {
             Default::default()
         };
-        let items: Vec<AnyElement> = self
-            .thread
-            .items()
-            .map(|item| self.render_item(item, revert_turns.get(&item.id).copied(), cx))
+        let items: Vec<AnyElement> = timeline::group_rows(self.thread.items())
+            .into_iter()
+            .map(|row| match row {
+                timeline::Row::Item(item) => {
+                    self.render_item(item, revert_turns.get(&item.id).copied(), cx)
+                }
+                timeline::Row::Group { id, items } => self.render_group(id, &items, cx),
+            })
             .collect();
         v_flex()
             .flex_1()

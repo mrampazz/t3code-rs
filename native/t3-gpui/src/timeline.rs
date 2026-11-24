@@ -172,6 +172,49 @@ impl T3App {
         }
     }
 
+    /// A folded run of work items; expands to the individual rows.
+    pub(crate) fn render_group(
+        &self,
+        id: String,
+        items: &[&TurnItem],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = cx.theme().colors;
+        let expanded = self.expanded.contains(&id);
+        let failed = items
+            .iter()
+            .rev()
+            .find(|i| i.kind != "reasoning")
+            .is_some_and(|i| i.str("status") == "failed");
+        let running = items
+            .iter()
+            .any(|i| matches!(i.str("status"), "running" | "pending" | "waiting"));
+        let mut col = v_flex().gap_1().child(
+            h_flex()
+                .id(SharedString::from(id.clone()))
+                .gap_2()
+                .text_sm()
+                .cursor_pointer()
+                .text_color(if failed { c.danger } else { c.muted_foreground })
+                .hover(|r| r.text_color(c.foreground))
+                .child(if expanded { "▾" } else { "▸" })
+                .child(summarize_group(items))
+                .when(running, |r| r.child(div().text_color(c.info).child("●")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.expanded.remove(&id) {
+                        this.expanded.insert(id.clone());
+                    }
+                    cx.notify();
+                })),
+        );
+        if expanded {
+            for item in items {
+                col = col.child(div().pl_4().child(self.render_item(item, None, cx)));
+            }
+        }
+        col.into_any_element()
+    }
+
     /// Agent questions: toggle options, then submit; composer text answers as a custom reply.
     fn render_question(
         &self,
@@ -521,9 +564,146 @@ fn tail(s: &str) -> String {
     }
 }
 
+/// Items the web folds into a work group: tool activity and reasoning.
+fn is_work(item: &TurnItem) -> bool {
+    matches!(
+        item.kind.as_str(),
+        "reasoning"
+            | "command_execution"
+            | "file_change"
+            | "file_search"
+            | "web_search"
+            | "dynamic_tool"
+    )
+}
+
+pub(crate) enum Row<'a> {
+    Item(&'a TurnItem),
+    /// Two or more consecutive work items, shown as one toggle row.
+    Group {
+        id: String,
+        items: Vec<&'a TurnItem>,
+    },
+}
+
+pub(crate) fn group_rows<'a>(items: impl Iterator<Item = &'a TurnItem>) -> Vec<Row<'a>> {
+    let mut rows: Vec<Row<'a>> = Vec::new();
+    let mut run: Vec<&TurnItem> = Vec::new();
+    let flush = |run: &mut Vec<&'a TurnItem>, rows: &mut Vec<Row<'a>>| match run.len() {
+        0 => {}
+        1 => rows.push(Row::Item(run.pop().unwrap())),
+        _ => rows.push(Row::Group {
+            id: format!("work-toggle:{}", run[0].id),
+            items: std::mem::take(run),
+        }),
+    };
+    for item in items {
+        if is_work(item) {
+            run.push(item);
+        } else {
+            flush(&mut run, &mut rows);
+            rows.push(Row::Item(item));
+        }
+    }
+    flush(&mut run, &mut rows);
+    rows
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!(
+        "{} {n} {}",
+        one.split(' ').next().unwrap(),
+        if n == 1 {
+            &one[one.find(' ').unwrap() + 1..]
+        } else {
+            many
+        }
+    )
+}
+
+/// `summarizeToolGroup` (client-runtime/src/work-log/presentation.ts) for the core actions.
+pub(crate) fn summarize_group(items: &[&TurnItem]) -> String {
+    let tools: Vec<&&TurnItem> = items.iter().filter(|i| i.kind != "reasoning").collect();
+    if tools.is_empty() {
+        return if items.len() == 1 {
+            "Thought".into()
+        } else {
+            format!("Thought (×{})", items.len())
+        };
+    }
+    // (action, priority, first index, count)
+    let mut groups: Vec<(&str, u8, usize, usize)> = Vec::new();
+    let mut edited = std::collections::HashSet::new();
+    for (index, item) in tools.iter().enumerate() {
+        let (action, priority) = match item.kind.as_str() {
+            "command_execution" => ("command", 0),
+            "file_change" => ("edit", 0),
+            "file_search" => ("code-search", 1),
+            "web_search" => ("search", 1),
+            _ => ("other", 2),
+        };
+        if action == "edit" && !edited.insert(item.str("fileName").to_owned()) {
+            continue;
+        }
+        match groups.iter_mut().find(|g| g.0 == action) {
+            Some(g) => g.3 += 1,
+            None => groups.push((action, priority, index, 1)),
+        }
+    }
+    let mut selected = groups.clone();
+    selected.sort_by_key(|g| (g.1, g.2));
+    selected.truncate(2);
+    selected.sort_by_key(|g| g.2);
+    let mut labels: Vec<String> = selected
+        .iter()
+        .map(|&(action, _, _, n)| match action {
+            "command" => plural(n, "Ran command", "commands"),
+            "edit" => plural(n, "Changed file", "files"),
+            "code-search" => format!(
+                "Searched code {n} {}",
+                if n == 1 { "time" } else { "times" }
+            ),
+            "search" => format!(
+                "Searched the web {n} {}",
+                if n == 1 { "time" } else { "times" }
+            ),
+            _ => plural(n, "Used tool", "tools"),
+        })
+        .collect();
+    let shown: usize = selected.iter().map(|g| g.3).sum();
+    let all: usize = groups.iter().map(|g| g.3).sum();
+    if all > shown {
+        labels.push(plural(
+            all - shown,
+            "Performed other action",
+            "other actions",
+        ));
+    }
+    let labels: Vec<String> = labels
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            if i == 0 {
+                l
+            } else {
+                l[..1].to_lowercase() + &l[1..]
+            }
+        })
+        .collect();
+    match labels.len() {
+        0 => String::new(),
+        1 => labels[0].clone(),
+        2 => format!("{} and {}", labels[0], labels[1]),
+        n => format!("{}, and {}", labels[..n - 1].join(", "), labels[n - 1]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OUTPUT_TAIL_CHARS, TurnItem, approval_options, tail, tool_parts};
+    use super::{
+        OUTPUT_TAIL_CHARS, Row, TurnItem, approval_options, group_rows, summarize_group, tail,
+        tool_parts,
+    };
     use serde_json::{Value, json};
 
     fn item(v: Value) -> TurnItem {
@@ -571,5 +751,50 @@ mod tests {
         assert!(cut.starts_with('…'));
         assert_eq!(cut.chars().count(), OUTPUT_TAIL_CHARS + 1);
         assert_eq!(tail("short"), "short");
+    }
+
+    #[test]
+    fn groups_consecutive_work_and_summarizes_like_the_web() {
+        let mk = |id: &str, kind: &str, extra: Value| {
+            let mut v = json!({"id": id, "ordinal": 1, "type": kind});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            item(v)
+        };
+        let items = [
+            mk("u", "user_message", json!({})),
+            mk("r", "reasoning", json!({})),
+            mk("c1", "command_execution", json!({})),
+            mk("e1", "file_change", json!({"fileName": "a.rs"})),
+            mk("e2", "file_change", json!({"fileName": "a.rs"})),
+            mk("e3", "file_change", json!({"fileName": "b.rs"})),
+            mk("c2", "command_execution", json!({})),
+            mk("t", "dynamic_tool", json!({})),
+            mk("a", "assistant_message", json!({})),
+            mk("solo", "command_execution", json!({})),
+        ];
+        let rows = group_rows(items.iter());
+        assert_eq!(rows.len(), 4);
+        let Row::Group { items: group, .. } = &rows[1] else {
+            panic!("expected a group")
+        };
+        assert_eq!(group.len(), 7);
+        assert_eq!(
+            summarize_group(group),
+            "Ran 2 commands, changed 2 files, and performed 1 other action"
+        );
+        assert!(
+            matches!(rows[3], Row::Item(i) if i.id == "solo"),
+            "a lone tool keeps its own row"
+        );
+        let thoughts = [
+            mk("r1", "reasoning", json!({})),
+            mk("r2", "reasoning", json!({})),
+        ];
+        assert_eq!(
+            summarize_group(&thoughts.iter().collect::<Vec<_>>()),
+            "Thought (×2)"
+        );
     }
 }
