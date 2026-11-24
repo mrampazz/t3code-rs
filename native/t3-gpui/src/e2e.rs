@@ -240,6 +240,28 @@ async fn e2e_chat_diff_and_model() {
     wait_idle(&env, &thread_id).await;
     println!("showcase items: {:?}", kinds(&view.state.lock().unwrap()));
 
+    let found = env
+        .client
+        .call(
+            "orchestration.searchThreads",
+            json!({ "query": "what you can do", "limit": 20 }),
+        )
+        .await
+        .unwrap();
+    let shell = env.shell.state.lock().unwrap();
+    let rows = crate::palette::palette_rows(
+        &shell,
+        found["matches"].as_array().unwrap(),
+        "what you can do",
+        |_| None,
+    );
+    drop(shell);
+    assert!(
+        rows.iter()
+            .any(|r| r.action == crate::palette::PaletteAction::Open(thread_id.clone())),
+        "palette finds the thread by message: {found}"
+    );
+
     dispatch(
         &env.client,
         json!({

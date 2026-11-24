@@ -2,6 +2,7 @@ mod auth;
 mod composer;
 mod diff_panel;
 mod model;
+mod palette;
 mod rpc;
 mod sidebar;
 mod timeline;
@@ -88,6 +89,13 @@ struct T3App {
     thread_sub: Option<String>,
     /// Timeline rows the user opened.
     expanded: HashSet<String>,
+    focus: FocusHandle,
+    palette_open: bool,
+    palette_input: Entity<InputState>,
+    /// Server message matches for the current palette query.
+    palette_matches: Vec<serde_json::Value>,
+    /// Drops search responses for an older query.
+    palette_generation: u64,
     show_archived: bool,
     /// Wake time a re-render is already scheduled for.
     snooze_wake_at: Option<i64>,
@@ -124,7 +132,16 @@ impl T3App {
             )
             .searchable(true)
         });
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        let palette_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search threads and commands…"));
         let _subscriptions = vec![
+            cx.subscribe_in(
+                &palette_input,
+                window,
+                |this, _, e: &InputEvent, window, cx| this.on_palette_input(e, window, cx),
+            ),
             cx.subscribe_in(
                 &model_picker,
                 window,
@@ -165,6 +182,11 @@ impl T3App {
             thread: ThreadView::default(),
             thread_sub: None,
             expanded: HashSet::new(),
+            focus,
+            palette_open: false,
+            palette_input,
+            palette_matches: Vec::new(),
+            palette_generation: 0,
             show_archived: false,
             snooze_wake_at: None,
             diff_open: false,
@@ -1186,17 +1208,27 @@ impl T3App {
 impl Render for T3App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_picker(window, cx);
-        let theme = cx.theme();
+        let theme = cx.theme().colors;
         let root = h_flex()
+            .relative()
             .size_full()
             .bg(theme.background)
-            .text_color(theme.foreground);
+            .text_color(theme.foreground)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &palette::TogglePalette, window, cx| {
+                if matches!(this.screen, Screen::Connected) {
+                    this.toggle_palette(window, cx)
+                }
+            }));
         match self.screen {
             Screen::Connected => root
                 .child(self.render_sidebar(cx))
                 .child(self.render_thread(cx))
                 .when(self.diff_open && self.selected.is_some(), |root| {
                     root.child(self.render_diff_panel(cx))
+                })
+                .when(self.palette_open, |root| {
+                    root.child(self.render_palette(cx))
                 }),
             _ => root.child(self.render_pair(cx)),
         }
@@ -1209,6 +1241,7 @@ fn main() {
         .ok();
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
+        palette::bind_keys(cx);
         gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(None, size(px(1200.), px(800.)), cx)),
