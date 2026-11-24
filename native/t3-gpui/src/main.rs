@@ -5,6 +5,8 @@ mod model;
 mod palette;
 mod rpc;
 mod sidebar;
+mod terminal;
+mod terminal_drawer;
 mod timeline;
 
 use std::collections::HashSet;
@@ -90,6 +92,11 @@ struct T3App {
     /// Timeline rows the user opened.
     expanded: HashSet<String>,
     focus: FocusHandle,
+    term: Option<terminal::TermView>,
+    /// Request id of the `terminal.attach` stream.
+    term_sub: Option<String>,
+    term_status: Option<SharedString>,
+    term_focus: FocusHandle,
     palette_open: bool,
     palette_input: Entity<InputState>,
     /// Server message matches for the current palette query.
@@ -183,6 +190,10 @@ impl T3App {
             thread_sub: None,
             expanded: HashSet::new(),
             focus,
+            term: None,
+            term_sub: None,
+            term_status: None,
+            term_focus: cx.focus_handle(),
             palette_open: false,
             palette_input,
             palette_matches: Vec::new(),
@@ -273,6 +284,9 @@ impl T3App {
                             app.error = None;
                             if app.selected.is_some() {
                                 app.subscribe_thread(cx);
+                                if app.term.is_some() {
+                                    app.open_terminal(true, cx);
+                                }
                             }
                             cx.notify();
                             Some(app.shell.sequence)
@@ -453,6 +467,9 @@ impl T3App {
         }
         self.selected = Some(id);
         self.subscribe_thread(cx);
+        if self.term.is_some() {
+            self.open_terminal(false, cx);
+        }
     }
 
     /// (Re)subscribes the selected thread, resuming from its cursor when it already has data.
@@ -1134,6 +1151,16 @@ impl T3App {
                     )
                     .child(div().flex_1())
                     .child(
+                        Button::new("terminal-toggle")
+                            .small()
+                            .label("Terminal")
+                            .when(self.term.is_some(), |b| b.primary())
+                            .when(self.term.is_none(), |b| b.ghost())
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
+                            ),
+                    )
+                    .child(
                         Button::new("diff-toggle")
                             .small()
                             .label("Diff")
@@ -1201,6 +1228,9 @@ impl T3App {
                     .child(Textarea::new(&self.composer))
                     .child(self.render_composer_controls(cx)),
             )
+            .when(self.term.is_some(), |col| {
+                col.child(self.render_terminal(cx))
+            })
             .into_any_element()
     }
 }

@@ -115,12 +115,14 @@ impl RpcClient {
         self.shutdown.notify_one();
     }
 
+    /// A void RPC's `Exit` carries no value, so an empty end is success; failures and
+    /// dropped sockets arrive as errors.
     pub async fn call(&self, tag: &str, payload: Value) -> Result<Value> {
         self.request(tag, payload)
             .1
             .recv()
             .await
-            .unwrap_or_else(|| Err(anyhow!("{tag}: no response")))
+            .unwrap_or(Ok(Value::Null))
     }
 }
 
@@ -207,5 +209,31 @@ mod tests {
         dispatch(fail, &pending, &out);
         assert_eq!(rx.try_recv().unwrap().unwrap_err().to_string(), "nope");
         assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn void_success_is_ok() {
+        let (out, mut out_rx) = mpsc::unbounded_channel();
+        let client = RpcClient {
+            out,
+            pending: Arc::default(),
+            next_id: Arc::default(),
+            shutdown: Arc::default(),
+        };
+        let pending = client.pending.clone();
+        let reply = tokio::spawn(async move {
+            let frame: Value = serde_json::from_str(&out_rx.recv().await.unwrap()).unwrap();
+            let (relay, _) = mpsc::unbounded_channel();
+            dispatch(
+                json!({"_tag": "Exit", "requestId": frame["id"], "exit": {"_tag": "Success", "value": null}}),
+                &pending,
+                &relay,
+            );
+        });
+        assert_eq!(
+            client.call("terminal.write", json!({})).await.unwrap(),
+            Value::Null
+        );
+        reply.await.unwrap();
     }
 }

@@ -562,3 +562,76 @@ async fn e2e_rewind() {
     .await;
     println!("after rewind: {:?}", kinds(&view.state.lock().unwrap()));
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_terminal() {
+    let env = connect().await;
+    let (thread_id, _view) = launch(&env, "multi-turn", "terminal").await;
+    wait_idle(&env, &thread_id).await;
+    let cwd = {
+        let shell = env.shell.state.lock().unwrap();
+        shell
+            .projects
+            .iter()
+            .find(|p| p.id == env.project_id)
+            .unwrap()
+            .workspace_root
+            .clone()
+    };
+    let term = Live::start(
+        &env.client,
+        "terminal.attach",
+        json!({ "threadId": thread_id, "terminalId": crate::terminal::TERMINAL_ID, "cwd": cwd,
+                "cols": 80, "rows": 10, "maxHistoryBytes": crate::terminal::MAX_HISTORY_BYTES }),
+        |t: &mut TermBox, e: &Value| match e["type"].as_str() {
+            Some("snapshot") => t.0.feed(e["snapshot"]["history"].as_str().unwrap_or("")),
+            Some("output") => t.0.feed(e["data"].as_str().unwrap_or("")),
+            _ => {}
+        },
+    );
+    term.until("shell prompt", |t| {
+        t.0.lines()
+            .iter()
+            .any(|l| !l.text.trim().is_empty())
+            .then_some(())
+    })
+    .await;
+    dispatch_terminal(&env.client, &thread_id, "echo t3-e2e-$((40+2))\r").await;
+    term.until("echo output", |t| {
+        t.0.lines()
+            .iter()
+            .any(|l| l.text.trim() == "t3-e2e-42")
+            .then_some(())
+    })
+    .await;
+    let screen: Vec<String> = term
+        .state
+        .lock()
+        .unwrap()
+        .0
+        .lines()
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    println!("terminal: {screen:#?}");
+    env.client
+        .call("terminal.close", json!({ "threadId": thread_id, "terminalId": crate::terminal::TERMINAL_ID, "deleteHistory": true }))
+        .await
+        .unwrap();
+}
+
+struct TermBox(crate::terminal::TermView);
+
+impl Default for TermBox {
+    fn default() -> Self {
+        Self(crate::terminal::TermView::new(80, 10))
+    }
+}
+
+async fn dispatch_terminal(client: &RpcClient, thread_id: &str, data: &str) {
+    client
+        .call("terminal.write", json!({ "threadId": thread_id, "terminalId": crate::terminal::TERMINAL_ID, "data": data }))
+        .await
+        .unwrap();
+}

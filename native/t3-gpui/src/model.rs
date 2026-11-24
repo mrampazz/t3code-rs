@@ -12,6 +12,8 @@ pub struct Project {
     pub id: String,
     pub title: String,
     #[serde(default)]
+    pub workspace_root: String,
+    #[serde(default)]
     pub default_model_selection: Value,
 }
 
@@ -28,6 +30,8 @@ pub struct ThreadShell {
     pub model_selection: Value,
     #[serde(default)]
     pub active_run_id: Option<String>,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
     #[serde(default)]
     pub runtime_mode: String,
     #[serde(default)]
