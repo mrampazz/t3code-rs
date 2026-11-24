@@ -6,6 +6,7 @@ mod diff_panel;
 mod dpop;
 mod drag;
 mod env;
+mod find;
 mod git;
 mod history;
 mod keybindings;
@@ -133,6 +134,10 @@ struct T3App {
     /// Drops search responses for an older query.
     palette_generation: u64,
     show_archived: bool,
+    find_open: bool,
+    find_input: Entity<InputState>,
+    /// Which match is current.
+    find_index: usize,
     adding_project: bool,
     project_path: Entity<InputState>,
     /// `filesystem.browse` entries for the typed path.
@@ -188,9 +193,19 @@ impl T3App {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let project_path = cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/project"));
+        let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in thread"));
         let palette_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search threads and commands…"));
         let _subscriptions = vec![
+            cx.subscribe_in(
+                &find_input,
+                window,
+                |this, _, e: &InputEvent, _, cx| match e {
+                    InputEvent::Change => this.first_find(cx),
+                    InputEvent::PressEnter { shift, .. } => this.step_find(!*shift, cx),
+                    _ => {}
+                },
+            ),
             cx.subscribe_in(
                 &project_path,
                 window,
@@ -270,6 +285,9 @@ impl T3App {
             palette_matches: Vec::new(),
             palette_generation: 0,
             show_archived: false,
+            find_open: false,
+            find_input,
+            find_index: 0,
             adding_project: false,
             project_path,
             project_suggestions: Vec::new(),
@@ -424,6 +442,7 @@ impl T3App {
         self.settings_open = false;
         if !same_env || self.selected.as_deref() != Some(id.as_str()) {
             self.thread = ThreadView::default();
+            self.find_open = false;
             self.history_pos = None;
             self.diff_generation += 1;
             self.diff_target = None;
@@ -865,6 +884,7 @@ impl T3App {
                 };
                 self.new_thread(env, project, window, cx);
             }
+            "chat.find" if thread.is_some() => self.open_find(window, cx),
             "thread.next" | "thread.previous" => {
                 return self.step_thread(command == "thread.next", cx);
             }
@@ -1539,15 +1559,42 @@ impl T3App {
         } else {
             Default::default()
         };
-        let items: Vec<AnyElement> = timeline::group_rows(self.thread.items())
+        let rows = timeline::group_rows(self.thread.items());
+        let find_query = self.find_input.read(cx).value().to_string();
+        let matches = if self.find_open {
+            find::matching_rows(&rows, &find_query)
+        } else {
+            Vec::new()
+        };
+        let current = matches
+            .get(self.find_index.min(matches.len().saturating_sub(1)))
+            .copied();
+        // Rows are direct children of the scroll area so find can scroll to one by index.
+        let items: Vec<AnyElement> = rows
             .into_iter()
-            .map(|row| match row {
-                timeline::Row::Item(item) => {
-                    self.render_item(item, revert_turns.get(&item.id).copied(), cx)
-                }
-                timeline::Row::Group { id, items } => self.render_group(id, &items, cx),
+            .enumerate()
+            .map(|(i, row)| {
+                let element = match row {
+                    timeline::Row::Item(item) => {
+                        self.render_item(item, revert_turns.get(&item.id).copied(), cx)
+                    }
+                    timeline::Row::Group { id, items } => self.render_group(id, &items, cx),
+                };
+                div()
+                    .w_full()
+                    .max_w(px(760.))
+                    .mx_auto()
+                    .px_4()
+                    .py_2()
+                    .when(matches.contains(&i), |d| {
+                        d.border_l_2().border_color(theme.warning)
+                    })
+                    .when(current == Some(i), |d| d.bg(theme.secondary))
+                    .child(element)
+                    .into_any_element()
             })
             .collect();
+        let match_count = matches.len();
         v_flex()
             .flex_1()
             .h_full()
@@ -1600,29 +1647,32 @@ impl T3App {
                         )
                     }),
             )
+            .when(self.find_open, |col| {
+                col.child(self.render_find_bar(match_count, cx))
+            })
             .child(
-                div()
+                v_flex()
                     .id("transcript")
                     .flex_1()
+                    .py_2()
                     .overflow_y_scroll()
                     .track_scroll(&self.transcript_scroll)
-                    .child(
-                        v_flex()
-                            .mx_auto()
-                            .max_w(px(760.))
-                            .w_full()
-                            .px_4()
-                            .py_4()
-                            .gap_4()
-                            .children(items)
-                            .children(
-                                thread
-                                    .activity_run_started_at
-                                    .clone()
-                                    .or_else(|| thread.latest_run_started_at.clone())
-                                    .filter(|_| thread.is_running())
-                                    .map(|started| self.render_working(&started, cx)),
-                            ),
+                    .children(items)
+                    .children(
+                        thread
+                            .activity_run_started_at
+                            .clone()
+                            .or_else(|| thread.latest_run_started_at.clone())
+                            .filter(|_| thread.is_running())
+                            .map(|started| {
+                                div()
+                                    .w_full()
+                                    .max_w(px(760.))
+                                    .mx_auto()
+                                    .px_4()
+                                    .py_2()
+                                    .child(self.render_working(&started, cx))
+                            }),
                     ),
             )
             .children(
