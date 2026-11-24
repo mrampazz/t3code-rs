@@ -2,6 +2,7 @@ mod auth;
 mod composer;
 mod diff_panel;
 mod git;
+mod history;
 mod model;
 mod palette;
 mod rpc;
@@ -81,6 +82,8 @@ struct T3App {
     /// Model chosen for the new-thread draft; `None` uses the default.
     draft_model: Option<serde_json::Value>,
     draft_runtime_mode: String,
+    /// Prompt history position while Up/Down recall earlier messages.
+    history_pos: Option<history::Position>,
     draft_interaction_mode: String,
     client: Option<RpcClient>,
     shell: Shell,
@@ -186,6 +189,7 @@ impl T3App {
             picker_synced: (u64::MAX, String::new()),
             draft_model: None,
             draft_runtime_mode: "full-access".into(),
+            history_pos: None,
             draft_interaction_mode: "default".into(),
             client: None,
             shell: Shell::default(),
@@ -470,6 +474,7 @@ impl T3App {
         self.draft_project = None;
         if self.selected.as_deref() != Some(id.as_str()) {
             self.thread = ThreadView::default();
+            self.history_pos = None;
             self.diff_generation += 1;
             self.diff_target = None;
             self.diff_state = None;
@@ -534,6 +539,7 @@ impl T3App {
         if text.is_empty() {
             return;
         }
+        self.history_pos = None;
         if let Some(project_id) = self.draft_project.clone() {
             self.composer
                 .update(cx, |input, cx| input.set_value("", window, cx));
@@ -728,6 +734,31 @@ impl T3App {
         self.dispatch(command, cx);
         self.composer
             .update(cx, |input, cx| input.set_value(text, window, cx));
+    }
+
+    /// Up/Down recall earlier prompts while the composer is empty or showing a recalled one.
+    fn composer_history_key(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let k = &e.keystroke;
+        let m = &k.modifiers;
+        if !matches!(k.key.as_str(), "up" | "down") || m.control || m.alt || m.platform || m.shift {
+            return;
+        }
+        let entries = history::entries(self.thread.items());
+        let current = self.composer.read(cx).value().to_string();
+        let Some((position, text)) =
+            history::step(k.key == "up", &entries, self.history_pos.as_ref(), &current)
+        else {
+            return;
+        };
+        self.history_pos = position;
+        self.composer
+            .update(cx, |input, cx| input.set_value(text, window, cx));
+        cx.stop_propagation();
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
@@ -1237,7 +1268,13 @@ impl T3App {
                     .w_full()
                     .p_4()
                     .gap_2()
-                    .child(Textarea::new(&self.composer))
+                    .child(
+                        div()
+                            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                                this.composer_history_key(e, window, cx)
+                            }))
+                            .child(Textarea::new(&self.composer)),
+                    )
                     .child(self.render_composer_controls(cx)),
             )
             .when(self.term.is_some(), |col| {
