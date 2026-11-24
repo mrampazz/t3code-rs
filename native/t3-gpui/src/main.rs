@@ -1,6 +1,7 @@
 mod auth;
 mod composer;
 mod diff_panel;
+mod git;
 mod model;
 mod palette;
 mod rpc;
@@ -97,6 +98,11 @@ struct T3App {
     term_sub: Option<String>,
     term_status: Option<SharedString>,
     term_focus: FocusHandle,
+    git: git::GitStatus,
+    /// Request id of the `subscribeVcsStatus` stream.
+    git_sub: Option<String>,
+    /// Latest git action phase or outcome.
+    git_progress: Option<SharedString>,
     palette_open: bool,
     palette_input: Entity<InputState>,
     /// Server message matches for the current palette query.
@@ -194,6 +200,9 @@ impl T3App {
             term_sub: None,
             term_status: None,
             term_focus: cx.focus_handle(),
+            git: Default::default(),
+            git_sub: None,
+            git_progress: None,
             palette_open: false,
             palette_input,
             palette_matches: Vec::new(),
@@ -284,6 +293,7 @@ impl T3App {
                             app.error = None;
                             if app.selected.is_some() {
                                 app.subscribe_thread(cx);
+                                app.subscribe_git(cx);
                                 if app.term.is_some() {
                                     app.open_terminal(true, cx);
                                 }
@@ -467,6 +477,7 @@ impl T3App {
         }
         self.selected = Some(id);
         self.subscribe_thread(cx);
+        self.subscribe_git(cx);
         if self.term.is_some() {
             self.open_terminal(false, cx);
         }
@@ -1150,6 +1161,7 @@ impl T3App {
                             .child(self.config.label(&thread.model_selection)),
                     )
                     .child(div().flex_1())
+                    .child(self.render_git_toolbar(cx))
                     .child(
                         Button::new("terminal-toggle")
                             .small()

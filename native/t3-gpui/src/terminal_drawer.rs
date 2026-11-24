@@ -44,15 +44,7 @@ impl T3App {
         ) else {
             return;
         };
-        let Some(cwd) = thread.worktree_path.clone().or_else(|| {
-            self.shell
-                .projects
-                .iter()
-                .find(|p| p.id == thread.project_id)
-                .map(|p| p.workspace_root.clone())
-        }) else {
-            return;
-        };
+        let Some(cwd) = self.thread_cwd() else { return };
         if let Some(old) = self.term_sub.take() {
             client.cancel(&old);
         }

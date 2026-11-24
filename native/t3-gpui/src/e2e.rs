@@ -635,3 +635,88 @@ async fn dispatch_terminal(client: &RpcClient, thread_id: &str, data: &str) {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_git_status_and_commit() {
+    let env = connect().await;
+    let (thread_id, _view) = launch(&env, "multi-turn", "git").await;
+    wait_idle(&env, &thread_id).await;
+    let cwd = {
+        let shell = env.shell.state.lock().unwrap();
+        shell
+            .projects
+            .iter()
+            .find(|p| p.id == env.project_id)
+            .unwrap()
+            .workspace_root
+            .clone()
+    };
+    let git = Live::start(
+        &env.client,
+        "subscribeVcsStatus",
+        json!({ "cwd": cwd, "includeRemote": true }),
+        crate::git::GitStatus::apply,
+    );
+    let branch = git
+        .until("repo status", |g| {
+            g.is_repo().then(|| g.branch().map(str::to_owned))
+        })
+        .await;
+    println!("branch: {branch:?}");
+
+    let term = Live::start(
+        &env.client,
+        "terminal.attach",
+        json!({ "threadId": thread_id, "terminalId": crate::terminal::TERMINAL_ID, "cwd": cwd, "cols": 80, "rows": 10 }),
+        |t: &mut TermBox, e: &Value| match e["type"].as_str() {
+            Some("snapshot") => t.0.feed(e["snapshot"]["history"].as_str().unwrap_or("")),
+            Some("output") => t.0.feed(e["data"].as_str().unwrap_or("")),
+            _ => {}
+        },
+    );
+    term.until("shell prompt", |t| {
+        t.0.lines()
+            .iter()
+            .any(|l| !l.text.trim().is_empty())
+            .then_some(())
+    })
+    .await;
+    dispatch_terminal(&env.client, &thread_id, "echo hello > e2e.txt\r").await;
+    let _ = env
+        .client
+        .call("vcs.refreshStatus", json!({ "cwd": cwd }))
+        .await;
+    git.until("file change", |g| (g.changes().0 >= 1).then_some(()))
+        .await;
+
+    let (_, mut rx) = env.client.request(
+        "git.runStackedAction",
+        json!({ "actionId": uuid::Uuid::new_v4().to_string(), "cwd": cwd, "action": "commit",
+                "commitMessage": "e2e commit", "threadId": thread_id, "projectId": env.project_id }),
+    );
+    let mut finished = None;
+    while let Some(event) = rx.recv().await {
+        let event = event.expect("git action");
+        println!("git: {} {}", event["kind"], event["label"]);
+        if event["kind"] == "action_failed" {
+            panic!("commit failed: {event}");
+        }
+        if event["kind"] == "action_finished" {
+            finished = Some(event["result"].clone());
+        }
+    }
+    let result = finished.expect("action_finished");
+    println!("result: {}", crate::git::git_result_summary(&result));
+    assert_eq!(result["commit"]["status"], "created");
+    let _ = env
+        .client
+        .call("vcs.refreshStatus", json!({ "cwd": cwd }))
+        .await;
+    git.until("clean tree", |g| (g.changes().0 == 0).then_some(()))
+        .await;
+    env.client
+        .call("terminal.close", json!({ "threadId": thread_id, "terminalId": crate::terminal::TERMINAL_ID, "deleteHistory": true }))
+        .await
+        .unwrap();
+}
