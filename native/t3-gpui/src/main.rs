@@ -8,6 +8,7 @@ mod history;
 mod model;
 mod palette;
 mod rpc;
+mod settings;
 mod sidebar;
 mod terminal;
 mod terminal_drawer;
@@ -124,6 +125,10 @@ struct T3App {
     /// Drops search responses for an older query.
     palette_generation: u64,
     show_archived: bool,
+    settings_open: bool,
+    settings_status: Option<SharedString>,
+    /// Client preferences (`settings::load_prefs`).
+    prefs: serde_json::Value,
     /// Wake time a re-render is already scheduled for.
     snooze_wake_at: Option<i64>,
     diff_open: bool,
@@ -234,6 +239,9 @@ impl T3App {
             palette_matches: Vec::new(),
             palette_generation: 0,
             show_archived: false,
+            settings_open: false,
+            settings_status: None,
+            prefs: settings::load_prefs(),
             snooze_wake_at: None,
             diff_open: false,
             diff_target: None,
@@ -441,6 +449,12 @@ impl T3App {
         self.thread = ThreadView::default();
         self.draft_project = Some(project_id);
         self.draft_model = None;
+        self.settings_open = false;
+        self.draft_runtime_mode = self.config.settings["defaultRuntimeMode"]
+            .as_str()
+            .unwrap_or("full-access")
+            .to_string();
+        self.draft_interaction_mode = "default".into();
         self.composer
             .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
@@ -500,6 +514,7 @@ impl T3App {
 
     fn select_thread(&mut self, id: String, cx: &mut Context<Self>) {
         self.draft_project = None;
+        self.settings_open = false;
         if self.selected.as_deref() != Some(id.as_str()) {
             self.thread = ThreadView::default();
             self.history_pos = None;
@@ -1099,11 +1114,11 @@ impl T3App {
                             }),
                     )
                     .child(
-                        Button::new("forget")
+                        Button::new("open-settings")
                             .small()
                             .ghost()
-                            .label("Disconnect")
-                            .on_click(cx.listener(|this, _, _, cx| this.forget_session(cx))),
+                            .label("Settings")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
                     ),
             )
             .child(list)
@@ -1359,7 +1374,12 @@ impl Render for T3App {
         match self.screen {
             Screen::Connected => root
                 .child(self.render_sidebar(cx))
-                .child(self.render_thread(cx))
+                .when(self.settings_open, |root| {
+                    root.child(self.render_settings(cx))
+                })
+                .when(!self.settings_open, |root| {
+                    root.child(self.render_thread(cx))
+                })
                 .when(self.diff_open && self.selected.is_some(), |root| {
                     root.child(self.render_diff_panel(cx))
                 })
@@ -1378,7 +1398,7 @@ fn main() {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         palette::bind_keys(cx);
-        gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
+        gpui_kit::component::Theme::change(settings::theme_mode(&settings::load_prefs()), None, cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(None, size(px(1200.), px(800.)), cx)),
             ..Default::default()

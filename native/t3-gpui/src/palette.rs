@@ -31,6 +31,7 @@ pub(crate) enum PaletteAction {
     NewThread(String),
     ToggleDiff,
     Disconnect,
+    Settings,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +124,13 @@ impl T3App {
                 action: PaletteAction::ToggleDiff,
             });
         }
+        if "settings".contains(&query) {
+            rows.push(PaletteRow {
+                label: "Settings".into(),
+                detail: "Command".into(),
+                action: PaletteAction::Settings,
+            });
+        }
         if "disconnect".contains(&query) {
             rows.push(PaletteRow {
                 label: "Disconnect".into(),
@@ -141,6 +149,7 @@ impl T3App {
             PaletteAction::NewThread(project) => self.new_thread(project, window, cx),
             PaletteAction::ToggleDiff => self.toggle_diff(cx),
             PaletteAction::Disconnect => self.forget_session(cx),
+            PaletteAction::Settings => self.toggle_settings(cx),
         }
         cx.notify();
     }

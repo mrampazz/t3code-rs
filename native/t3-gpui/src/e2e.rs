@@ -863,3 +863,81 @@ async fn e2e_composer_menu_sources() {
     );
     assert!(!items.is_empty(), "the new project has files to mention");
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_settings() {
+    let env = connect().await;
+    env.config
+        .until("settings", |c| c.settings.is_object().then_some(()))
+        .await;
+    let settings = env.config.state.lock().unwrap().settings.clone();
+    let original = settings["defaultRuntimeMode"]
+        .as_str()
+        .unwrap_or("full-access")
+        .to_string();
+    let saved = env
+        .client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "defaultRuntimeMode": "auto" } }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved["defaultRuntimeMode"], "auto");
+    env.config
+        .until("settings stream", |c| {
+            (c.settings["defaultRuntimeMode"] == "auto").then_some(())
+        })
+        .await;
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "defaultRuntimeMode": original } }),
+        )
+        .await
+        .unwrap();
+
+    let off = crate::settings::toggle_instance(&saved, REPLAY, "acpRegistry", false);
+    let saved = env
+        .client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": {}, "providerInstanceMutation": off }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved["providerInstances"][REPLAY]["enabled"], false);
+    assert!(
+        saved["providerInstances"][REPLAY]["config"].is_object(),
+        "toggling keeps the instance config"
+    );
+    env.config
+        .until("replay disabled", |c| {
+            c.providers
+                .iter()
+                .find(|p| p.instance_id == REPLAY)
+                .filter(|p| !p.enabled)
+                .map(|_| ())
+        })
+        .await;
+    let on = crate::settings::toggle_instance(&saved, REPLAY, "acpRegistry", true);
+    let saved = env
+        .client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": {}, "providerInstanceMutation": on }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved["providerInstances"][REPLAY]["enabled"], true);
+    env.config
+        .until("replay ready again", |c| {
+            c.providers
+                .iter()
+                .find(|p| p.instance_id == REPLAY)
+                .filter(|p| p.picker_ready())
+                .map(|_| ())
+        })
+        .await;
+}

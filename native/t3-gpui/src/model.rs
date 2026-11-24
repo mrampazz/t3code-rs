@@ -146,6 +146,12 @@ impl Shell {
 pub struct Provider {
     pub instance_id: String,
     #[serde(default)]
+    pub driver: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub availability: Value,
@@ -210,6 +216,8 @@ pub struct ServerConfig {
     pub revision: u64,
     /// `settings.snoozePresets`; `None` uses the defaults.
     pub snooze_presets: Option<Value>,
+    /// The environment's `ServerSettings`.
+    pub settings: Value,
 }
 
 /// Picker key for a model selection: provider instance and model slug.
@@ -230,9 +238,13 @@ impl ServerConfig {
                 self.providers = decode_vec(&config["providers"]);
                 self.thread_stop = config["environment"]["capabilities"]["threadStop"] == true;
                 self.snooze_presets = config["settings"].get("snoozePresets").cloned();
+                self.settings = config["settings"].clone();
             }
             Some("providerStatuses") => self.providers = decode_vec(&event["payload"]["providers"]),
             Some("settingsUpdated") => {
+                if event["payload"]["settings"].is_object() {
+                    self.settings = event["payload"]["settings"].clone();
+                }
                 if let Some(presets) = event["payload"]["settings"].get("snoozePresets") {
                     self.snooze_presets = Some(presets.clone());
                 }
