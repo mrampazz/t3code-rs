@@ -1,20 +1,21 @@
 mod auth;
 mod model;
 mod rpc;
+mod timeline;
 
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::text::TextView;
-use gpui_kit::component::Sizable;
 use gpui_kit::component::{ActiveTheme, Disableable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::json;
 
-use model::{ServerConfig, Shell, ThreadView, TurnItem};
+use model::{ServerConfig, Shell, ThreadView};
 use rpc::RpcClient;
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -50,13 +51,16 @@ struct T3App {
     selected: Option<String>,
     thread: ThreadView,
     thread_sub: Option<String>,
+    /// Timeline rows the user opened.
+    expanded: HashSet<String>,
     transcript_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl T3App {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let pair_input = cx.new(|cx| InputState::new(window, cx).placeholder("http://host:3773/pair#token=…"));
+        let pair_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("http://host:3773/pair#token=…"));
         let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Ask anything…"));
         let _subscriptions = vec![
             cx.subscribe_in(&pair_input, window, |this, _, e: &InputEvent, _, cx| {
@@ -84,6 +88,7 @@ impl T3App {
             selected: None,
             thread: ThreadView::default(),
             thread_sub: None,
+            expanded: HashSet::new(),
             transcript_scroll: ScrollHandle::new(),
             _subscriptions,
         };
@@ -168,8 +173,13 @@ impl T3App {
                         }) else {
                             return;
                         };
-                        let payload = if after > 0 { json!({ "afterSequence": after }) } else { json!({}) };
-                        let (_, mut shell) = client.request("orchestration.subscribeShell", payload);
+                        let payload = if after > 0 {
+                            json!({ "afterSequence": after })
+                        } else {
+                            json!({})
+                        };
+                        let (_, mut shell) =
+                            client.request("orchestration.subscribeShell", payload);
                         let mut ended = "connection closed".to_string();
                         while let Some(item) = shell.recv().await {
                             let item = match item {
@@ -201,8 +211,13 @@ impl T3App {
                     if alive(app) {
                         app.client = None;
                         app.thread_sub = None;
-                        app.error =
-                            Some(format!("Disconnected: {error}. Retrying in {}s…", delay.as_secs().max(1)).into());
+                        app.error = Some(
+                            format!(
+                                "Disconnected: {error}. Retrying in {}s…",
+                                delay.as_secs().max(1)
+                            )
+                            .into(),
+                        );
                         cx.notify();
                     }
                     alive(app)
@@ -220,11 +235,12 @@ impl T3App {
         let (_, mut rx) = client.request("subscribeServerConfig", json!({}));
         cx.spawn(async move |this, cx| {
             while let Some(Ok(event)) = rx.recv().await {
-                if this.update(cx, |app, cx| {
-                    app.config.apply(&event);
-                    cx.notify();
-                })
-                .is_err()
+                if this
+                    .update(cx, |app, cx| {
+                        app.config.apply(&event);
+                        cx.notify();
+                    })
+                    .is_err()
                 {
                     break;
                 }
@@ -240,12 +256,15 @@ impl T3App {
         self.selected = None;
         self.thread = ThreadView::default();
         self.draft_project = Some(project_id);
-        self.composer.update(cx, |input, cx| input.focus(window, cx));
+        self.composer
+            .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
     }
 
     fn launch(&mut self, project_id: String, text: String, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else { return };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
         let project = self.shell.projects.iter().find(|p| p.id == project_id);
         let Some(model) = self.config.model_for(project) else {
             self.error = Some("No available provider on this server.".into());
@@ -266,7 +285,9 @@ impl T3App {
             "initialMessage": { "messageId": command_id, "text": text, "attachments": [] },
         });
         cx.spawn(async move |this, cx| {
-            let result = on_tokio(async move { client.call("orchestration.launchThread", input).await }).await;
+            let result =
+                on_tokio(async move { client.call("orchestration.launchThread", input).await })
+                    .await;
             this.update(cx, |app, cx| match result {
                 Ok(Ok(launched)) => {
                     app.draft_project = None;
@@ -293,7 +314,9 @@ impl T3App {
 
     /// (Re)subscribes the selected thread, resuming from its cursor when it already has data.
     fn subscribe_thread(&mut self, cx: &mut Context<Self>) {
-        let (Some(client), Some(id)) = (self.client.clone(), self.selected.clone()) else { return };
+        let (Some(client), Some(id)) = (self.client.clone(), self.selected.clone()) else {
+            return;
+        };
         if let Some(old) = self.thread_sub.take() {
             client.cancel(&old);
         }
@@ -332,11 +355,15 @@ impl T3App {
             return;
         }
         if let Some(project_id) = self.draft_project.clone() {
-            self.composer.update(cx, |input, cx| input.set_value("", window, cx));
+            self.composer
+                .update(cx, |input, cx| input.set_value("", window, cx));
             return self.launch(project_id, text, cx);
         }
-        let (Some(client), Some(thread_id)) = (self.client.clone(), self.selected.clone()) else { return };
-        self.composer.update(cx, |input, cx| input.set_value("", window, cx));
+        let (Some(client), Some(thread_id)) = (self.client.clone(), self.selected.clone()) else {
+            return;
+        };
+        self.composer
+            .update(cx, |input, cx| input.set_value("", window, cx));
         let command_id = uuid::Uuid::new_v4().to_string();
         let command = json!({
             "type": "message.dispatch",
@@ -350,7 +377,11 @@ impl T3App {
             "creationSource": "web",
         });
         cx.spawn(async move |this, cx| {
-            let result = on_tokio(async move { client.call("orchestration.dispatchCommand", command).await }).await;
+            let result =
+                on_tokio(
+                    async move { client.call("orchestration.dispatchCommand", command).await },
+                )
+                .await;
             if let Ok(Err(e)) = result {
                 this.update(cx, |app, cx| {
                     app.error = Some(format!("Send failed: {e}").into());
@@ -388,7 +419,12 @@ impl T3App {
                 .rounded_lg()
                 .border_1()
                 .border_color(theme.border)
-                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Connect to a T3 Code server"))
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Connect to a T3 Code server"),
+                )
                 .child(
                     div()
                         .text_sm()
@@ -399,17 +435,30 @@ impl T3App {
                 .child(
                     Button::new("pair")
                         .primary()
-                        .label(if connecting { "Connecting…" } else { "Connect" })
+                        .label(if connecting {
+                            "Connecting…"
+                        } else {
+                            "Connect"
+                        })
                         .disabled(connecting)
                         .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
                 )
-                .children(self.error.clone().map(|e| div().text_sm().text_color(theme.danger).child(e))),
+                .children(
+                    self.error
+                        .clone()
+                        .map(|e| div().text_sm().text_color(theme.danger).child(e)),
+                ),
         )
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let mut list = v_flex().id("threads").flex_1().overflow_y_scroll().px_2().pb_2();
+        let mut list = v_flex()
+            .id("threads")
+            .flex_1()
+            .overflow_y_scroll()
+            .px_2()
+            .pb_2();
         for project in &self.shell.projects {
             let project_id = project.id.clone();
             list = list.child(
@@ -427,7 +476,9 @@ impl T3App {
                             .xsmall()
                             .label("+")
                             .tooltip("New thread")
-                            .on_click(cx.listener(move |this, _, window, cx| this.new_thread(project_id.clone(), window, cx))),
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.new_thread(project_id.clone(), window, cx)
+                            })),
                     ),
             );
             for thread in self.shell.threads_of(&project.id) {
@@ -442,7 +493,10 @@ impl T3App {
                         .rounded_md()
                         .text_sm()
                         .cursor_pointer()
-                        .when(selected, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
+                        .when(selected, |d| {
+                            d.bg(theme.sidebar_accent)
+                                .text_color(theme.sidebar_accent_foreground)
+                        })
                         .hover(|d| d.bg(theme.sidebar_accent))
                         .child(
                             div()
@@ -451,7 +505,9 @@ impl T3App {
                                 .when(thread.is_running(), |d| d.bg(theme.success)),
                         )
                         .child(div().flex_1().truncate().child(thread.title.clone()))
-                        .on_click(cx.listener(move |this, _, _, cx| this.select_thread(id.clone(), cx))),
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.select_thread(id.clone(), cx)),
+                        ),
                 );
             }
         }
@@ -478,36 +534,13 @@ impl T3App {
             .child(list)
     }
 
-    fn render_item(&self, item: &TurnItem, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let text = item.text.clone().unwrap_or_default();
-        match item.kind.as_str() {
-            "user_message" => h_flex()
-                .justify_end()
-                .child(div().max_w(relative(0.8)).px_3().py_2().rounded_lg().bg(theme.secondary).child(text))
-                .into_any_element(),
-            "assistant_message" => TextView::markdown(SharedString::from(item.id.clone()), text).into_any_element(),
-            "reasoning" => div()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .line_clamp(3)
-                .child(if text.is_empty() { "Thinking…".to_string() } else { text })
-                .into_any_element(),
-            kind => div()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(format!(
-                    "{} · {}",
-                    item.title.clone().unwrap_or_else(|| kind.replace('_', " ")),
-                    item.status.as_str().unwrap_or("")
-                ))
-                .into_any_element(),
-        }
-    }
-
     fn render_thread(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        if let Some(project) = self.draft_project.as_ref().and_then(|id| self.shell.projects.iter().find(|p| &p.id == id)) {
+        let theme = cx.theme().colors;
+        if let Some(project) = self
+            .draft_project
+            .as_ref()
+            .and_then(|id| self.shell.projects.iter().find(|p| &p.id == id))
+        {
             let model = self.config.model_for(Some(project));
             return v_flex()
                 .flex_1()
@@ -520,26 +553,49 @@ impl T3App {
                         .w_full()
                         .p_4()
                         .gap_2()
-                        .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(format!("New thread in {}", project.title)))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(match &model {
-                            Some(m) => self.config.label(m),
-                            None => "No available provider".to_string(),
-                        }))
+                        .child(
+                            div()
+                                .text_xl()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!("New thread in {}", project.title)),
+                        )
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(
+                            match &model {
+                                Some(m) => self.config.label(m),
+                                None => "No available provider".to_string(),
+                            },
+                        ))
                         .child(Input::new(&self.composer))
-                        .children(self.error.clone().map(|e| div().text_sm().text_color(theme.danger).child(e))),
+                        .children(
+                            self.error
+                                .clone()
+                                .map(|e| div().text_sm().text_color(theme.danger).child(e)),
+                        ),
                 )
                 .into_any_element();
         }
-        let Some(thread) = self.selected.as_ref().and_then(|id| self.shell.threads.iter().find(|t| &t.id == id)) else {
+        let Some(thread) = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))
+        else {
             return v_flex()
                 .flex_1()
                 .items_center()
                 .justify_center()
                 .text_color(theme.muted_foreground)
-                .child(if self.shell.synced || !self.shell.projects.is_empty() { "Select a thread" } else { "Loading…" })
+                .child(if self.shell.synced || !self.shell.projects.is_empty() {
+                    "Select a thread"
+                } else {
+                    "Loading…"
+                })
                 .into_any_element();
         };
-        let items: Vec<AnyElement> = self.thread.items.iter().map(|item| self.render_item(item, cx)).collect();
+        let items: Vec<AnyElement> = self
+            .thread
+            .items()
+            .map(|item| self.render_item(item, cx))
+            .collect();
         v_flex()
             .flex_1()
             .h_full()
@@ -550,7 +606,12 @@ impl T3App {
                     .gap_2()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(div().font_weight(FontWeight::SEMIBOLD).truncate().child(thread.title.clone()))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(thread.title.clone()),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -559,12 +620,35 @@ impl T3App {
                     ),
             )
             .child(
-                div().id("transcript").flex_1().overflow_y_scroll().track_scroll(&self.transcript_scroll).child(
-                    v_flex().mx_auto().max_w(px(760.)).w_full().px_4().py_4().gap_4().children(items),
-                ),
+                div()
+                    .id("transcript")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.transcript_scroll)
+                    .child(
+                        v_flex()
+                            .mx_auto()
+                            .max_w(px(760.))
+                            .w_full()
+                            .px_4()
+                            .py_4()
+                            .gap_4()
+                            .children(items),
+                    ),
             )
-            .children(self.error.clone().map(|e| div().px_4().text_sm().text_color(theme.danger).child(e)))
-            .child(div().mx_auto().max_w(px(760.)).w_full().p_4().child(Input::new(&self.composer)))
+            .children(
+                self.error
+                    .clone()
+                    .map(|e| div().px_4().text_sm().text_color(theme.danger).child(e)),
+            )
+            .child(
+                div()
+                    .mx_auto()
+                    .max_w(px(760.))
+                    .w_full()
+                    .p_4()
+                    .child(Input::new(&self.composer)),
+            )
             .into_any_element()
     }
 }
@@ -572,16 +656,23 @@ impl T3App {
 impl Render for T3App {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let root = h_flex().size_full().bg(theme.background).text_color(theme.foreground);
+        let root = h_flex()
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground);
         match self.screen {
-            Screen::Connected => root.child(self.render_sidebar(cx)).child(self.render_thread(cx)),
+            Screen::Connected => root
+                .child(self.render_sidebar(cx))
+                .child(self.render_thread(cx)),
             _ => root.child(self.render_pair(cx)),
         }
     }
 }
 
 fn main() {
-    RUNTIME.set(tokio::runtime::Runtime::new().expect("tokio runtime")).ok();
+    RUNTIME
+        .set(tokio::runtime::Runtime::new().expect("tokio runtime"))
+        .ok();
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
@@ -589,8 +680,10 @@ fn main() {
             window_bounds: Some(WindowBounds::centered(None, size(px(1200.), px(800.)), cx)),
             ..Default::default()
         };
-        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| T3App::new(window, cx)))
-            .expect("failed to open window");
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| T3App::new(window, cx))
+        })
+        .expect("failed to open window");
         cx.activate(true);
     });
 }
@@ -598,7 +691,10 @@ fn main() {
 /// Jittered, capped exponential backoff: 0.25–0.5s at first, up to 15–30s.
 fn backoff(attempt: u32) -> Duration {
     let cap = (500u64 << attempt.min(6)).min(30_000);
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
     Duration::from_millis(cap / 2 + u64::from(nanos) % (cap / 2 + 1))
 }
 
@@ -619,7 +715,10 @@ mod e2e {
     async fn pairs_and_streams_shell() {
         let url = std::env::var("T3_PAIRING_URL").expect("T3_PAIRING_URL");
         let session = crate::auth::pair(&url).await.unwrap();
-        let client = crate::rpc::RpcClient::connect(&crate::auth::socket_url(&session).await.unwrap()).await.unwrap();
+        let client =
+            crate::rpc::RpcClient::connect(&crate::auth::socket_url(&session).await.unwrap())
+                .await
+                .unwrap();
         let (_, mut rx) = client.request("orchestration.subscribeShell", serde_json::json!({}));
         let mut shell = crate::model::Shell::default();
         while !shell.synced {
@@ -627,6 +726,10 @@ mod e2e {
             println!("shell item: {}", item["kind"]);
             shell.apply(&item);
         }
-        println!("projects={} threads={}", shell.projects.len(), shell.threads.len());
+        println!(
+            "projects={} threads={}",
+            shell.projects.len(),
+            shell.threads.len()
+        );
     }
 }

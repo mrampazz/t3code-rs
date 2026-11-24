@@ -63,7 +63,11 @@ impl RpcClient {
                     partial.push_str(part);
                     continue;
                 }
-                let whole = if partial.is_empty() { text } else { std::mem::take(&mut partial) + &text };
+                let whole = if partial.is_empty() {
+                    text
+                } else {
+                    std::mem::take(&mut partial) + &text
+                };
                 match serde_json::from_str::<Value>(&whole) {
                     Ok(value) => dispatch(value, &reader_pending, &reader_out),
                     Err(err) => eprintln!("rpc: undecodable frame: {err}"),
@@ -74,16 +78,26 @@ impl RpcClient {
             }
         });
 
-        Ok(Self { out, pending, next_id: Arc::default(), shutdown })
+        Ok(Self {
+            out,
+            pending,
+            next_id: Arc::default(),
+            shutdown,
+        })
     }
 
     /// Starts a request; the receiver yields stream chunks, then ends after `Exit`.
     /// A unary call yields exactly one value (the success value).
-    pub fn request(&self, tag: &str, payload: Value) -> (String, mpsc::UnboundedReceiver<Result<Value>>) {
+    pub fn request(
+        &self,
+        tag: &str,
+        payload: Value,
+    ) -> (String, mpsc::UnboundedReceiver<Result<Value>>) {
         let id = (self.next_id.fetch_add(1, Ordering::Relaxed) + 1).to_string();
         let (tx, rx) = mpsc::unbounded_channel();
         self.pending.lock().unwrap().insert(id.clone(), tx);
-        let frame = json!({"_tag": "Request", "id": id, "tag": tag, "payload": payload, "headers": []});
+        let frame =
+            json!({"_tag": "Request", "id": id, "tag": tag, "payload": payload, "headers": []});
         let _ = self.out.send(frame.to_string());
         (id, rx)
     }
@@ -91,7 +105,9 @@ impl RpcClient {
     /// Stops a stream on the server; its receiver ends.
     pub fn cancel(&self, id: &str) {
         if self.pending.lock().unwrap().remove(id).is_some() {
-            let _ = self.out.send(json!({"_tag": "Interrupt", "requestId": id}).to_string());
+            let _ = self
+                .out
+                .send(json!({"_tag": "Interrupt", "requestId": id}).to_string());
         }
     }
 
@@ -100,7 +116,11 @@ impl RpcClient {
     }
 
     pub async fn call(&self, tag: &str, payload: Value) -> Result<Value> {
-        self.request(tag, payload).1.recv().await.unwrap_or_else(|| Err(anyhow!("{tag}: no response")))
+        self.request(tag, payload)
+            .1
+            .recv()
+            .await
+            .unwrap_or_else(|| Err(anyhow!("{tag}: no response")))
     }
 }
 
@@ -121,7 +141,9 @@ fn dispatch(msg: Value, pending: &Pending, out: &mpsc::UnboundedSender<String>) 
             let _ = out.send(json!({"_tag": "Ack", "requestId": id}).to_string());
         }
         Some("Exit") => {
-            let Some(tx) = pending.lock().unwrap().remove(&id) else { return };
+            let Some(tx) = pending.lock().unwrap().remove(&id) else {
+                return;
+            };
             let exit = &msg["exit"];
             match exit["_tag"].as_str() {
                 Some("Success") if !exit["value"].is_null() => {
@@ -169,10 +191,17 @@ mod tests {
         pending.lock().unwrap().insert("7".into(), tx);
         let (out, mut out_rx) = mpsc::unbounded_channel();
 
-        dispatch(json!({"_tag": "Chunk", "requestId": "7", "values": [1, 2]}), &pending, &out);
+        dispatch(
+            json!({"_tag": "Chunk", "requestId": "7", "values": [1, 2]}),
+            &pending,
+            &out,
+        );
         assert_eq!(rx.try_recv().unwrap().unwrap(), json!(1));
         assert_eq!(rx.try_recv().unwrap().unwrap(), json!(2));
-        assert_eq!(out_rx.try_recv().unwrap(), r#"{"_tag":"Ack","requestId":"7"}"#);
+        assert_eq!(
+            out_rx.try_recv().unwrap(),
+            r#"{"_tag":"Ack","requestId":"7"}"#
+        );
 
         let fail = json!({"_tag": "Exit", "requestId": "7", "exit": {"_tag": "Failure", "cause": [{"_tag": "Fail", "error": {"_tag": "E", "message": "nope"}}]}});
         dispatch(fail, &pending, &out);

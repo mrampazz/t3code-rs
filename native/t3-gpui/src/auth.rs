@@ -33,20 +33,36 @@ pub async fn pair(pairing_url: &str) -> Result<Session> {
     let res = reqwest::Client::new()
         .post(format!("{base_url}/oauth/token"))
         .form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+            (
+                "grant_type",
+                "urn:ietf:params:oauth:grant-type:token-exchange",
+            ),
             ("subject_token", credential.as_str()),
-            ("subject_token_type", "urn:t3:params:oauth:token-type:environment-bootstrap"),
-            ("requested_token_type", "urn:ietf:params:oauth:token-type:access_token"),
+            (
+                "subject_token_type",
+                "urn:t3:params:oauth:token-type:environment-bootstrap",
+            ),
+            (
+                "requested_token_type",
+                "urn:ietf:params:oauth:token-type:access_token",
+            ),
             ("client_label", "T3 Code (Rust)"),
             ("client_device_type", "desktop"),
         ])
         .send()
         .await?;
     if !res.status().is_success() {
-        bail!("pairing failed ({}): {}", res.status(), res.text().await.unwrap_or_default());
+        bail!(
+            "pairing failed ({}): {}",
+            res.status(),
+            res.text().await.unwrap_or_default()
+        );
     }
     let token: TokenResult = res.json().await?;
-    let session = Session { base_url, access_token: token.access_token };
+    let session = Session {
+        base_url,
+        access_token: token.access_token,
+    };
     save(&session);
     Ok(session)
 }
@@ -57,7 +73,11 @@ pub struct Rejected(pub u16);
 
 impl std::fmt::Display for Rejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "The server rejected this session ({}). Pair again.", self.0)
+        write!(
+            f,
+            "The server rejected this session ({}). Pair again.",
+            self.0
+        )
     }
 }
 
@@ -69,7 +89,10 @@ pub async fn socket_url(session: &Session) -> Result<String> {
         ticket: String,
     }
     let res = reqwest::Client::new()
-        .post(format!("{}/api/auth/websocket-ticket/rpc", session.base_url))
+        .post(format!(
+            "{}/api/auth/websocket-ticket/rpc",
+            session.base_url
+        ))
         .bearer_auth(&session.access_token)
         .send()
         .await?;
@@ -81,7 +104,8 @@ pub async fn socket_url(session: &Session) -> Result<String> {
     }
     let ticket: Ticket = res.json().await?;
     let mut url = Url::parse(&session.base_url)?;
-    url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" }).ok();
+    url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
+        .ok();
     url.set_path("/ws");
     url.query_pairs_mut()
         .append_pair("wsTicket", &ticket.ticket)
@@ -96,8 +120,13 @@ fn session_path() -> Option<PathBuf> {
 }
 
 pub fn load() -> Option<Session> {
-    if let (Ok(base_url), Ok(access_token)) = (std::env::var("T3_SERVER"), std::env::var("T3_TOKEN")) {
-        return Some(Session { base_url, access_token });
+    if let (Ok(base_url), Ok(access_token)) =
+        (std::env::var("T3_SERVER"), std::env::var("T3_TOKEN"))
+    {
+        return Some(Session {
+            base_url,
+            access_token,
+        });
     }
     serde_json::from_slice(&std::fs::read(session_path()?).ok()?).ok()
 }
@@ -123,7 +152,8 @@ pub fn forget() {
 mod tests {
     #[test]
     fn parses_pairing_url() {
-        let (base, token) = super::parse_pairing_url("http://192.168.1.4:3773/pair#token=abc%2B1").unwrap();
+        let (base, token) =
+            super::parse_pairing_url("http://192.168.1.4:3773/pair#token=abc%2B1").unwrap();
         assert_eq!(base, "http://192.168.1.4:3773");
         assert_eq!(token, "abc+1");
         assert!(super::parse_pairing_url("http://x/pair").is_err());
