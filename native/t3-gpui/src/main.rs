@@ -3,6 +3,7 @@ mod auth;
 mod composer;
 mod composer_menu;
 mod diff_panel;
+mod drag;
 mod env;
 mod git;
 mod history;
@@ -483,8 +484,19 @@ impl T3App {
     }
 
     /// Sends an `OrchestrationV2Command`, filling in `commandId`. Failures show in the error line.
-    pub(crate) fn dispatch(&mut self, mut command: serde_json::Value, cx: &mut Context<Self>) {
-        let Some(client) = self.client() else {
+    pub(crate) fn dispatch(&mut self, command: serde_json::Value, cx: &mut Context<Self>) {
+        let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
+        self.dispatch_to(&env, command, cx);
+    }
+
+    /// Sends a command to a specific environment (a sidebar row's, not necessarily the active one).
+    pub(crate) fn dispatch_to(
+        &mut self,
+        env: &str,
+        mut command: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(client) = self.env_by(env).and_then(|e| e.client.clone()) else {
             self.error = Some("Not connected.".into());
             return cx.notify();
         };
@@ -805,10 +817,12 @@ impl T3App {
         )
     }
 
+    /// `drag`: the row's section and index, for drag and drop; `None` for archived rows.
     fn thread_row(
         &self,
         thread: &model::ThreadShell,
         archived: bool,
+        drag: Option<(drag::Section, usize)>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().colors;
@@ -820,6 +834,7 @@ impl T3App {
         let settled = thread.settled_override.as_deref() == Some("settled");
         let snoozed = thread.snoozed_until.is_some();
         let menu_id = id.clone();
+        let menu_env = env_key.clone();
         let title = thread.title.clone();
         let env = self.env_by(&thread.env);
         let project = env
@@ -862,12 +877,33 @@ impl T3App {
                     .text_color(theme.muted_foreground)
                     .child(p)
             }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.select_thread(env_key.clone(), id.clone(), cx)
+            .on_click(cx.listener({
+                let (env_key, id) = (env_key.clone(), id.clone());
+                move |this, _, _, cx| this.select_thread(env_key.clone(), id.clone(), cx)
             }))
+            .when_some(drag, |row, (section, index)| {
+                let dragged = drag::DraggedThread {
+                    env: env_key.clone(),
+                    id: id.clone(),
+                    title: thread.title.clone().into(),
+                    section,
+                };
+                row.on_drag(dragged, |d, _, _, cx| cx.new(|_| d.clone()))
+                    .when(section != drag::Section::Snoozed, |row| {
+                        row.drag_over::<drag::DraggedThread>(move |s, _, _, _| {
+                            s.border_t_2().border_color(theme.ring)
+                        })
+                        .on_drop(cx.listener(
+                            move |this, d: &drag::DraggedThread, _, cx| {
+                                this.drop_thread(d, section, index, cx)
+                            },
+                        ))
+                    })
+            })
             .context_menu(move |menu, window, cx| {
                 let action = |label: &str, kind: &str, extra: serde_json::Value| {
                     let app = app.clone();
+                    let env = menu_env.clone();
                     let mut command = json!({ "type": kind, "threadId": menu_id });
                     if let (Some(command), Some(extra)) =
                         (command.as_object_mut(), extra.as_object())
@@ -875,7 +911,7 @@ impl T3App {
                         command.extend(extra.clone());
                     }
                     PopupMenuItem::new(label.to_string()).on_click(move |_, _, cx| {
-                        app.update(cx, |this, cx| this.dispatch(command.clone(), cx))
+                        app.update(cx, |this, cx| this.dispatch_to(&env, command.clone(), cx))
                             .ok();
                     })
                 };
@@ -900,18 +936,25 @@ impl T3App {
                         json!({ "reason": "user" }),
                     ))
                 } else {
-                    let (app, thread_id, presets) = (app.clone(), menu_id.clone(), presets.clone());
+                    let (app, thread_id, presets, env) = (
+                        app.clone(),
+                        menu_id.clone(),
+                        presets.clone(),
+                        menu_env.clone(),
+                    );
                     menu.submenu("Snooze", window, cx, move |mut sub, _, _| {
                         // Resolved when the menu opens, like the web, so times are never stale.
                         let now = jiff::Zoned::now();
                         for preset in sidebar::snooze_presets(&now, presets.as_ref()) {
-                            let app = app.clone();
+                            let (app, env) = (app.clone(), env.clone());
                             let command = json!({ "type": "thread.snooze", "threadId": thread_id,
                                 "snoozedUntil": preset.until.to_string() });
                             sub = sub.item(PopupMenuItem::new(preset.label).on_click(
                                 move |_, _, cx| {
-                                    app.update(cx, |this, cx| this.dispatch(command.clone(), cx))
-                                        .ok();
+                                    app.update(cx, |this, cx| {
+                                        this.dispatch_to(&env, command.clone(), cx)
+                                    })
+                                    .ok();
                                 },
                             ));
                         }
@@ -919,21 +962,130 @@ impl T3App {
                     })
                 };
                 menu.item(action("Mark unread", "thread.mark-unread", json!({})))
-                    .item(rename_item(app.clone(), menu_id.clone(), title.clone()))
+                    .item(rename_item(
+                        app.clone(),
+                        menu_env.clone(),
+                        menu_id.clone(),
+                        title.clone(),
+                    ))
                     .separator()
                     .item(action("Archive", "thread.archive", json!({})))
-                    .item(delete_item(app.clone(), menu_id.clone(), title.clone()))
+                    .item(delete_item(
+                        app.clone(),
+                        menu_env.clone(),
+                        menu_id.clone(),
+                        title.clone(),
+                    ))
             })
     }
 
-    fn section_header(&self, label: String, cx: &mut Context<Self>) -> impl IntoElement {
+    /// A header drops the row at the top of its section.
+    fn section_header(
+        &self,
+        label: String,
+        section: drag::Section,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let c = cx.theme().colors;
         div()
+            .id(SharedString::from(format!("section-{label}")))
             .px_2()
             .pt_3()
             .pb_1()
             .text_xs()
-            .text_color(cx.theme().colors.muted_foreground)
+            .text_color(c.muted_foreground)
             .child(label)
+            .when(section != drag::Section::Snoozed, |h| {
+                h.drag_over::<drag::DraggedThread>(move |s, _, _, _| {
+                    s.text_color(c.foreground).bg(c.sidebar_accent)
+                })
+                .on_drop(cx.listener(
+                    move |this, d: &drag::DraggedThread, _, cx| this.drop_thread(d, section, 0, cx),
+                ))
+            })
+    }
+
+    /// Plans a sidebar drop like the web and sends its commands in order.
+    fn drop_thread(
+        &mut self,
+        d: &drag::DraggedThread,
+        target: drag::Section,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let threads: Vec<model::ThreadShell> = self
+            .envs
+            .iter()
+            .flat_map(|e| e.shell.threads.iter().cloned())
+            .collect();
+        let sections = sidebar::sections(&threads, jiff::Timestamp::now().as_millisecond());
+        let key = |t: &model::ThreadShell| drag::row_key(&t.env, &t.id);
+        let pinned: Vec<String> = sections.pinned.iter().map(|t| key(t)).collect();
+        let active: Vec<String> = sections.active.iter().map(|t| key(t)).collect();
+        let pinned_keys = threads
+            .iter()
+            .map(|t| (key(t), t.pin_order_key.clone()))
+            .collect();
+        // Stored keys, then implied sort keys for the Active rows (web: `activeKeysById`).
+        let mut active_keys: std::collections::HashMap<String, Option<String>> = threads
+            .iter()
+            .map(|t| (key(t), t.active_order_key.clone()))
+            .collect();
+        for t in &sections.active {
+            active_keys.insert(key(t), Some(sidebar::active_sort_key(t)));
+        }
+        let moved = drag::row_key(&d.env, &d.id);
+        let plan = drag::plan_drop(
+            &moved,
+            d.section,
+            target,
+            index,
+            (&pinned, &pinned_keys),
+            (&active, &active_keys),
+        );
+        let commands = drag::commands(plan, (&d.env, &d.id));
+        self.run_commands(commands, cx);
+    }
+
+    /// Sends commands one after another, stopping at the first failure.
+    fn run_commands(&mut self, commands: Vec<(String, serde_json::Value)>, cx: &mut Context<Self>) {
+        let steps: Vec<(Option<rpc::RpcClient>, serde_json::Value)> = commands
+            .into_iter()
+            .map(|(env, mut c)| {
+                c["commandId"] = json!(uuid::Uuid::new_v4().to_string());
+                (self.env_by(&env).and_then(|e| e.client.clone()), c)
+            })
+            .collect();
+        cx.spawn(async move |this, cx| {
+            for (client, command) in steps {
+                let kind = command["type"].as_str().unwrap_or("command").to_owned();
+                let Some(client) = client else {
+                    this.update(cx, |app, cx| {
+                        app.error = Some(format!("{kind}: server not connected").into());
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                };
+                let result =
+                    on_tokio(
+                        async move { client.call("orchestration.dispatchCommand", command).await },
+                    )
+                    .await;
+                let error = match result {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(e)) => e.to_string(),
+                    Err(e) => e.to_string(),
+                };
+                this.update(cx, |app, cx| {
+                    app.error = Some(format!("{kind} failed: {error}").into());
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+        })
+        .detach();
     }
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -963,18 +1115,21 @@ impl T3App {
                         .child(format!("{}: {error}", e.label())),
                 )
             }));
-        for (label, rows) in [
-            ("Pinned", &sections.pinned),
-            ("Active", &sections.active),
-            ("Snoozed", &sections.snoozed),
-            ("Settled", &sections.settled),
+        for (label, rows, section) in [
+            ("Pinned", &sections.pinned, drag::Section::Pinned),
+            ("Active", &sections.active, drag::Section::Active),
+            ("Snoozed", &sections.snoozed, drag::Section::Snoozed),
+            ("Settled", &sections.settled, drag::Section::Settled),
         ] {
-            if rows.is_empty() {
+            // An empty Pinned or Settled section still takes drops through its header.
+            if rows.is_empty() && !matches!(section, drag::Section::Pinned | drag::Section::Settled)
+            {
                 continue;
             }
-            list = list.child(self.section_header(format!("{label} ({})", rows.len()), cx));
-            for thread in rows.iter() {
-                list = list.child(self.thread_row(thread, false, cx));
+            list =
+                list.child(self.section_header(format!("{label} ({})", rows.len()), section, cx));
+            for (index, thread) in rows.iter().enumerate() {
+                list = list.child(self.thread_row(thread, false, Some((section, index)), cx));
             }
         }
         let archived: Vec<model::ThreadShell> = self
@@ -1005,7 +1160,7 @@ impl T3App {
             );
             if open {
                 for thread in archived.iter() {
-                    list = list.child(self.thread_row(thread, true, cx));
+                    list = list.child(self.thread_row(thread, true, None, cx));
                 }
             }
         }
@@ -1380,16 +1535,21 @@ fn main() {
     });
 }
 
-fn rename_item(app: WeakEntity<T3App>, thread_id: String, title: String) -> PopupMenuItem {
+fn rename_item(
+    app: WeakEntity<T3App>,
+    env: String,
+    thread_id: String,
+    title: String,
+) -> PopupMenuItem {
     PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
         let input = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
             state.set_value(title.clone(), window, cx);
             state
         });
-        let (app, thread_id) = (app.clone(), thread_id.clone());
+        let (app, thread_id, env) = (app.clone(), thread_id.clone(), env.clone());
         window.open_dialog(cx, move |dialog, _, _| {
-            let (app, thread_id, input) = (app.clone(), thread_id.clone(), input.clone());
+            let (app, thread_id, input, env) = (app.clone(), thread_id.clone(), input.clone(), env.clone());
             dialog
                 .title("Rename thread")
                 .child(Input::new(&input))
@@ -1400,18 +1560,24 @@ fn rename_item(app: WeakEntity<T3App>, thread_id: String, title: String) -> Popu
                         return false;
                     }
                     let command = json!({ "type": "thread.metadata.update", "threadId": thread_id, "title": title });
-                    app.update(cx, |this, cx| this.dispatch(command, cx)).ok();
+                    app.update(cx, |this, cx| this.dispatch_to(&env, command, cx)).ok();
                     true
                 })
         });
     })
 }
 
-fn delete_item(app: WeakEntity<T3App>, thread_id: String, title: String) -> PopupMenuItem {
+fn delete_item(
+    app: WeakEntity<T3App>,
+    env: String,
+    thread_id: String,
+    title: String,
+) -> PopupMenuItem {
     PopupMenuItem::new("Delete…").on_click(move |_, window, cx| {
-        let (app, thread_id, title) = (app.clone(), thread_id.clone(), title.clone());
+        let (app, thread_id, title, env) =
+            (app.clone(), thread_id.clone(), title.clone(), env.clone());
         window.open_alert_dialog(cx, move |dialog, _, _| {
-            let (app, thread_id) = (app.clone(), thread_id.clone());
+            let (app, thread_id, env) = (app.clone(), thread_id.clone(), env.clone());
             dialog
                 .confirm()
                 .title("Delete thread?")
@@ -1421,7 +1587,8 @@ fn delete_item(app: WeakEntity<T3App>, thread_id: String, title: String) -> Popu
                 .ok_text("Delete")
                 .on_ok(move |_, _, cx| {
                     let command = json!({ "type": "thread.delete", "threadId": thread_id });
-                    app.update(cx, |this, cx| this.dispatch(command, cx)).ok();
+                    app.update(cx, |this, cx| this.dispatch_to(&env, command, cx))
+                        .ok();
                     true
                 })
         });
