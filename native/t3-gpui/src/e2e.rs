@@ -248,14 +248,12 @@ async fn e2e_chat_diff_and_model() {
         )
         .await
         .unwrap();
-    let shell = env.shell.state.lock().unwrap();
     let rows = crate::palette::palette_rows(
-        &shell,
+        &env.shell.state.lock().unwrap(),
         found["matches"].as_array().unwrap(),
         "what you can do",
         |_| None,
     );
-    drop(shell);
     assert!(
         rows.iter()
             .any(|r| r.action == crate::palette::PaletteAction::Open(thread_id.clone())),
