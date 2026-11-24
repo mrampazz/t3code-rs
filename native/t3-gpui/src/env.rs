@@ -77,6 +77,7 @@ impl T3App {
                 self.thread_sub.take(),
                 self.git_sub.take(),
                 self.term_sub.take(),
+                self.setup_sub.take(),
             ]
             .into_iter()
             .flatten()

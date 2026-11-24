@@ -131,6 +131,11 @@ struct T3App {
     git_sub: Option<String>,
     /// Latest git action phase or outcome.
     git_progress: Option<SharedString>,
+    /// The open thread's local branches (`vcs.listRefs`).
+    thread_refs: Vec<serde_json::Value>,
+    /// The open thread's `WorktreeSetupSnapshot`, if it has one.
+    worktree_setup: Option<serde_json::Value>,
+    setup_sub: Option<String>,
     palette_open: bool,
     palette_input: Entity<InputState>,
     /// Server message matches for the current palette query.
@@ -287,6 +292,9 @@ impl T3App {
             git: Default::default(),
             git_sub: None,
             git_progress: None,
+            thread_refs: Vec::new(),
+            worktree_setup: None,
+            setup_sub: None,
             palette_open: false,
             palette_input,
             palette_matches: Vec::new(),
@@ -461,6 +469,7 @@ impl T3App {
         self.selected = Some(id);
         self.subscribe_thread(cx);
         self.subscribe_git(cx);
+        self.subscribe_worktree_setup(cx);
         if self.term.is_some() {
             self.open_terminal(false, cx);
         }
@@ -1733,6 +1742,15 @@ impl T3App {
                             ),
                         )
                     })
+                    .children(self.render_worktree_setup(cx).map(|card| {
+                        div()
+                            .w_full()
+                            .max_w(px(760.))
+                            .mx_auto()
+                            .px_4()
+                            .py_2()
+                            .child(card)
+                    }))
                     .children(items)
                     .children(
                         thread

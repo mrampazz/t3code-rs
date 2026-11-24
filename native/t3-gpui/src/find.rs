@@ -42,9 +42,13 @@ pub fn matching_rows(rows: &[Row<'_>], query: &str) -> Vec<usize> {
 }
 
 impl T3App {
-    /// The "Load earlier" row sits above the timeline rows in the scroll area.
+    /// Rows above the timeline in the scroll area: "Load earlier" and the setup card.
     fn history_row(&self) -> usize {
-        usize::from(self.thread.has_more_history)
+        let setup = self
+            .worktree_setup
+            .as_ref()
+            .is_some_and(|s| s["phase"] != "done");
+        usize::from(self.thread.has_more_history) + usize::from(setup)
     }
 
     pub(crate) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {

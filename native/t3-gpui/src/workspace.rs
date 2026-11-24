@@ -164,6 +164,129 @@ impl T3App {
     }
 }
 
+/// `worktreeSetupStageLabel` (packages/contracts/src/worktreeSetup.ts).
+pub fn stage_label(id: &str) -> &str {
+    match id {
+        "fetch" => "Fetch base branch",
+        "checkout" => "Check out files",
+        "submodules" => "Init submodules",
+        "setup-script" => "Run setup script",
+        "agent" => "Start agent",
+        other => other,
+    }
+}
+
+impl T3App {
+    /// Follows the open thread's worktree setup (null when it has none).
+    pub(crate) fn subscribe_worktree_setup(&mut self, cx: &mut Context<Self>) {
+        if let (Some(client), Some(old)) = (self.client(), self.setup_sub.take()) {
+            client.cancel(&old);
+        }
+        self.worktree_setup = None;
+        let (Some(client), Some(thread)) = (self.client(), self.selected.clone()) else {
+            return;
+        };
+        let (sub, mut rx) = client.request("subscribeWorktreeSetup", json!({ "threadId": thread }));
+        self.setup_sub = Some(sub.clone());
+        cx.spawn(async move |this, cx| {
+            while let Some(Ok(snapshot)) = rx.recv().await {
+                let alive = this.update(cx, |app, cx| {
+                    if app.setup_sub.as_deref() != Some(sub.as_str()) {
+                        return false;
+                    }
+                    app.worktree_setup = Some(snapshot).filter(|s| !s.is_null());
+                    cx.notify();
+                    true
+                });
+                if !matches!(alive, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The setup card while a worktree is being prepared or after it failed.
+    pub(crate) fn render_worktree_setup(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use gpui_kit::component::{ActiveTheme, v_flex};
+        let setup = self.worktree_setup.as_ref()?;
+        let phase = setup["phase"].as_str().unwrap_or("");
+        if phase == "done" {
+            return None;
+        }
+        let c = cx.theme().colors;
+        let thread = setup["threadId"].as_str().unwrap_or("").to_owned();
+        let mut card = v_flex()
+            .gap_1()
+            .p_3()
+            .rounded_md()
+            .border_1()
+            .border_color(if phase == "failed" {
+                c.danger
+            } else {
+                c.border
+            })
+            .text_sm()
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(crate::i18n::t("Setting up worktree")),
+            );
+        for stage in setup["stages"].as_array().into_iter().flatten() {
+            let (glyph, color) = match stage["status"].as_str() {
+                Some("done") => ("✓", c.success),
+                Some("running") => ("●", c.info),
+                Some("failed") => ("✕", c.danger),
+                Some("warning") => ("!", c.warning),
+                Some("skipped") => ("–", c.muted_foreground),
+                _ => ("○", c.muted_foreground),
+            };
+            let percent = stage["percent"]
+                .as_u64()
+                .map(|p| format!(" {p}%"))
+                .unwrap_or_default();
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .child(div().text_color(color).child(glyph))
+                    .child(crate::i18n::t(stage_label(
+                        stage["id"].as_str().unwrap_or(""),
+                    )))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(c.muted_foreground)
+                            .child(format!(
+                                "{}{percent}",
+                                stage["detail"].as_str().unwrap_or("")
+                            )),
+                    ),
+            );
+        }
+        if let Some(error) = setup["error"].as_str() {
+            card = card.child(div().text_color(c.danger).child(error.to_owned()));
+        }
+        if phase == "running" {
+            card = card.child(
+                Button::new("cancel-setup")
+                    .xsmall()
+                    .ghost()
+                    .label(crate::i18n::t("Cancel"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(client) = this.client() {
+                            let payload = json!({ "threadId": thread });
+                            on_tokio(
+                                async move { client.call("worktreeSetup.cancel", payload).await },
+                            );
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        Some(card.into_any_element())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{default_base_ref, strategy};

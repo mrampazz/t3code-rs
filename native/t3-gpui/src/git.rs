@@ -86,7 +86,87 @@ impl T3App {
     }
 
     /// Lives as long as the thread selection; replaced on switch or reconnect.
+    /// Switches the open thread's branch (web: `BranchToolbarBranchSelector`): a branch already
+    /// checked out in another worktree moves the thread there; otherwise the thread's folder
+    /// checks it out. Either way the thread records it with `thread.metadata.update`.
+    pub(crate) fn switch_thread_branch(
+        &mut self,
+        branch: String,
+        worktree: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread) = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
+            .cloned()
+        else {
+            return;
+        };
+        if thread.is_running() {
+            self.error = Some(crate::i18n::t("Stop the thread before switching branches.").into());
+            return cx.notify();
+        }
+        let (Some(client), Some(cwd)) = (self.client(), self.thread_cwd()) else {
+            return;
+        };
+        let mut update =
+            json!({ "type": "thread.metadata.update", "threadId": thread.id, "branch": branch });
+        if let Some(path) =
+            worktree.filter(|p| Some(p) != thread.worktree_path.as_ref() && *p != cwd)
+        {
+            update["worktreePath"] = json!(path);
+            return self.dispatch(update, cx);
+        }
+        self.git_progress = Some(format!("Switching to {branch}…").into());
+        cx.notify();
+        let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
+        cx.spawn(async move |this, cx| {
+            let payload = json!({ "cwd": cwd, "refName": branch });
+            let result = on_tokio(async move { client.call("vcs.switchRef", payload).await }).await;
+            this.update(cx, |app, cx| {
+                match result {
+                    Ok(Ok(_)) => {
+                        app.git_progress = None;
+                        app.dispatch_to(&env, update, cx);
+                    }
+                    Ok(Err(e)) => app.git_progress = Some(format!("Switch failed: {e}").into()),
+                    Err(e) => app.git_progress = Some(format!("Switch failed: {e}").into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The open thread's local branches, for the branch menu.
+    fn load_thread_refs(&mut self, cx: &mut Context<Self>) {
+        self.thread_refs.clear();
+        let (Some(client), Some(cwd), Some(thread)) =
+            (self.client(), self.thread_cwd(), self.selected.clone())
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let payload = json!({ "cwd": cwd, "refKind": "local", "limit": 100 });
+            if let Ok(Ok(result)) =
+                on_tokio(async move { client.call("vcs.listRefs", payload).await }).await
+            {
+                this.update(cx, |app, cx| {
+                    if app.selected.as_deref() == Some(thread.as_str()) {
+                        app.thread_refs = result["refs"].as_array().cloned().unwrap_or_default();
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn subscribe_git(&mut self, cx: &mut Context<Self>) {
+        self.load_thread_refs(cx);
         if let (Some(client), Some(old)) = (self.client(), self.git_sub.take()) {
             client.cancel(&old);
         }
@@ -209,7 +289,49 @@ impl T3App {
             .gap_2()
             .text_xs()
             .text_color(c.muted_foreground)
-            .child(format!("⎇ {}", self.git.branch().unwrap_or("detached")))
+            .child({
+                let refs: Vec<(String, Option<String>)> = self
+                    .thread_refs
+                    .iter()
+                    .filter_map(|r| {
+                        Some((
+                            r["name"].as_str()?.to_owned(),
+                            r["worktreePath"].as_str().map(str::to_owned),
+                        ))
+                    })
+                    .collect();
+                let current = self.git.branch().map(str::to_owned);
+                let app = cx.entity().downgrade();
+                Button::new("thread-branch")
+                    .xsmall()
+                    .ghost()
+                    .label(format!(
+                        "⎇ {}",
+                        current.clone().unwrap_or_else(|| "detached".into())
+                    ))
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for (name, worktree) in refs.iter().take(60) {
+                            let (app, name, worktree) =
+                                (app.clone(), name.clone(), worktree.clone());
+                            let checked = current.as_deref() == Some(name.as_str());
+                            menu = menu.item(
+                                PopupMenuItem::new(name.clone()).checked(checked).on_click(
+                                    move |_, _, cx| {
+                                        app.update(cx, |this, cx| {
+                                            this.switch_thread_branch(
+                                                name.clone(),
+                                                worktree.clone(),
+                                                cx,
+                                            )
+                                        })
+                                        .ok();
+                                    },
+                                ),
+                            );
+                        }
+                        menu
+                    })
+            })
             .when(files > 0, |row| {
                 row.child(format!("{files} changed"))
                     .child(div().text_color(c.success).child(format!("+{insertions}")))
