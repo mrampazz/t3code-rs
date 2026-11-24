@@ -125,6 +125,8 @@ struct T3App {
     /// Drops search responses for an older query.
     palette_generation: u64,
     show_archived: bool,
+    /// A one-second re-render is scheduled for the working timer.
+    working_tick: std::cell::Cell<bool>,
     /// The selected thread's open still has to be reported with `thread.visit`.
     visit_open_pending: bool,
     visit_sent_at: Option<std::time::Instant>,
@@ -243,6 +245,7 @@ impl T3App {
             palette_matches: Vec::new(),
             palette_generation: 0,
             show_archived: false,
+            working_tick: Default::default(),
             visit_open_pending: false,
             visit_sent_at: None,
             visit_timer: false,
@@ -1356,7 +1359,15 @@ impl T3App {
                             .px_4()
                             .py_4()
                             .gap_4()
-                            .children(items),
+                            .children(items)
+                            .children(
+                                thread
+                                    .activity_run_started_at
+                                    .clone()
+                                    .or_else(|| thread.latest_run_started_at.clone())
+                                    .filter(|_| thread.is_running())
+                                    .map(|started| self.render_working(&started, cx)),
+                            ),
                     ),
             )
             .children(

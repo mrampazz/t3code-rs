@@ -698,11 +698,55 @@ pub(crate) fn summarize_group(items: &[&TurnItem]) -> String {
     }
 }
 
+/// `formatWorkingTimerNow`: seconds under a minute, then `formatDuration` ("1m 3s", "1h 2m 3s").
+/// shortcut: uses the client clock; the web corrects by the server clock offset.
+pub(crate) fn working_timer(seconds: u64) -> String {
+    let (h, m, s) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    match (h, m, s) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, 0, 0) => format!("{h}h"),
+        (h, 0, s) => format!("{h}h {s}s"),
+        (h, m, s) => format!("{h}h {m}m {s}s"),
+    }
+}
+
+impl T3App {
+    /// "Working for 1m 3s" under a running thread; re-renders once a second while shown.
+    pub(crate) fn render_working(&self, started: &str, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors;
+        let elapsed = started
+            .parse::<jiff::Timestamp>()
+            .map(|t| (jiff::Timestamp::now().as_second() - t.as_second()).max(0) as u64)
+            .unwrap_or(0);
+        if !self.working_tick.replace(true) {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                this.update(cx, |app, cx| {
+                    app.working_tick.set(false);
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        h_flex()
+            .gap_2()
+            .text_sm()
+            .text_color(c.muted_foreground)
+            .child(div().text_color(c.info).child("●"))
+            .child(format!("Working for {}", working_timer(elapsed)))
+            .into_any_element()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         OUTPUT_TAIL_CHARS, Row, TurnItem, approval_options, group_rows, summarize_group, tail,
-        tool_parts,
+        tool_parts, working_timer,
     };
     use serde_json::{Value, json};
 
@@ -796,5 +840,14 @@ mod tests {
             summarize_group(&thoughts.iter().collect::<Vec<_>>()),
             "Thought (×2)"
         );
+    }
+
+    #[test]
+    fn formats_the_working_timer_like_the_web() {
+        let out: Vec<String> = [0, 59, 63, 3600, 3605, 3723]
+            .into_iter()
+            .map(working_timer)
+            .collect();
+        assert_eq!(out, ["0s", "59s", "1m 3s", "1h", "1h 5s", "1h 2m 3s"]);
     }
 }

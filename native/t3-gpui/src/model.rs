@@ -64,6 +64,10 @@ pub struct ThreadShell {
     pub last_visited_at: Option<String>,
     #[serde(default)]
     pub latest_run_completed_at: Option<String>,
+    #[serde(default)]
+    pub activity_run_started_at: Option<String>,
+    #[serde(default)]
+    pub latest_run_started_at: Option<String>,
 }
 
 impl ThreadShell {
