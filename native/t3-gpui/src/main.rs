@@ -1,4 +1,5 @@
 mod auth;
+mod diff_panel;
 mod model;
 mod rpc;
 mod timeline;
@@ -84,6 +85,13 @@ struct T3App {
     /// Timeline rows the user opened.
     expanded: HashSet<String>,
     show_archived: bool,
+    diff_open: bool,
+    /// `None` = whole thread, `Some(turn)` = one turn.
+    diff_target: Option<u64>,
+    diff_state: Option<Entity<gpui_kit::component::diff::DiffState>>,
+    diff_note: Option<SharedString>,
+    /// Drops responses for a diff the user has since replaced.
+    diff_generation: u64,
     /// Selected option values per `requestId:questionId`.
     input_picks: std::collections::HashMap<String, Vec<String>>,
     transcript_scroll: ScrollHandle,
@@ -150,6 +158,11 @@ impl T3App {
             thread_sub: None,
             expanded: HashSet::new(),
             show_archived: false,
+            diff_open: false,
+            diff_target: None,
+            diff_state: None,
+            diff_note: None,
+            diff_generation: 0,
             input_picks: Default::default(),
             transcript_scroll: ScrollHandle::new(),
             _subscriptions,
@@ -374,6 +387,10 @@ impl T3App {
         self.draft_project = None;
         if self.selected.as_deref() != Some(id.as_str()) {
             self.thread = ThreadView::default();
+            self.diff_generation += 1;
+            self.diff_target = None;
+            self.diff_state = None;
+            self.diff_note = None;
         }
         self.selected = Some(id);
         self.subscribe_thread(cx);
@@ -400,7 +417,16 @@ impl T3App {
                         return false;
                     }
                     match item {
-                        Ok(item) => app.thread.apply(&item),
+                        Ok(item) => {
+                            let before = app.thread.latest_turn();
+                            app.thread.apply(&item);
+                            if app.diff_open
+                                && app.diff_target.is_none()
+                                && app.thread.latest_turn() != before
+                            {
+                                app.load_diff(None, cx);
+                            }
+                        }
                         Err(e) => app.error = Some(e.to_string().into()),
                     }
                     app.transcript_scroll.scroll_to_bottom();
@@ -871,6 +897,14 @@ impl T3App {
                             .child(self.config.label(&thread.model_selection)),
                     )
                     .child(div().flex_1())
+                    .child(
+                        Button::new("diff-toggle")
+                            .small()
+                            .label("Diff")
+                            .when(self.diff_open, |b| b.primary())
+                            .when(!self.diff_open, |b| b.ghost())
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_diff(cx))),
+                    )
                     .when(thread.is_running(), |header| {
                         header.child(
                             Button::new("stop")
@@ -950,7 +984,10 @@ impl Render for T3App {
         match self.screen {
             Screen::Connected => root
                 .child(self.render_sidebar(cx))
-                .child(self.render_thread(cx)),
+                .child(self.render_thread(cx))
+                .when(self.diff_open && self.selected.is_some(), |root| {
+                    root.child(self.render_diff_panel(cx))
+                }),
             _ => root.child(self.render_pair(cx)),
         }
     }

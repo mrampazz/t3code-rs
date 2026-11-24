@@ -253,6 +253,37 @@ pub struct Row {
     pub item: TurnItem,
 }
 
+/// A turn's captured checkpoint; `turn` is the `appRunOrdinal` diff ranges use.
+#[derive(Clone, Debug)]
+pub struct Checkpoint {
+    pub id: String,
+    pub turn: u64,
+    pub files: usize,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+impl Checkpoint {
+    /// `deriveThreadCheckpointSummaries` skips checkpoints without a run or ordinal.
+    fn from_value(v: &Value) -> Option<Self> {
+        v["runId"].as_str()?;
+        let files = v["files"].as_array().cloned().unwrap_or_default();
+        let totals = &v["filesTotal"];
+        let sum = |key: &str| {
+            totals[key]
+                .as_u64()
+                .unwrap_or_else(|| files.iter().filter_map(|f| f[key].as_u64()).sum())
+        };
+        Some(Self {
+            id: v["id"].as_str()?.to_owned(),
+            turn: v["appRunOrdinal"].as_u64()?,
+            files: totals["count"].as_u64().map_or(files.len(), |n| n as usize),
+            additions: sum("additions"),
+            deletions: sum("deletions"),
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Run {
     status: String,
@@ -266,11 +297,25 @@ pub struct ThreadView {
     runs: HashMap<String, Run>,
     /// runId -> root node ids of superseded attempts.
     superseded: HashMap<String, HashSet<String>>,
+    /// Newest turn first.
+    pub checkpoints: Vec<Checkpoint>,
     /// Resume cursor for `afterSequence`; 0 until the first snapshot.
     pub sequence: u64,
 }
 
 impl ThreadView {
+    fn apply_checkpoint(&mut self, v: &Value) {
+        let Some(checkpoint) = Checkpoint::from_value(v) else {
+            return;
+        };
+        upsert(&mut self.checkpoints, checkpoint, |c| &c.id);
+        self.checkpoints.sort_by_key(|c| std::cmp::Reverse(c.turn));
+    }
+
+    pub fn latest_turn(&self) -> Option<u64> {
+        self.checkpoints.first().map(|c| c.turn)
+    }
+
     pub fn apply(&mut self, item: &Value) {
         match item["kind"].as_str() {
             Some("snapshot") => {
@@ -283,6 +328,10 @@ impl ThreadView {
                 }
                 for attempt in projection["attempts"].as_array().into_iter().flatten() {
                     self.apply_attempt(attempt);
+                }
+                self.checkpoints.clear();
+                for checkpoint in projection["checkpoints"].as_array().into_iter().flatten() {
+                    self.apply_checkpoint(checkpoint);
                 }
                 self.rows = projection["visibleTurnItems"]
                     .as_array()
@@ -309,6 +358,7 @@ impl ThreadView {
                     Some("run-attempt.created" | "run-attempt.updated") => {
                         self.apply_attempt(payload)
                     }
+                    Some("checkpoint.captured") => self.apply_checkpoint(payload),
                     _ => {}
                 }
             }
@@ -594,5 +644,30 @@ mod tests {
             build_answers(&questions, |_| vec![], " typed ").unwrap()["color"],
             "typed"
         );
+    }
+
+    #[test]
+    fn tracks_checkpoints_newest_first() {
+        let mut view = ThreadView::default();
+        let cp = |id: &str, turn: Value, run: Value| {
+            json!({"id": id, "runId": run, "appRunOrdinal": turn,
+            "files": [{"path": "a", "kind": "modified", "additions": 2, "deletions": 1}, {"path": "b", "kind": "added", "additions": 3, "deletions": 0}]})
+        };
+        view.apply(&json!({"kind": "snapshot", "snapshotSequence": 1, "projection": {"runs": [], "attempts": [], "visibleTurnItems": [],
+            "checkpoints": [cp("c1", json!(1), json!("r1")), cp("base", json!(null), json!(null))]}}));
+        view.apply(&json!({"kind": "event", "sequence": 2, "event": {"type": "checkpoint.captured", "payload": cp("c2", json!(2), json!("r2"))}}));
+        assert_eq!(
+            view.checkpoints.iter().map(|c| c.turn).collect::<Vec<_>>(),
+            [2, 1]
+        );
+        assert_eq!(
+            (
+                view.checkpoints[0].files,
+                view.checkpoints[0].additions,
+                view.checkpoints[0].deletions
+            ),
+            (2, 5, 1)
+        );
+        assert_eq!(view.latest_turn(), Some(2));
     }
 }
