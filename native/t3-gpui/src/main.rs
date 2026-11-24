@@ -125,6 +125,10 @@ struct T3App {
     /// Drops search responses for an older query.
     palette_generation: u64,
     show_archived: bool,
+    /// The selected thread's open still has to be reported with `thread.visit`.
+    visit_open_pending: bool,
+    visit_sent_at: Option<std::time::Instant>,
+    visit_timer: bool,
     settings_open: bool,
     settings_status: Option<SharedString>,
     /// Client preferences (`settings::load_prefs`).
@@ -239,6 +243,9 @@ impl T3App {
             palette_matches: Vec::new(),
             palette_generation: 0,
             show_archived: false,
+            visit_open_pending: false,
+            visit_sent_at: None,
+            visit_timer: false,
             settings_open: false,
             settings_status: None,
             prefs: settings::load_prefs(),
@@ -356,6 +363,7 @@ impl T3App {
                             let Ok(true) = this.update(cx, |app, cx| {
                                 let removals = app.shell.removals;
                                 app.shell.apply(&item);
+                                app.maybe_visit(cx);
                                 if app.shell.removals != removals || item["kind"] == "synchronized"
                                 {
                                     app.load_archived(cx);
@@ -513,6 +521,10 @@ impl T3App {
     }
 
     fn select_thread(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.selected.as_deref() != Some(id.as_str()) {
+            self.visit_open_pending = true;
+            self.visit_sent_at = None;
+        }
         self.draft_project = None;
         self.settings_open = false;
         if self.selected.as_deref() != Some(id.as_str()) {
@@ -529,6 +541,7 @@ impl T3App {
         if self.term.is_some() {
             self.open_terminal(false, cx);
         }
+        self.maybe_visit(cx);
     }
 
     /// (Re)subscribes the selected thread, resuming from its cursor when it already has data.
@@ -816,6 +829,46 @@ impl T3App {
         cx.stop_propagation();
     }
 
+    /// `thread.visit` like client-runtime's threadVisits: the open goes out at once, later
+    /// activity on the open thread at most every 10s, so its unread state clears.
+    fn maybe_visit(&mut self, cx: &mut Context<Self>) {
+        const THROTTLE: Duration = Duration::from_secs(10);
+        let Some(thread) = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))
+        else {
+            return;
+        };
+        let opened = self.visit_open_pending;
+        if !opened && !thread.needs_visit() {
+            return;
+        }
+        let elapsed = self.visit_sent_at.map_or(THROTTLE, |at| at.elapsed());
+        if !opened && elapsed < THROTTLE {
+            if !self.visit_timer {
+                self.visit_timer = true;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(THROTTLE - elapsed).await;
+                    this.update(cx, |app, cx| {
+                        app.visit_timer = false;
+                        app.maybe_visit(cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            return;
+        }
+        let mut command = json!({ "type": "thread.visit", "threadId": thread.id, "visitedAt": thread.updated_at });
+        if opened {
+            command["opened"] = json!(true);
+        }
+        self.visit_open_pending = false;
+        self.visit_sent_at = Some(std::time::Instant::now());
+        self.dispatch(command, cx);
+    }
+
     fn stop(&mut self, cx: &mut Context<Self>) {
         let Some(thread) = self
             .selected
@@ -932,7 +985,11 @@ impl T3App {
                 div()
                     .size(px(6.))
                     .rounded_full()
-                    .when(thread.is_running(), |d| d.bg(theme.success)),
+                    .when(thread.is_running(), |d| d.bg(theme.success))
+                    .when(
+                        !thread.is_running() && !selected && thread.has_unseen_completion(),
+                        |d| d.bg(theme.info),
+                    ),
             )
             .child(div().flex_1().truncate().child(thread.title.clone()))
             .children(project.map(|p| {

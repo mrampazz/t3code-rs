@@ -60,9 +60,40 @@ pub struct ThreadShell {
     pub latest_user_message_at: Option<String>,
     #[serde(default)]
     pub pending_runtime_request: Value,
+    #[serde(default)]
+    pub last_visited_at: Option<String>,
+    #[serde(default)]
+    pub latest_run_completed_at: Option<String>,
 }
 
 impl ThreadShell {
+    /// `hasUnseenCompletion` (apps/web/src/components/Sidebar.logic.ts): the latest run finished
+    /// after the last visit. Interrupted and cancelled runs, and never-visited threads, are not unread.
+    pub fn has_unseen_completion(&self) -> bool {
+        if matches!(self.status.as_str(), Some("interrupted" | "cancelled")) {
+            return false;
+        }
+        let ms = |s: &Option<String>| s.as_deref().and_then(|s| s.parse::<jiff::Timestamp>().ok());
+        match (ms(&self.latest_run_completed_at), ms(&self.last_visited_at)) {
+            (Some(done), Some(seen)) => done > seen,
+            (Some(_), None) if self.last_visited_at.is_some() => true,
+            _ => false,
+        }
+    }
+
+    /// The thread changed after the last recorded visit.
+    pub fn needs_visit(&self) -> bool {
+        let ms = |s: Option<&str>| s.and_then(|s| s.parse::<jiff::Timestamp>().ok());
+        match (
+            ms(Some(&self.updated_at)),
+            ms(self.last_visited_at.as_deref()),
+        ) {
+            (Some(updated), Some(seen)) => updated > seen,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_running(&self) -> bool {
         matches!(
             self.status.as_str(),
@@ -918,5 +949,32 @@ mod tests {
             view.rollback_command("t", 2, false).unwrap()["checkpointId"],
             "c2"
         );
+    }
+
+    #[test]
+    fn unread_follows_the_web_rule() {
+        let t = |extra: Value| -> ThreadShell {
+            let mut v = json!({"id": "a", "projectId": "p", "title": "a", "status": "idle", "updatedAt": "2026-01-02T00:00:00Z"});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(v).unwrap()
+        };
+        let done = "2026-01-02T00:00:00Z";
+        assert!(
+            t(json!({"latestRunCompletedAt": done, "lastVisitedAt": "2026-01-01T00:00:00Z"}))
+                .has_unseen_completion()
+        );
+        assert!(
+            !t(json!({"latestRunCompletedAt": done, "lastVisitedAt": "2026-01-03T00:00:00Z"}))
+                .has_unseen_completion()
+        );
+        assert!(
+            !t(json!({"latestRunCompletedAt": done})).has_unseen_completion(),
+            "never visited"
+        );
+        assert!(!t(json!({"status": "interrupted", "latestRunCompletedAt": done, "lastVisitedAt": "2026-01-01T00:00:00Z"})).has_unseen_completion());
+        assert!(t(json!({"lastVisitedAt": "2026-01-01T00:00:00Z"})).needs_visit());
+        assert!(!t(json!({"lastVisitedAt": "2026-01-02T00:00:00Z"})).needs_visit());
     }
 }
