@@ -53,6 +53,12 @@ pub fn toggle_instance(settings: &Value, instance_id: &str, driver: &str, enable
 impl T3App {
     pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_open = !self.settings_open;
+        self.new_pairing_url = None;
+        if self.settings_open {
+            self.subscribe_access(cx);
+        } else {
+            self.release_access();
+        }
         cx.notify();
     }
 
@@ -264,6 +270,8 @@ impl T3App {
                                 .on_click(cx.listener(|this, _, window, cx| this.set_theme(true, window, cx))),
                         ),
                 )
+                .child(section("Sharing & access"))
+                .child(self.render_access(cx))
                 .child(section("Servers"))
                 .children(self.envs.iter().enumerate().map(|(i, e)| {
                     let active = e.key == server;
@@ -288,7 +296,10 @@ impl T3App {
                                 .when(active, |b| b.primary())
                                 .when(!active, |b| b.ghost())
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.release_access();
                                     this.activate(&switch_key, cx);
+                                    this.new_pairing_url = None;
+                                    this.subscribe_access(cx);
                                     cx.notify();
                                 })),
                         )

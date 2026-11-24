@@ -264,6 +264,7 @@ impl T3App {
             self.selected = None;
             self.draft_project = None;
             self.settings_open = false;
+            self.release_access();
             self.thread = Default::default();
             self.active = None;
         }

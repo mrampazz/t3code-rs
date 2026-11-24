@@ -29,6 +29,7 @@ impl T3App {
     pub(crate) fn open_add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.adding_project = true;
         self.settings_open = false;
+        self.release_access();
         self.project_suggestions.clear();
         self.project_path.update(cx, |input, cx| {
             input.set_value("", window, cx);

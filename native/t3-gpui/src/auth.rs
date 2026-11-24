@@ -251,6 +251,38 @@ pub async fn get_json(session: &Session, path_and_query: &str) -> Result<serde_j
     Ok(res.json().await?)
 }
 
+/// An authenticated JSON POST to the environment's HTTP API (Bearer, or DPoP with a proof).
+pub async fn post_json(
+    session: &Session,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let url = format!("{}{path}", session.base_url);
+    let mut request = reqwest::Client::new().post(&url).json(body);
+    request = if session.is_dpop() {
+        request
+            .header("authorization", format!("DPoP {}", session.access_token))
+            .header(
+                "dpop",
+                crate::dpop::proof("POST", &url, Some(&session.access_token)),
+            )
+    } else {
+        request.bearer_auth(&session.access_token)
+    };
+    let res = request.send().await?;
+    if matches!(res.status().as_u16(), 401 | 403) {
+        return Err(rejected(res));
+    }
+    if !res.status().is_success() {
+        bail!(
+            "{path} returned {}: {}",
+            res.status(),
+            res.text().await.unwrap_or_default()
+        );
+    }
+    Ok(res.json().await.unwrap_or(serde_json::Value::Null))
+}
+
 fn config_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("HOME")?).join(".config/t3-gpui"))
 }

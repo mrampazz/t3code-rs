@@ -1,3 +1,4 @@
+mod access;
 mod attachments;
 mod auth;
 mod composer;
@@ -165,6 +166,10 @@ struct T3App {
     visit_timer: bool,
     settings_open: bool,
     settings_status: Option<SharedString>,
+    access: access::Access,
+    access_sub: Option<String>,
+    /// The pairing link just created in Settings, to copy.
+    new_pairing_url: Option<SharedString>,
     /// Client preferences (`settings::load_prefs`).
     prefs: serde_json::Value,
     /// Wake time a re-render is already scheduled for.
@@ -319,6 +324,9 @@ impl T3App {
             visit_timer: false,
             settings_open: false,
             settings_status: None,
+            access: Default::default(),
+            access_sub: None,
+            new_pairing_url: None,
             prefs: settings::load_prefs(),
             snooze_wake_at: None,
             diff_open: false,
@@ -381,6 +389,7 @@ impl T3App {
         self.draft_project = Some(project_id);
         self.draft_model = None;
         self.settings_open = false;
+        self.release_access();
         self.draft_runtime_mode = self.config().settings["defaultRuntimeMode"]
             .as_str()
             .unwrap_or("full-access")
@@ -459,6 +468,7 @@ impl T3App {
         }
         self.draft_project = None;
         self.settings_open = false;
+        self.release_access();
         if !same_env || self.selected.as_deref() != Some(id.as_str()) {
             self.thread = ThreadView::default();
             self.find_open = false;
