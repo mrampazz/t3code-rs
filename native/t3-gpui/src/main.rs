@@ -248,11 +248,11 @@ impl T3App {
                         }) else {
                             return;
                         };
-                        let payload = if after > 0 {
-                            json!({ "afterSequence": after })
-                        } else {
-                            json!({})
-                        };
+                        // The server sends `synchronized` only when asked; backoff resets on it.
+                        let mut payload = json!({ "requestCompletionMarker": true });
+                        if after > 0 {
+                            payload["afterSequence"] = json!(after);
+                        }
                         let (_, mut shell) =
                             client.request("orchestration.subscribeShell", payload);
                         let mut ended = "connection closed".to_string();
@@ -265,7 +265,12 @@ impl T3App {
                                 }
                             };
                             let Ok(true) = this.update(cx, |app, cx| {
+                                let removals = app.shell.removals;
                                 app.shell.apply(&item);
+                                if app.shell.removals != removals || item["kind"] == "synchronized"
+                                {
+                                    app.load_archived(cx);
+                                }
                                 cx.notify();
                                 alive(app)
                             }) else {
@@ -300,6 +305,29 @@ impl T3App {
                     return;
                 };
                 cx.background_executor().timer(delay).await;
+            }
+        })
+        .detach();
+    }
+
+    /// Refreshes the Archived section; called on sync and whenever the shell reports a removal.
+    fn load_archived(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = on_tokio(async move {
+                client
+                    .call("orchestration.getArchivedShellSnapshot", json!({}))
+                    .await
+            })
+            .await;
+            if let Ok(Ok(snapshot)) = result {
+                this.update(cx, |app, cx| {
+                    app.shell.set_archived(&snapshot);
+                    cx.notify();
+                })
+                .ok();
             }
         })
         .detach();
@@ -404,7 +432,7 @@ impl T3App {
         if let Some(old) = self.thread_sub.take() {
             client.cancel(&old);
         }
-        let mut payload = json!({ "threadId": id });
+        let mut payload = json!({ "threadId": id, "requestCompletionMarker": true });
         if self.thread.sequence > 0 {
             payload["afterSequence"] = json!(self.thread.sequence);
         }
@@ -1071,7 +1099,10 @@ fn backoff(attempt: u32) -> Duration {
 }
 
 #[cfg(test)]
-mod e2e {
+mod e2e;
+
+#[cfg(test)]
+mod tests {
     #[test]
     fn backoff_is_bounded() {
         for attempt in 0..20 {
@@ -1079,29 +1110,5 @@ mod e2e {
             assert!((250..=30_000).contains(&d), "{attempt}: {d}");
         }
         assert!(super::backoff(0).as_millis() <= 500);
-    }
-
-    /// `T3_PAIRING_URL=… cargo test e2e -- --ignored --nocapture` against a dev server.
-    #[tokio::test]
-    #[ignore]
-    async fn pairs_and_streams_shell() {
-        let url = std::env::var("T3_PAIRING_URL").expect("T3_PAIRING_URL");
-        let session = crate::auth::pair(&url).await.unwrap();
-        let client =
-            crate::rpc::RpcClient::connect(&crate::auth::socket_url(&session).await.unwrap())
-                .await
-                .unwrap();
-        let (_, mut rx) = client.request("orchestration.subscribeShell", serde_json::json!({}));
-        let mut shell = crate::model::Shell::default();
-        while !shell.synced {
-            let item = rx.recv().await.unwrap().unwrap();
-            println!("shell item: {}", item["kind"]);
-            shell.apply(&item);
-        }
-        println!(
-            "projects={} threads={}",
-            shell.projects.len(),
-            shell.threads.len()
-        );
     }
 }

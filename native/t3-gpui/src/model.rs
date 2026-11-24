@@ -49,7 +49,10 @@ impl ThreadShell {
 pub struct Shell {
     pub projects: Vec<Project>,
     pub threads: Vec<ThreadShell>,
+    /// Loaded with `getArchivedShellSnapshot`; the stream reports archiving as a removal.
     pub archived: Vec<ThreadShell>,
+    /// Bumped per `thread.removed`, which is when the archive list goes stale.
+    pub removals: u64,
     pub synced: bool,
     /// Resume cursor for `afterSequence`; 0 until the first snapshot.
     pub sequence: u64,
@@ -66,7 +69,6 @@ impl Shell {
                 self.sequence = snap["snapshotSequence"].as_u64().unwrap_or(0);
                 self.projects = decode_vec(&snap["projects"]);
                 self.threads = decode_vec(&snap["threads"]);
-                self.archived = decode_vec(&snap["archivedThreads"]);
             }
             Some("synchronized") => self.synced = true,
             Some("project.updated") => {
@@ -94,6 +96,7 @@ impl Shell {
                 let id = item["threadId"].as_str().unwrap_or_default();
                 self.threads.retain(|t| t.id != id);
                 self.archived.retain(|t| t.id != id);
+                self.removals += 1;
             }
             _ => {}
         }
@@ -103,6 +106,12 @@ impl Shell {
                 (b.pinned_at.is_some(), &b.updated_at).cmp(&(a.pinned_at.is_some(), &a.updated_at))
             });
         }
+    }
+
+    pub fn set_archived(&mut self, snapshot: &Value) {
+        self.archived = decode_vec(&snapshot["threads"]);
+        self.archived
+            .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     }
 
     pub fn threads_of<'a>(&'a self, project_id: &'a str) -> impl Iterator<Item = &'a ThreadShell> {
@@ -121,7 +130,32 @@ pub struct Provider {
     #[serde(default)]
     pub availability: Value,
     #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub installed: bool,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub auth: Value,
+    #[serde(default)]
+    pub models_retained: bool,
+    #[serde(default)]
     pub models: Vec<ProviderModel>,
+}
+
+impl Provider {
+    /// `isProviderInstancePickerReady` (apps/web/src/providerInstances.ts), minus sub-providers.
+    pub fn picker_ready(&self) -> bool {
+        if !self.enabled || self.availability == "unavailable" {
+            return false;
+        }
+        self.status == "ready"
+            || (self.status == "warning"
+                && (self.models_retained
+                    || (self.installed
+                        && self.auth["status"] == "authenticated"
+                        && !self.models.is_empty())))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -170,7 +204,7 @@ impl ServerConfig {
     pub fn model_options(&self) -> Vec<(String, Value)> {
         self.providers
             .iter()
-            .filter(|p| p.availability != "unavailable")
+            .filter(|p| p.picker_ready())
             .flat_map(|p| {
                 p.models.iter().map(move |m| {
                     let selection =
@@ -208,7 +242,7 @@ impl ServerConfig {
         let provider = self
             .providers
             .iter()
-            .find(|p| p.availability != "unavailable" && !p.models.is_empty())?;
+            .find(|p| p.picker_ready() && !p.models.is_empty())?;
         let model = provider
             .models
             .iter()
@@ -539,6 +573,10 @@ mod tests {
         assert_eq!(shell.threads[0].id, "a");
         shell.apply(&json!({"kind": "thread.updated", "sequence": 3, "location": "archive", "thread": thread("a", "3")}));
         assert_eq!(shell.archived.len(), 1);
+        shell.apply(&json!({"kind": "thread.removed", "sequence": 3, "location": "active", "threadId": "gone"}));
+        assert_eq!(shell.removals, 1);
+        shell.set_archived(&json!({"threads": [thread("x", "1"), thread("y", "2")]}));
+        assert_eq!(shell.archived[0].id, "y");
         shell.apply(&json!({"kind": "project.removed", "sequence": 4, "projectId": "p"}));
         assert_eq!(
             shell
@@ -556,8 +594,9 @@ mod tests {
     fn server_config_picks_default_model() {
         let mut config = ServerConfig::default();
         config.apply(&json!({"type": "snapshot", "version": 1, "config": {"providers": [
-            {"instanceId": "off", "availability": "unavailable", "models": [{"slug": "x", "name": "X", "isCustom": false}]},
-            {"instanceId": "codex", "models": [{"slug": "a", "name": "A", "isCustom": false}, {"slug": "b", "name": "B", "isCustom": false, "isDefault": true}]},
+            {"instanceId": "off", "enabled": true, "status": "ready", "availability": "unavailable", "models": [{"slug": "x", "name": "X", "isCustom": false}]},
+            {"instanceId": "warn", "enabled": true, "status": "error", "models": [{"slug": "w", "name": "W", "isCustom": false}]},
+            {"instanceId": "codex", "enabled": true, "status": "ready", "models": [{"slug": "a", "name": "A", "isCustom": false}, {"slug": "b", "name": "B", "isCustom": false, "isDefault": true}]},
         ]}}));
         assert_eq!(
             config.model_for(None),
