@@ -10,6 +10,7 @@ use std::time::Duration;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, Disableable, h_flex, v_flex};
@@ -80,6 +81,7 @@ struct T3App {
     thread_sub: Option<String>,
     /// Timeline rows the user opened.
     expanded: HashSet<String>,
+    show_archived: bool,
     transcript_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -137,6 +139,7 @@ impl T3App {
             thread: ThreadView::default(),
             thread_sub: None,
             expanded: HashSet::new(),
+            show_archived: false,
             transcript_scroll: ScrollHandle::new(),
             _subscriptions,
         };
@@ -605,8 +608,83 @@ impl T3App {
         )
     }
 
+    fn thread_row(
+        &self,
+        thread: &model::ThreadShell,
+        archived: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().colors;
+        let id = thread.id.clone();
+        let selected = self.selected.as_deref() == Some(id.as_str());
+        let app = cx.entity().downgrade();
+        let (pinned, settled) = (thread.pinned_at.is_some(), thread.settled_at.is_some());
+        let menu_id = id.clone();
+        h_flex()
+            .id(SharedString::from(format!("thread-{id}")))
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_sm()
+            .cursor_pointer()
+            .when(archived, |d| d.text_color(theme.muted_foreground))
+            .when(selected, |d| {
+                d.bg(theme.sidebar_accent)
+                    .text_color(theme.sidebar_accent_foreground)
+            })
+            .hover(|d| d.bg(theme.sidebar_accent))
+            .child(
+                div()
+                    .size(px(6.))
+                    .rounded_full()
+                    .when(thread.is_running(), |d| d.bg(theme.success)),
+            )
+            .child(div().flex_1().truncate().child(thread.title.clone()))
+            .when(pinned, |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("📌"),
+                )
+            })
+            .on_click(cx.listener(move |this, _, _, cx| this.select_thread(id.clone(), cx)))
+            .context_menu(move |menu, _, _| {
+                let action = |label: &str, kind: &str, extra: serde_json::Value| {
+                    let app = app.clone();
+                    let mut command = json!({ "type": kind, "threadId": menu_id });
+                    if let (Some(command), Some(extra)) =
+                        (command.as_object_mut(), extra.as_object())
+                    {
+                        command.extend(extra.clone());
+                    }
+                    PopupMenuItem::new(label.to_string()).on_click(move |_, _, cx| {
+                        app.update(cx, |this, cx| this.dispatch(command.clone(), cx))
+                            .ok();
+                    })
+                };
+                if archived {
+                    return menu.item(action("Unarchive", "thread.unarchive", json!({})));
+                }
+                menu.item(if pinned {
+                    action("Unpin", "thread.unpin", json!({}))
+                } else {
+                    action("Pin", "thread.pin", json!({}))
+                })
+                .item(if settled {
+                    action("Unsettle", "thread.unsettle", json!({ "reason": "user" }))
+                } else {
+                    action("Settle", "thread.settle", json!({}))
+                })
+                .item(action("Mark unread", "thread.mark-unread", json!({})))
+                .separator()
+                .item(action("Archive", "thread.archive", json!({})))
+            })
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+        let theme = cx.theme().colors;
         let mut list = v_flex()
             .id("threads")
             .flex_1()
@@ -636,33 +714,34 @@ impl T3App {
                     ),
             );
             for thread in self.shell.threads_of(&project.id) {
-                let id = thread.id.clone();
-                let selected = self.selected.as_deref() == Some(id.as_str());
-                list = list.child(
-                    h_flex()
-                        .id(SharedString::from(format!("thread-{id}")))
-                        .gap_2()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .text_sm()
-                        .cursor_pointer()
-                        .when(selected, |d| {
-                            d.bg(theme.sidebar_accent)
-                                .text_color(theme.sidebar_accent_foreground)
-                        })
-                        .hover(|d| d.bg(theme.sidebar_accent))
-                        .child(
-                            div()
-                                .size(px(6.))
-                                .rounded_full()
-                                .when(thread.is_running(), |d| d.bg(theme.success)),
-                        )
-                        .child(div().flex_1().truncate().child(thread.title.clone()))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.select_thread(id.clone(), cx)),
-                        ),
-                );
+                list = list.child(self.thread_row(thread, false, cx));
+            }
+        }
+        if !self.shell.archived.is_empty() {
+            let open = self.show_archived;
+            list = list.child(
+                div()
+                    .id("archived-toggle")
+                    .px_2()
+                    .pt_3()
+                    .pb_1()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .cursor_pointer()
+                    .child(format!(
+                        "{} Archived ({})",
+                        if open { "▾" } else { "▸" },
+                        self.shell.archived.len()
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_archived = !this.show_archived;
+                        cx.notify();
+                    })),
+            );
+            if open {
+                for thread in &self.shell.archived {
+                    list = list.child(self.thread_row(thread, true, cx));
+                }
             }
         }
         v_flex()
@@ -809,6 +888,24 @@ impl T3App {
                 self.error
                     .clone()
                     .map(|e| div().px_4().text_sm().text_color(theme.danger).child(e)),
+            )
+            .when_some(
+                thread.last_error.clone().filter(|_| !thread.is_running()),
+                |col, error| {
+                    col.child(
+                        div().mx_auto().max_w(px(760.)).w_full().px_4().child(
+                            div()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(theme.danger)
+                                .text_sm()
+                                .text_color(theme.danger)
+                                .child(error),
+                        ),
+                    )
+                },
             )
             .child(
                 v_flex()

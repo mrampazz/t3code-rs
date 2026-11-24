@@ -28,6 +28,12 @@ pub struct ThreadShell {
     pub model_selection: Value,
     #[serde(default)]
     pub active_run_id: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub pinned_at: Option<String>,
+    #[serde(default)]
+    pub settled_at: Option<String>,
 }
 
 impl ThreadShell {
@@ -43,6 +49,7 @@ impl ThreadShell {
 pub struct Shell {
     pub projects: Vec<Project>,
     pub threads: Vec<ThreadShell>,
+    pub archived: Vec<ThreadShell>,
     pub synced: bool,
     /// Resume cursor for `afterSequence`; 0 until the first snapshot.
     pub sequence: u64,
@@ -59,6 +66,7 @@ impl Shell {
                 self.sequence = snap["snapshotSequence"].as_u64().unwrap_or(0);
                 self.projects = decode_vec(&snap["projects"]);
                 self.threads = decode_vec(&snap["threads"]);
+                self.archived = decode_vec(&snap["archivedThreads"]);
             }
             Some("synchronized") => self.synced = true,
             Some("project.updated") => {
@@ -74,19 +82,27 @@ impl Shell {
                 let Some(t) = decode::<ThreadShell>(&item["thread"]) else {
                     return;
                 };
-                if item["location"] == "active" {
-                    upsert(&mut self.threads, t, |t| &t.id);
+                let (to, from) = if item["location"] == "active" {
+                    (&mut self.threads, &mut self.archived)
                 } else {
-                    self.threads.retain(|x| x.id != t.id);
-                }
+                    (&mut self.archived, &mut self.threads)
+                };
+                from.retain(|x| x.id != t.id);
+                upsert(to, t, |t| &t.id);
             }
             Some("thread.removed") => {
                 let id = item["threadId"].as_str().unwrap_or_default();
                 self.threads.retain(|t| t.id != id);
+                self.archived.retain(|t| t.id != id);
             }
             _ => {}
         }
-        self.threads.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        // Pinned first, then most recently updated.
+        for list in [&mut self.threads, &mut self.archived] {
+            list.sort_by(|a, b| {
+                (b.pinned_at.is_some(), &b.updated_at).cmp(&(a.pinned_at.is_some(), &a.updated_at))
+            });
+        }
     }
 
     pub fn threads_of<'a>(&'a self, project_id: &'a str) -> impl Iterator<Item = &'a ThreadShell> {
@@ -423,7 +439,12 @@ mod tests {
         assert_eq!(shell.threads.len(), 1);
         shell.apply(&json!({"kind": "thread.updated", "sequence": 2, "location": "active", "thread": thread("b", "2")}));
         assert_eq!(shell.threads[0].id, "b");
+        let mut pinned = thread("a", "1");
+        pinned["pinnedAt"] = json!("t");
+        shell.apply(&json!({"kind": "thread.updated", "sequence": 2, "location": "active", "thread": pinned}));
+        assert_eq!(shell.threads[0].id, "a");
         shell.apply(&json!({"kind": "thread.updated", "sequence": 3, "location": "archive", "thread": thread("a", "3")}));
+        assert_eq!(shell.archived.len(), 1);
         shell.apply(&json!({"kind": "project.removed", "sequence": 4, "projectId": "p"}));
         assert_eq!(
             shell
