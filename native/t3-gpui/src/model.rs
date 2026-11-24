@@ -14,6 +14,8 @@ pub struct Project {
     #[serde(default)]
     pub workspace_root: String,
     #[serde(default)]
+    pub default_thread_env_mode: Option<String>,
+    #[serde(default)]
     pub default_model_selection: Value,
 }
 

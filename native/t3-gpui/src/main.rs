@@ -18,6 +18,7 @@ mod sidebar;
 mod terminal;
 mod terminal_drawer;
 mod timeline;
+mod workspace;
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -90,6 +91,11 @@ struct T3App {
     /// Model chosen for the new-thread draft; `None` uses the default.
     draft_model: Option<serde_json::Value>,
     draft_runtime_mode: String,
+    /// "local" or "worktree" for the new-thread draft.
+    draft_env_mode: String,
+    /// The draft project's local branches (`vcs.listRefs`).
+    draft_refs: Vec<serde_json::Value>,
+    draft_base_ref: Option<String>,
     /// Prompt history position while Up/Down recall earlier messages.
     history_pos: Option<history::Position>,
     attachments: Vec<attachments::Attachment>,
@@ -234,6 +240,9 @@ impl T3App {
             picker_synced: (u64::MAX, String::new()),
             draft_model: None,
             draft_runtime_mode: "full-access".into(),
+            draft_env_mode: "local".into(),
+            draft_refs: Vec::new(),
+            draft_base_ref: None,
             history_pos: None,
             attachments: Vec::new(),
             attachment_seq: 0,
@@ -340,6 +349,10 @@ impl T3App {
             .unwrap_or("full-access")
             .to_string();
         self.draft_interaction_mode = "default".into();
+        if let Some(project) = self.draft_project.clone() {
+            self.draft_env_mode = self.default_env_mode(&project);
+            self.load_draft_refs(&project, cx);
+        }
         self.composer
             .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
@@ -366,6 +379,7 @@ impl T3App {
         };
         let title: String = text.lines().next().unwrap_or("").chars().take(60).collect();
         let command_id = uuid::Uuid::new_v4().to_string();
+        let workspace_strategy = self.draft_strategy();
         let input = json!({
             "commandId": command_id,
             "creationSource": "web",
@@ -375,7 +389,7 @@ impl T3App {
             "modelSelection": model,
             "runtimeMode": self.draft_runtime_mode,
             "interactionMode": self.draft_interaction_mode,
-            "workspaceStrategy": { "type": "root" },
+            "workspaceStrategy": workspace_strategy,
             "initialMessage": { "messageId": command_id, "text": text, "attachments": attachments },
         });
         let env_key = self.env().map(|e| e.key.clone()).unwrap_or_default();
@@ -1470,7 +1484,11 @@ impl T3App {
                                 .child(format!("New thread in {}", project.title)),
                         )
                         .child(match &model {
-                            Some(_) => self.render_composer_controls(cx).into_any_element(),
+                            Some(_) => h_flex()
+                                .gap_2()
+                                .child(self.render_composer_controls(cx))
+                                .child(self.render_workspace_controls(cx))
+                                .into_any_element(),
                             None => div()
                                 .text_sm()
                                 .text_color(theme.muted_foreground)
