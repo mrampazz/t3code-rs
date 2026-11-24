@@ -1,5 +1,6 @@
 //! Composer controls: model, permission mode, plan mode (web: `ComposerControlsBar.tsx`).
 
+use crate::i18n::t;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::select::Select;
@@ -98,17 +99,17 @@ impl T3App {
                 Button::new("runtime-mode")
                     .small()
                     .ghost()
-                    .label(runtime_label(&runtime).to_string())
+                    .label(t(runtime_label(&runtime)))
                     .dropdown_menu(move |mut menu, _, _| {
                         for (mode, label) in supported.clone() {
                             let app = app.clone();
                             menu = menu.item(
-                                PopupMenuItem::new(label).checked(mode == runtime).on_click(
-                                    move |_, _, cx| {
+                                PopupMenuItem::new(t(label))
+                                    .checked(mode == runtime)
+                                    .on_click(move |_, _, cx| {
                                         app.update(cx, |this, cx| this.set_runtime_mode(mode, cx))
                                             .ok();
-                                    },
-                                ),
+                                    }),
                             );
                         }
                         menu
@@ -118,7 +119,7 @@ impl T3App {
                 row.child(
                     Button::new("plan-mode")
                         .small()
-                        .label("Plan")
+                        .label(t("Plan"))
                         .when(plan, |b| b.primary())
                         .when(!plan, |b| b.ghost())
                         .on_click(cx.listener(move |this, _, _, cx| {

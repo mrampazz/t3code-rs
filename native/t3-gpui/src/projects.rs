@@ -1,6 +1,7 @@
 //! Add a project on the active environment (web: `CommandPaletteAddProject.tsx`). The folder is on
 //! the server's machine, so suggestions come from `filesystem.browse`, never the local disk.
 
+use crate::i18n::t;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -143,7 +144,7 @@ impl T3App {
                     div()
                         .text_xl()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Add project"),
+                        .child(t("Add project")),
                 )
                 .child(
                     div()
@@ -189,7 +190,7 @@ impl T3App {
                         .child(
                             Button::new("add-project")
                                 .primary()
-                                .label("Add project")
+                                .label(t("Add project"))
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.add_project(window, cx)),
                                 ),
@@ -197,7 +198,7 @@ impl T3App {
                         .child(
                             Button::new("add-project-cancel")
                                 .ghost()
-                                .label("Cancel")
+                                .label(t("Cancel"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.adding_project = false;
                                     cx.notify();
@@ -208,7 +209,7 @@ impl T3App {
                                 div()
                                     .text_xs()
                                     .text_color(c.muted_foreground)
-                                    .child("Switch servers in Settings."),
+                                    .child(t("Switch servers in Settings.")),
                             )
                         }),
                 ),

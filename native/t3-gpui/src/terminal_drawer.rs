@@ -1,5 +1,6 @@
 //! Thread terminal drawer: attaches to the server PTY and renders it with `terminal::TermView`.
 
+use crate::i18n::t;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
@@ -311,7 +312,7 @@ impl T3App {
                             .xsmall()
                             .ghost()
                             .label("+")
-                            .tooltip("New terminal")
+                            .tooltip(t("New terminal"))
                             .on_click(cx.listener(|this, _, _, cx| this.new_terminal(cx))),
                     )
                     .children(self.term_status.clone())
@@ -320,7 +321,7 @@ impl T3App {
                         Button::new("term-clear")
                             .xsmall()
                             .ghost()
-                            .label("Clear")
+                            .label(t("Clear"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(id) = thread_id.clone() {
                                     let payload =
@@ -338,7 +339,7 @@ impl T3App {
                         Button::new("term-hide")
                             .xsmall()
                             .ghost()
-                            .label("Hide")
+                            .label(t("Hide"))
                             .on_click(cx.listener(|this, _, _, cx| this.close_terminal(cx))),
                     ),
             )

@@ -3,6 +3,7 @@
 //! shortcut: searches only the loaded rows; the web also asks `orchestration.searchThread`
 //! for history outside the window. Upgrade once history paging lands.
 
+use crate::i18n::t;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex};
@@ -130,7 +131,7 @@ impl T3App {
                 Button::new("find-close")
                     .xsmall()
                     .ghost()
-                    .label("Done")
+                    .label(t("Done"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.find_open = false;
                         cx.notify();

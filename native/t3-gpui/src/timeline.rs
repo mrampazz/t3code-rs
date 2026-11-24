@@ -1,5 +1,6 @@
 //! Timeline rows per turn item type (web: `apps/web/src/components/chat/Timeline*.tsx`).
 
+use crate::i18n::t;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme, Sizable, ThemeColor, h_flex, v_flex};
@@ -36,7 +37,7 @@ impl T3App {
                             .xsmall()
                             .ghost()
                             .label("↺")
-                            .tooltip("Revert to here")
+                            .tooltip(t("Revert to here"))
                             .invisible()
                             .group_hover("user-row", |s| s.visible())
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -67,7 +68,7 @@ impl T3App {
                     div()
                         .text_xs()
                         .text_color(c.muted_foreground)
-                        .child("Proposed plan"),
+                        .child(t("Proposed plan")),
                 )
                 .child(TextView::markdown(
                     SharedString::from(item.id.clone()),
@@ -290,7 +291,7 @@ impl T3App {
             Button::new(SharedString::from(format!("{}-submit", item.id)))
                 .small()
                 .primary()
-                .label("Submit")
+                .label(t("Submit"))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let custom = this.composer.read(cx).value().to_string();
                     let picks = |qid: &str| {
@@ -323,7 +324,7 @@ impl T3App {
         let dismiss = Button::new(SharedString::from(format!("{}-dismiss", item.id)))
             .small()
             .ghost()
-            .label("Dismiss")
+            .label(t("Dismiss"))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.dispatch(
                     serde_json::json!({ "type": "thread.user-input.dismiss", "threadId": thread_id, "requestId": request_id }),
@@ -335,7 +336,7 @@ impl T3App {
                 div()
                     .text_xs()
                     .text_color(c.muted_foreground)
-                    .child("Or type an answer in the composer."),
+                    .child(t("Or type an answer in the composer.")),
             ),
         )
         .into_any_element()
@@ -423,13 +424,13 @@ pub(crate) fn approval_options(item: &TurnItem) -> Vec<(String, String)> {
         })
         .collect();
     if options.is_empty() {
-        options = [
-            ("decline", "Decline"),
-            ("acceptForSession", "Always allow this session"),
-            ("accept", "Approve"),
-        ]
-        .map(|(d, l)| (d.to_owned(), l.to_owned()))
-        .into();
+        // The web's defaults; Decline and Approve carry its `$context`.
+        let verb = "verb, response to an approval request";
+        options = vec![
+            ("decline".into(), crate::i18n::tc("Decline", verb)),
+            ("acceptForSession".into(), t("Always allow this session")),
+            ("accept".into(), crate::i18n::tc("Approve", verb)),
+        ];
     }
     options.sort_by_key(|(d, _)| match d.as_str() {
         "decline" => 0,
@@ -737,7 +738,10 @@ impl T3App {
             .text_sm()
             .text_color(c.muted_foreground)
             .child(div().text_color(c.info).child("●"))
-            .child(format!("Working for {}", working_timer(elapsed)))
+            .child(crate::i18n::tv(
+                "Working for {time}",
+                &[("time", &working_timer(elapsed))],
+            ))
             .into_any_element()
     }
 }

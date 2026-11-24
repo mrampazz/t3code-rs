@@ -9,6 +9,7 @@ mod env;
 mod find;
 mod git;
 mod history;
+mod i18n;
 mod keybindings;
 mod model;
 mod palette;
@@ -21,6 +22,7 @@ mod terminal_drawer;
 mod timeline;
 mod workspace;
 
+use crate::i18n::t;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -174,11 +176,11 @@ struct T3App {
 
 impl T3App {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let pair_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("http://host:3773/pair#token=…"));
+        let pair_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(t("http://host:3773/pair#token=…")));
         let composer = cx.new(|cx| {
             let mut state = TextareaState::new(window, cx)
-                .placeholder("Ask anything…")
+                .placeholder(t("Ask anything…"))
                 .submit_on_enter(true);
             state.set_auto_grow(1, 12, cx);
             state
@@ -194,10 +196,11 @@ impl T3App {
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let project_path = cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/project"));
-        let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in thread"));
+        let project_path =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t("/path/to/project")));
+        let find_input = cx.new(|cx| InputState::new(window, cx).placeholder(t("Find in thread")));
         let palette_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search threads and commands…"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(t("Search threads and commands…")));
         let _subscriptions = vec![
             cx.subscribe_in(
                 &find_input,
@@ -676,7 +679,7 @@ impl T3App {
                 })
             };
             dialog
-                .title("Revert to this message?")
+                .title(t("Revert to this message?"))
                 .child(div().text_sm().child(
                     "Later messages are removed and the message goes back into the composer.",
                 ))
@@ -995,13 +998,13 @@ impl T3App {
                     div()
                         .text_lg()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Connect to a T3 Code server"),
+                        .child(t("Connect to a T3 Code server")),
                 )
                 .child(
                     div()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child("Run `t3 pair` on the host and paste the pairing URL."),
+                        .child(t("Run `t3 pair` on the host and paste the pairing URL.")),
                 )
                 .child(Input::new(&self.pair_input))
                 .child(
@@ -1021,13 +1024,16 @@ impl T3App {
                         .map(|e| div().text_sm().text_color(theme.danger).child(e)),
                 )
                 .when(!self.envs.is_empty() && !connecting, |card| {
-                    card.child(Button::new("pair-cancel").ghost().label("Cancel").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.error = None;
-                            this.screen = Screen::Connected;
-                            cx.notify();
-                        }),
-                    ))
+                    card.child(
+                        Button::new("pair-cancel")
+                            .ghost()
+                            .label(t("Cancel"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.error = None;
+                                this.screen = Screen::Connected;
+                                cx.notify();
+                            })),
+                    )
                 }),
         )
     }
@@ -1341,8 +1347,11 @@ impl T3App {
             {
                 continue;
             }
-            list =
-                list.child(self.section_header(format!("{label} ({})", rows.len()), section, cx));
+            list = list.child(self.section_header(
+                format!("{} ({})", i18n::t(label), rows.len()),
+                section,
+                cx,
+            ));
             for (index, thread) in rows.iter().enumerate() {
                 list = list.child(self.thread_row(thread, false, Some((section, index)), cx));
             }
@@ -1418,7 +1427,7 @@ impl T3App {
                         Button::new("new-thread")
                             .small()
                             .ghost()
-                            .label("New thread")
+                            .label(t("New thread"))
                             .dropdown_menu(move |mut menu, _, _| {
                                 for (env, id, title) in projects.clone() {
                                     let app = app.clone();
@@ -1432,30 +1441,31 @@ impl T3App {
                                     ));
                                 }
                                 let app = app.clone();
-                                menu.separator()
-                                    .item(PopupMenuItem::new("Add project…").on_click(
+                                menu.separator().item(
+                                    PopupMenuItem::new(t("Add project…")).on_click(
                                         move |_, window, cx| {
                                             app.update(cx, |this, cx| {
                                                 this.open_add_project(window, cx)
                                             })
                                             .ok();
                                         },
-                                    ))
+                                    ),
+                                )
                             }),
                     )
                     .child(
                         Button::new("add-server")
                             .small()
                             .ghost()
-                            .label("+ Server")
-                            .tooltip("Connect another T3 Code server")
+                            .label(t("+ Server"))
+                            .tooltip(t("Connect another T3 Code server"))
                             .on_click(cx.listener(|this, _, _, cx| this.add_environment(cx))),
                     )
                     .child(
                         Button::new("open-settings")
                             .small()
                             .ghost()
-                            .label("Settings")
+                            .label(t("Settings"))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
                     ),
             )
@@ -1521,7 +1531,7 @@ impl T3App {
                             None => div()
                                 .text_sm()
                                 .text_color(theme.muted_foreground)
-                                .child("No available provider")
+                                .child(t("No available provider"))
                                 .into_any_element(),
                         })
                         .when(
@@ -1631,7 +1641,7 @@ impl T3App {
                     .child(
                         Button::new("terminal-toggle")
                             .small()
-                            .label("Terminal")
+                            .label(t("Terminal"))
                             .when(self.term.is_some(), |b| b.primary())
                             .when(self.term.is_none(), |b| b.ghost())
                             .on_click(
@@ -1641,7 +1651,7 @@ impl T3App {
                     .child(
                         Button::new("diff-toggle")
                             .small()
-                            .label("Diff")
+                            .label(t("Diff"))
                             .when(self.diff_open, |b| b.primary())
                             .when(!self.diff_open, |b| b.ghost())
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_diff(cx))),
@@ -1651,7 +1661,7 @@ impl T3App {
                             Button::new("stop")
                                 .small()
                                 .outline()
-                                .label("Stop")
+                                .label(t("Stop"))
                                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
                         )
                     }),
@@ -1785,7 +1795,14 @@ fn main() {
     gpui_kit::application().run(|cx| {
         gpui_kit::init(cx);
         palette::bind_keys(cx);
-        gpui_kit::component::Theme::change(settings::theme_mode(&settings::load_prefs()), None, cx);
+        let prefs = settings::load_prefs();
+        i18n::set_locale(
+            prefs["locale"]
+                .as_str()
+                .map_or_else(i18n::system_locale, str::to_owned)
+                .as_str(),
+        );
+        gpui_kit::component::Theme::change(settings::theme_mode(&prefs), None, cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(None, size(px(1200.), px(800.)), cx)),
             ..Default::default()
@@ -1804,7 +1821,7 @@ fn rename_item(
     thread_id: String,
     title: String,
 ) -> PopupMenuItem {
-    PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
+    PopupMenuItem::new(t("Rename…")).on_click(move |_, window, cx| {
         let input = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
             state.set_value(title.clone(), window, cx);
@@ -1814,9 +1831,9 @@ fn rename_item(
         window.open_dialog(cx, move |dialog, _, _| {
             let (app, thread_id, input, env) = (app.clone(), thread_id.clone(), input.clone(), env.clone());
             dialog
-                .title("Rename thread")
+                .title(t("Rename thread"))
                 .child(Input::new(&input))
-                .button_props(DialogButtonProps::default().ok_text("Rename").show_cancel(true))
+                .button_props(DialogButtonProps::default().ok_text(t("Rename")).show_cancel(true))
                 .on_ok(move |_, _, cx: &mut App| {
                     let title = input.read(cx).value().trim().to_string();
                     if title.is_empty() {
@@ -1836,18 +1853,18 @@ fn delete_item(
     thread_id: String,
     title: String,
 ) -> PopupMenuItem {
-    PopupMenuItem::new("Delete…").on_click(move |_, window, cx| {
+    PopupMenuItem::new(t("Delete…")).on_click(move |_, window, cx| {
         let (app, thread_id, title, env) =
             (app.clone(), thread_id.clone(), title.clone(), env.clone());
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let (app, thread_id, env) = (app.clone(), thread_id.clone(), env.clone());
             dialog
                 .confirm()
-                .title("Delete thread?")
+                .title(t("Delete thread?"))
                 .description(format!(
                     "“{title}” and its history will be deleted. This cannot be undone."
                 ))
-                .ok_text("Delete")
+                .ok_text(t("Delete"))
                 .on_ok(move |_, _, cx| {
                     let command = json!({ "type": "thread.delete", "threadId": thread_id });
                     app.update(cx, |this, cx| this.dispatch_to(&env, command, cx))

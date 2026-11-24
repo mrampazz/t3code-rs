@@ -2,10 +2,10 @@ name: gpui client
 
 on:
   pull_request:
-    paths: [native/t3-gpui/**, .github/workflows/gpui-client.yml]
+    paths: [native/t3-gpui/**, apps/web/src/i18n/translations/**, .github/workflows/gpui-client.yml]
   push:
     branches: [main, feat/gpui-client]
-    paths: [native/t3-gpui/**, .github/workflows/gpui-client.yml]
+    paths: [native/t3-gpui/**, apps/web/src/i18n/translations/**, .github/workflows/gpui-client.yml]
 
 permissions:
   contents: read
@@ -29,6 +29,7 @@ jobs:
           sparse-checkout: |
             /native/t3-gpui/
             /.cargo/
+            /apps/web/src/i18n/translations/
           sparse-checkout-cone-mode: false
 
       - name: Install gpui system libraries

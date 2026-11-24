@@ -1,6 +1,7 @@
 //! Settings view (web: `apps/web/src/components/settings/`). Server settings come from the
 //! config stream and change through `server.updateSettings`; appearance is a client preference.
 
+use crate::i18n::t;
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -82,6 +83,13 @@ impl T3App {
         .detach();
     }
 
+    fn set_language(&mut self, code: &str, cx: &mut Context<Self>) {
+        self.prefs["locale"] = json!(code);
+        save_prefs(&self.prefs);
+        crate::i18n::set_locale(code);
+        cx.notify();
+    }
+
     fn set_theme(&mut self, light: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.prefs["theme"] = json!(if light { "light" } else { "dark" });
         save_prefs(&self.prefs);
@@ -92,6 +100,7 @@ impl T3App {
     pub(crate) fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors;
         let section = |title: &str| {
+            let title = t(title);
             div()
                 .pt_6()
                 .pb_2()
@@ -182,13 +191,13 @@ impl T3App {
                 .p_6()
                 .child(
                     h_flex()
-                        .child(div().flex_1().text_xl().font_weight(FontWeight::SEMIBOLD).child("Settings"))
+                        .child(div().flex_1().text_xl().font_weight(FontWeight::SEMIBOLD).child(t("Settings")))
                         .children(self.settings_status.clone().map(|s| div().text_sm().text_color(c.muted_foreground).child(s)))
                         .child(
                             Button::new("settings-close")
                                 .small()
                                 .ghost()
-                                .label("Close")
+                                .label(t("Close"))
                                 .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
                         ),
                 )
@@ -196,12 +205,12 @@ impl T3App {
                 .child(providers)
                 .child(section("New threads"))
                 .child(
-                    row().child(div().flex_1().child("Default permission mode")).child(
-                        Button::new("default-runtime").small().outline().label(runtime_label).dropdown_menu(
+                    row().child(div().flex_1().child(t("Default permission mode"))).child(
+                        Button::new("default-runtime").small().outline().label(t(&runtime_label)).dropdown_menu(
                             move |mut menu, _, _| {
                                 for (mode, label) in RUNTIME_MODES {
                                     let app = app.clone();
-                                    menu = menu.item(PopupMenuItem::new(label).checked(mode == runtime).on_click(
+                                    menu = menu.item(PopupMenuItem::new(t(label)).checked(mode == runtime).on_click(
                                         move |_, _, cx| {
                                             app.update(cx, |this, cx| {
                                                 this.update_settings(json!({ "patch": { "defaultRuntimeMode": mode } }), cx)
@@ -215,19 +224,33 @@ impl T3App {
                         ),
                     ),
                 )
-                .child(row().child(div().flex_1().child("Snooze presets")).child(
+                .child(row().child(div().flex_1().child(t("Snooze presets"))).child(
                     div().text_xs().text_color(c.muted_foreground).child(
                         presets.iter().map(|p| p.label.split(" · ").next().unwrap_or("").to_string()).collect::<Vec<_>>().join(", "),
                     ),
                 ))
                 .child(section("Appearance"))
+                .child(row().child(div().flex_1().child(t("Language"))).child({
+                    let app = cx.entity().downgrade();
+                    let current = crate::i18n::locale();
+                    let name = crate::i18n::LOCALES.iter().find(|(c, _)| *c == current).map_or("English", |(_, n)| n);
+                    Button::new("language").small().outline().label(name.to_string()).dropdown_menu(move |mut menu, _, _| {
+                        for (code, name) in crate::i18n::LOCALES {
+                            let app = app.clone();
+                            menu = menu.item(PopupMenuItem::new(name).checked(code == current).on_click(move |_, _, cx| {
+                                app.update(cx, |this, cx| this.set_language(code, cx)).ok();
+                            }));
+                        }
+                        menu
+                    })
+                }))
                 .child(
                     row()
-                        .child(div().flex_1().child("Theme"))
+                        .child(div().flex_1().child(t("Theme")))
                         .child(
                             Button::new("theme-dark")
                                 .small()
-                                .label("Dark")
+                                .label(t("Dark"))
                                 .when(!light, |b| b.primary())
                                 .when(light, |b| b.ghost())
                                 .on_click(cx.listener(|this, _, window, cx| this.set_theme(false, window, cx))),
@@ -235,7 +258,7 @@ impl T3App {
                         .child(
                             Button::new("theme-light")
                                 .small()
-                                .label("Light")
+                                .label(t("Light"))
                                 .when(light, |b| b.primary())
                                 .when(!light, |b| b.ghost())
                                 .on_click(cx.listener(|this, _, window, cx| this.set_theme(true, window, cx))),
@@ -273,7 +296,7 @@ impl T3App {
                             Button::new(("server-disconnect", i))
                                 .small()
                                 .outline()
-                                .label("Disconnect")
+                                .label(t("Disconnect"))
                                 .on_click(cx.listener(move |this, _, _, cx| this.remove_env(&remove_key, cx))),
                         )
                 }))
@@ -282,7 +305,7 @@ impl T3App {
                         Button::new("settings-add-server")
                             .small()
                             .ghost()
-                            .label("+ Connect another server")
+                            .label(t("+ Connect another server"))
                             .on_click(cx.listener(|this, _, _, cx| this.add_environment(cx))),
                     ),
                 ),

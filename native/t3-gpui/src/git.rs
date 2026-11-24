@@ -1,5 +1,6 @@
 //! Branch toolbar and git actions (web: `BranchToolbar.tsx`, `GitActionsControl.tsx`).
 
+use crate::i18n::t;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex};
@@ -236,7 +237,7 @@ impl T3App {
                 Button::new("git-actions")
                     .xsmall()
                     .outline()
-                    .label("Git")
+                    .label(t("Git"))
                     .dropdown_menu(move |mut menu, _, _| {
                         for (action, label) in ACTIONS {
                             let app = app.clone();
