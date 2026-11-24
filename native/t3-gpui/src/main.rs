@@ -125,6 +125,8 @@ struct T3App {
     term_status: Option<SharedString>,
     /// The attached terminal's id (`term-N`, client-chosen).
     term_id: String,
+    /// The grid size last sent with `terminal.resize`.
+    term_requested: Option<(usize, usize)>,
     term_focus: FocusHandle,
     git: git::GitStatus,
     /// Request id of the `subscribeVcsStatus` stream.
@@ -288,6 +290,7 @@ impl T3App {
             term_sub: None,
             term_status: None,
             term_id: "term-1".into(),
+            term_requested: None,
             term_focus: cx.focus_handle(),
             git: Default::default(),
             git_sub: None,

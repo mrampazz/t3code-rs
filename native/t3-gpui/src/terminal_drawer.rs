@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::terminal::{MAX_HISTORY_BYTES, TermView, key_bytes, next_terminal_id};
 use crate::{T3App, on_tokio};
 
-/// shortcut: a fixed grid; upgrade by measuring the drawer and sending `terminal.resize`.
+/// The grid before the drawer has been measured.
 const COLS: usize = 120;
 const ROWS: usize = 18;
 
@@ -117,15 +117,16 @@ impl T3App {
         if let Some(old) = self.term_sub.take() {
             client.cancel(&old);
         }
-        self.term = Some(TermView::new(COLS, ROWS));
+        let (cols, rows) = self.term_requested.unwrap_or((COLS, ROWS));
+        self.term = Some(TermView::new(cols, rows));
         self.term_status = Some("Starting…".into());
         let mut payload = json!({
             "threadId": thread.id,
             "terminalId": self.term_id,
             "cwd": cwd,
             "worktreePath": thread.worktree_path,
-            "cols": COLS,
-            "rows": ROWS,
+            "cols": cols,
+            "rows": rows,
             "maxHistoryBytes": MAX_HISTORY_BYTES,
         });
         if resume {
@@ -216,6 +217,24 @@ impl T3App {
         }
     }
 
+    /// Asks the server for a grid that fills the drawer; it echoes the shared size back.
+    pub(crate) fn fit_terminal(&mut self, cols: usize, rows: usize, cx: &mut Context<Self>) {
+        let Some(term) = self.term.as_mut() else {
+            return;
+        };
+        if (cols, rows) == (term.cols, term.rows) || self.term_requested == Some((cols, rows)) {
+            return;
+        }
+        self.term_requested = Some((cols, rows));
+        term.resize(cols, rows);
+        let (Some(client), Some(thread_id)) = (self.client(), self.selected.clone()) else {
+            return;
+        };
+        let payload = json!({ "threadId": thread_id, "terminalId": self.term_id, "cols": cols, "rows": rows });
+        on_tokio(async move { client.call("terminal.resize", payload).await });
+        cx.notify();
+    }
+
     fn terminal_write(&mut self, data: String, reply: bool, cx: &mut Context<Self>) {
         let (Some(client), Some(thread_id)) = (self.client(), self.selected.clone()) else {
             return;
@@ -251,6 +270,9 @@ impl T3App {
         }
         if let Some(bytes) = key_bytes(&k.key, k.key_char.as_deref(), m.control, m.alt, m.platform)
         {
+            if let Some(term) = self.term.as_mut() {
+                term.scroll_to_bottom();
+            }
             self.terminal_write(bytes, false, cx);
             cx.stop_propagation();
         }
@@ -259,6 +281,7 @@ impl T3App {
     pub(crate) fn render_terminal(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors;
         let mono = cx.theme().mono_font_family.clone();
+        let mono_family = mono.clone();
         let lines = self.term.as_ref().map(TermView::lines).unwrap_or_default();
         let thread_id = self.selected.clone();
         let rgb = |c: alacritty_terminal::vte::ansi::Rgb| -> Hsla {
@@ -368,6 +391,45 @@ impl T3App {
                             this.terminal_key(event, cx)
                         }),
                     )
+                    .on_scroll(cx.listener(|this, e: &ScrollEvent, _, cx| {
+                        let lines = match e.delta {
+                            ScrollDelta::Lines(d) => d.y.round() as i32,
+                            ScrollDelta::Pixels(d) => (f32::from(d.y) / 16.0).round() as i32,
+                        };
+                        if let Some(term) = this.term.as_mut()
+                            && lines != 0
+                        {
+                            term.scroll(lines);
+                            cx.notify();
+                        }
+                    }))
+                    .child({
+                        // Measures the drawer after layout; the grid follows its size.
+                        let app = cx.entity().downgrade();
+                        let font = gpui_kit::font(mono_family.clone());
+                        canvas(
+                            move |bounds, window, cx| {
+                                let id = window.text_system().resolve_font(&font);
+                                let cell = window
+                                    .text_system()
+                                    .advance(id, px(12.), 'm')
+                                    .map_or(7.2, |s| f32::from(s.width));
+                                let cols = ((f32::from(bounds.size.width) / cell).floor() as usize)
+                                    .clamp(20, 1000);
+                                let rows = ((f32::from(bounds.size.height) / 16.0).floor()
+                                    as usize)
+                                    .clamp(4, 500);
+                                let app = app.clone();
+                                cx.defer(move |cx| {
+                                    app.update(cx, |this, cx| this.fit_terminal(cols, rows, cx))
+                                        .ok();
+                                });
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full()
+                    })
                     .children(lines.into_iter().map(|line| {
                         let highlights: Vec<_> = line
                             .runs

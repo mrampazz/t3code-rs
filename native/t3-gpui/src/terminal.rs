@@ -90,6 +90,17 @@ impl TermView {
         std::mem::take(&mut *self.replies.0.lock().unwrap())
     }
 
+    /// Scrolls the view into the scrollback (positive = older output).
+    pub fn scroll(&mut self, lines: i32) {
+        self.term
+            .scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.term
+            .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+    }
+
     pub fn resize(&mut self, cols: usize, rows: usize) {
         (self.cols, self.rows) = (cols, rows);
         self.term.resize(TermSize::new(cols, rows));
