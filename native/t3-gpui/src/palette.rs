@@ -30,6 +30,7 @@ pub(crate) enum PaletteAction {
     ToggleDiff,
     Disconnect,
     Settings,
+    AddProject,
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +124,13 @@ impl T3App {
                 action: PaletteAction::ToggleDiff,
             });
         }
+        if "add project".contains(&query) {
+            rows.push(PaletteRow {
+                label: "Add project".into(),
+                detail: "Command".into(),
+                action: PaletteAction::AddProject,
+            });
+        }
         if "settings".contains(&query) {
             rows.push(PaletteRow {
                 label: "Settings".into(),
@@ -149,6 +157,7 @@ impl T3App {
             PaletteAction::ToggleDiff => self.toggle_diff(cx),
             PaletteAction::Disconnect => self.forget_session(cx),
             PaletteAction::Settings => self.toggle_settings(cx),
+            PaletteAction::AddProject => self.open_add_project(window, cx),
         }
         cx.notify();
     }

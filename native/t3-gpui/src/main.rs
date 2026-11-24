@@ -10,6 +10,7 @@ mod history;
 mod keybindings;
 mod model;
 mod palette;
+mod projects;
 mod rpc;
 mod settings;
 mod sidebar;
@@ -125,6 +126,12 @@ struct T3App {
     /// Drops search responses for an older query.
     palette_generation: u64,
     show_archived: bool,
+    adding_project: bool,
+    project_path: Entity<InputState>,
+    /// `filesystem.browse` entries for the typed path.
+    project_suggestions: Vec<serde_json::Value>,
+    project_status: Option<SharedString>,
+    browse_generation: u64,
     sidebar_hidden: bool,
     /// A one-second re-render is scheduled for the working timer.
     working_tick: std::cell::Cell<bool>,
@@ -173,9 +180,19 @@ impl T3App {
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let project_path = cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/project"));
         let palette_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search threads and commands…"));
         let _subscriptions = vec![
+            cx.subscribe_in(
+                &project_path,
+                window,
+                |this, _, e: &InputEvent, window, cx| match e {
+                    InputEvent::Change => this.browse_project_path(cx),
+                    InputEvent::PressEnter { .. } => this.add_project(window, cx),
+                    _ => {}
+                },
+            ),
             cx.subscribe_in(
                 &palette_input,
                 window,
@@ -243,6 +260,11 @@ impl T3App {
             palette_matches: Vec::new(),
             palette_generation: 0,
             show_archived: false,
+            adding_project: false,
+            project_path,
+            project_suggestions: Vec::new(),
+            project_status: None,
+            browse_generation: 0,
             sidebar_hidden: false,
             working_tick: Default::default(),
             visit_open_pending: false,
@@ -308,6 +330,7 @@ impl T3App {
         }
         self.selected = None;
         self.thread = ThreadView::default();
+        self.adding_project = false;
         self.draft_project = Some(project_id);
         self.draft_model = None;
         self.settings_open = false;
@@ -375,6 +398,7 @@ impl T3App {
     }
 
     fn select_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
+        self.adding_project = false;
         let same_env = self.env().is_some_and(|e| e.key == env);
         self.activate(&env, cx);
         if !same_env || self.selected.as_deref() != Some(id.as_str()) {
@@ -1338,7 +1362,16 @@ impl T3App {
                                         },
                                     ));
                                 }
-                                menu
+                                let app = app.clone();
+                                menu.separator()
+                                    .item(PopupMenuItem::new("Add project…").on_click(
+                                        move |_, window, cx| {
+                                            app.update(cx, |this, cx| {
+                                                this.open_add_project(window, cx)
+                                            })
+                                            .ok();
+                                        },
+                                    ))
                             }),
                     )
                     .child(
@@ -1625,7 +1658,10 @@ impl Render for T3App {
                 .when(self.settings_open, |root| {
                     root.child(self.render_settings(cx))
                 })
-                .when(!self.settings_open, |root| {
+                .when(!self.settings_open && self.adding_project, |root| {
+                    root.child(self.render_add_project(cx))
+                })
+                .when(!self.settings_open && !self.adding_project, |root| {
                     root.child(self.render_thread(cx))
                 })
                 .when(self.diff_open && self.selected.is_some(), |root| {
