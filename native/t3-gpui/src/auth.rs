@@ -221,6 +221,36 @@ pub async fn socket_url(session: &Session) -> Result<String> {
     Ok(url.into())
 }
 
+/// An authenticated GET to the environment's HTTP API (Bearer, or DPoP with a proof).
+pub async fn get_json(session: &Session, path_and_query: &str) -> Result<serde_json::Value> {
+    let url = format!("{}{path_and_query}", session.base_url);
+    let mut request = reqwest::Client::new()
+        .get(&url)
+        .header("x-t3-orchestration-protocol", "2");
+    request = if session.is_dpop() {
+        request
+            .header("authorization", format!("DPoP {}", session.access_token))
+            .header(
+                "dpop",
+                crate::dpop::proof("GET", &url, Some(&session.access_token)),
+            )
+    } else {
+        request.bearer_auth(&session.access_token)
+    };
+    let res = request.send().await?;
+    if matches!(res.status().as_u16(), 401 | 403) {
+        return Err(rejected(res));
+    }
+    if !res.status().is_success() {
+        bail!(
+            "{} returned {}",
+            path_and_query.split('?').next().unwrap_or(""),
+            res.status()
+        );
+    }
+    Ok(res.json().await?)
+}
+
 fn config_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("HOME")?).join(".config/t3-gpui"))
 }

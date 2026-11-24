@@ -491,9 +491,37 @@ pub struct ThreadView {
     rewind: Vec<RewindPoint>,
     /// Resume cursor for `afterSequence`; 0 until the first snapshot.
     pub sequence: u64,
+    /// Older history the bounded snapshot left out (`threadHistoryPage` cursor).
+    pub history_cursor: Option<String>,
+    pub has_more_history: bool,
+}
+
+fn projected_rows(rows: &Value) -> Vec<Row> {
+    rows.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            Some(Row {
+                local: row["visibility"] == "local",
+                item: TurnItem::from_value(&row["item"])?,
+            })
+        })
+        .collect()
 }
 
 impl ThreadView {
+    /// Prepends a history page (older rows), skipping rows already present.
+    pub fn prepend_history(&mut self, page: &Value) {
+        let mut older: Vec<Row> = projected_rows(&page["items"])
+            .into_iter()
+            .filter(|r| !self.rows.iter().any(|x| x.item.id == r.item.id))
+            .collect();
+        older.append(&mut self.rows);
+        self.rows = older;
+        self.history_cursor = page["nextCursor"].as_str().map(str::to_owned);
+        self.has_more_history = page["hasMoreHistory"] == true;
+    }
+
     fn apply_checkpoint(&mut self, v: &Value) {
         let turn = match (
             v["appRunOrdinal"].as_u64(),
@@ -534,11 +562,13 @@ impl ThreadView {
             .filter(rewindable)
             .filter_map(|p| Some((p.run_id.as_deref()?, p.turn)))
             .collect();
-        let start_available = self
-            .rewind
-            .iter()
-            .filter(rewindable)
-            .any(|p| p.turn == 0 && p.run_id.is_none());
+        // The first loaded row is the thread's first only when no older history is unloaded.
+        let start_available = !self.has_more_history
+            && self
+                .rewind
+                .iter()
+                .filter(rewindable)
+                .any(|p| p.turn == 0 && p.run_id.is_none());
         let mut target_by_run: HashMap<&str, Option<u64>> = HashMap::new();
         let mut previous: Option<&str> = None;
         let mut out = HashMap::new();
@@ -619,17 +649,9 @@ impl ThreadView {
                 for checkpoint in projection["checkpoints"].as_array().into_iter().flatten() {
                     self.apply_checkpoint(checkpoint);
                 }
-                self.rows = projection["visibleTurnItems"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|row| {
-                        Some(Row {
-                            local: row["visibility"] == "local",
-                            item: TurnItem::from_value(&row["item"])?,
-                        })
-                    })
-                    .collect();
+                self.rows = projected_rows(&projection["visibleTurnItems"]);
+                self.history_cursor = item["historyCursor"].as_str().map(str::to_owned);
+                self.has_more_history = item["hasMoreHistory"] == true;
             }
             Some("event") => {
                 self.sequence = self.sequence.max(item["sequence"].as_u64().unwrap_or(0));
@@ -690,6 +712,10 @@ impl ThreadView {
         }
         if let Some(i) = existing {
             self.rows.remove(i);
+        } else if self.below_window(&item) {
+            // `shouldDropMissingPartialTurnItem`: an unseen item older than the loaded window
+            // belongs to history that is not loaded; it arrives with its page.
+            return;
         }
         let at = self
             .rows
@@ -697,6 +723,31 @@ impl ThreadView {
             .position(|r| r.local && (r.item.ordinal, &r.item.id) > (item.ordinal, &item.id))
             .unwrap_or(self.rows.len());
         self.rows.insert(at, Row { local: true, item });
+    }
+
+    /// An item older than the loaded window of a thread with more history, unless its run is
+    /// still unfinished (a queued run keeps its early ordinal).
+    fn below_window(&self, item: &TurnItem) -> bool {
+        if !self.has_more_history {
+            return false;
+        }
+        let unfinished = item
+            .run_id
+            .as_ref()
+            .and_then(|id| self.runs.get(id))
+            .is_some_and(|r| {
+                matches!(
+                    r.status.as_str(),
+                    "preparing" | "queued" | "starting" | "running" | "waiting"
+                )
+            });
+        let oldest = self
+            .rows
+            .iter()
+            .filter(|r| r.local)
+            .map(|r| r.item.ordinal)
+            .min();
+        !unfinished && oldest.is_some_and(|oldest| item.ordinal < oldest)
     }
 
     /// `isOrchestrationV2TurnItemVisible` from packages/shared/src/orchestrationV2Timeline.ts.
@@ -1015,5 +1066,24 @@ mod tests {
         assert!(!t(json!({"status": "interrupted", "latestRunCompletedAt": done, "lastVisitedAt": "2026-01-01T00:00:00Z"})).has_unseen_completion());
         assert!(t(json!({"lastVisitedAt": "2026-01-01T00:00:00Z"})).needs_visit());
         assert!(!t(json!({"lastVisitedAt": "2026-01-02T00:00:00Z"})).needs_visit());
+    }
+
+    #[test]
+    fn pages_older_history_and_drops_strays_below_the_window() {
+        let mut view = ThreadView::default();
+        let row = |id: &str, ord: u64| json!({"visibility": "local", "item": {"id": id, "ordinal": ord, "type": "assistant_message", "text": id, "runId": "r", "nodeId": null}});
+        view.apply(&json!({"kind": "snapshot", "snapshotSequence": 1, "historyCursor": "c1", "hasMoreHistory": true,
+            "projection": {"runs": [{"id": "r", "status": "completed", "startedAt": "t"}], "attempts": [], "visibleTurnItems": [row("m5", 5), row("m6", 6)]}}));
+        let stray = json!({"id": "m2", "ordinal": 2, "type": "assistant_message", "text": "m2", "runId": "r", "nodeId": null});
+        view.apply(&json!({"kind": "event", "sequence": 2, "event": {"type": "turn-item.updated", "payload": stray}}));
+        assert_eq!(
+            view.items().count(),
+            2,
+            "unseen older item waits for its page"
+        );
+        view.prepend_history(&json!({"items": [row("m1", 1), row("m2", 2), row("m5", 5)], "nextCursor": null, "hasMoreHistory": false}));
+        let ids: Vec<String> = view.items().map(|i| i.id.clone()).collect();
+        assert_eq!(ids, ["m1", "m2", "m5", "m6"]);
+        assert!(!view.has_more_history && view.history_cursor.is_none());
     }
 }

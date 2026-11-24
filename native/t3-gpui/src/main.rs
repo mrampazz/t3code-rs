@@ -138,6 +138,7 @@ struct T3App {
     /// Drops search responses for an older query.
     palette_generation: u64,
     show_archived: bool,
+    history_loading: bool,
     find_open: bool,
     find_input: Entity<InputState>,
     /// Which match is current.
@@ -291,6 +292,7 @@ impl T3App {
             palette_matches: Vec::new(),
             palette_generation: 0,
             show_archived: false,
+            history_loading: false,
             find_open: false,
             find_input,
             find_index: 0,
@@ -473,7 +475,8 @@ impl T3App {
         if let Some(old) = self.thread_sub.take() {
             client.cancel(&old);
         }
-        let mut payload = json!({ "threadId": id, "requestCompletionMarker": true });
+        // Bounded like the web: recent rows now, older history paged on demand.
+        let mut payload = json!({ "threadId": id, "requestCompletionMarker": true, "acceptBoundedSnapshot": true });
         if self.thread.sequence > 0 {
             payload["afterSequence"] = json!(self.thread.sequence);
         }
@@ -949,6 +952,45 @@ impl T3App {
         let (env, id) = order[next].clone();
         self.select_thread(env, id, cx);
         true
+    }
+
+    /// Prepends the next page of older history (`threadHistoryPage`).
+    fn load_history(&mut self, cx: &mut Context<Self>) {
+        let (Some(session), Some(thread_id), Some(cursor)) = (
+            self.env().map(|e| e.session.clone()),
+            self.selected.clone(),
+            self.thread.history_cursor.clone(),
+        ) else {
+            return;
+        };
+        if self.history_loading {
+            return;
+        }
+        self.history_loading = true;
+        cx.notify();
+        let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+        let path = format!(
+            "/api/orchestration/threads/{}/history?cursor={}",
+            enc(&thread_id),
+            enc(&cursor)
+        );
+        cx.spawn(async move |this, cx| {
+            let result = on_tokio(async move { auth::get_json(&session, &path).await }).await;
+            this.update(cx, |app, cx| {
+                app.history_loading = false;
+                if app.selected.as_deref() != Some(thread_id.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(Ok(page)) => app.thread.prepend_history(&page),
+                    Ok(Err(e)) => app.error = Some(format!("Could not load history: {e}").into()),
+                    Err(e) => app.error = Some(e.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
@@ -1676,6 +1718,21 @@ impl T3App {
                     .py_2()
                     .overflow_y_scroll()
                     .track_scroll(&self.transcript_scroll)
+                    .when(self.thread.has_more_history, |list| {
+                        list.child(
+                            div().w_full().flex().justify_center().py_2().child(
+                                Button::new("load-history")
+                                    .small()
+                                    .ghost()
+                                    .label(if self.history_loading {
+                                        t("Loading…")
+                                    } else {
+                                        t("Load earlier messages")
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| this.load_history(cx))),
+                            ),
+                        )
+                    })
                     .children(items)
                     .children(
                         thread

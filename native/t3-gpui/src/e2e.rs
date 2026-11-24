@@ -195,7 +195,7 @@ async fn launch_in(
     let view = Live::start(
         &env.client,
         "orchestration.subscribeThread",
-        json!({ "threadId": thread_id, "requestCompletionMarker": true }),
+        json!({ "threadId": thread_id, "requestCompletionMarker": true, "acceptBoundedSnapshot": true }),
         ThreadView::apply,
     );
     (thread_id, view)

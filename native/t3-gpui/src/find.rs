@@ -42,6 +42,11 @@ pub fn matching_rows(rows: &[Row<'_>], query: &str) -> Vec<usize> {
 }
 
 impl T3App {
+    /// The "Load earlier" row sits above the timeline rows in the scroll area.
+    fn history_row(&self) -> usize {
+        usize::from(self.thread.has_more_history)
+    }
+
     pub(crate) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find_open = true;
         self.find_index = 0;
@@ -56,7 +61,8 @@ impl T3App {
         let query = self.find_input.read(cx).value().to_string();
         let rows = crate::timeline::group_rows(self.thread.items());
         if let Some(&first) = matching_rows(&rows, &query).first() {
-            self.transcript_scroll.scroll_to_item(first);
+            self.transcript_scroll
+                .scroll_to_item(first + self.history_row());
         }
         cx.notify();
     }
@@ -76,7 +82,7 @@ impl T3App {
             (self.find_index + n - 1) % n
         };
         self.transcript_scroll
-            .scroll_to_item(matches[self.find_index]);
+            .scroll_to_item(matches[self.find_index] + self.history_row());
         cx.notify();
     }
 
