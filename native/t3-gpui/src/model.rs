@@ -166,6 +166,13 @@ pub struct Provider {
     #[serde(default)]
     pub show_interaction_mode_toggle: Option<bool>,
     #[serde(default)]
+    pub slash_commands: Vec<Value>,
+    #[serde(default)]
+    pub skills: Vec<Value>,
+    /// Per-folder slash commands and skills (`ServerProviderWorkspaceSnapshot`).
+    #[serde(default)]
+    pub workspace_snapshots: Vec<Value>,
+    #[serde(default)]
     pub models: Vec<ProviderModel>,
 }
 
@@ -231,6 +238,28 @@ impl ServerConfig {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Merges a `server.refreshProviders` reply's folder snapshots into the known providers.
+    pub fn merge_workspace_snapshots(&mut self, reply: &Value) {
+        for incoming in reply["providers"].as_array().into_iter().flatten() {
+            let Some(ours) = self
+                .providers
+                .iter_mut()
+                .find(|p| incoming["instanceId"] == p.instance_id.as_str())
+            else {
+                continue;
+            };
+            for snapshot in incoming["workspaceSnapshots"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                ours.workspace_snapshots
+                    .retain(|s| s["cwd"] != snapshot["cwd"]);
+                ours.workspace_snapshots.push(snapshot.clone());
+            }
         }
     }
 

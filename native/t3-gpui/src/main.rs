@@ -1,6 +1,7 @@
 mod attachments;
 mod auth;
 mod composer;
+mod composer_menu;
 mod diff_panel;
 mod git;
 mod history;
@@ -87,6 +88,13 @@ struct T3App {
     history_pos: Option<history::Position>,
     attachments: Vec<attachments::Attachment>,
     attachment_seq: u64,
+    menu_trigger: Option<composer_menu::Trigger>,
+    menu_items: Vec<composer_menu::MenuItem>,
+    menu_index: usize,
+    /// Drops path search results for an older trigger.
+    menu_generation: u64,
+    /// Provider/folder pairs whose command snapshot was already requested.
+    requested_snapshots: HashSet<String>,
     draft_interaction_mode: String,
     client: Option<RpcClient>,
     shell: Shell,
@@ -175,11 +183,15 @@ impl T3App {
                     this.pair(cx);
                 }
             }),
-            cx.subscribe_in(&composer, window, |this, _, e: &InputEvent, window, cx| {
-                if matches!(e, InputEvent::PressEnter { shift: false, .. }) {
-                    this.send(window, cx);
-                }
-            }),
+            cx.subscribe_in(
+                &composer,
+                window,
+                |this, _, e: &InputEvent, window, cx| match e {
+                    InputEvent::PressEnter { shift: false, .. } => this.send(window, cx),
+                    InputEvent::Change => this.update_composer_menu(cx),
+                    _ => {}
+                },
+            ),
         ];
         let mut app = Self {
             screen: Screen::Pair,
@@ -195,6 +207,11 @@ impl T3App {
             history_pos: None,
             attachments: Vec::new(),
             attachment_seq: 0,
+            menu_trigger: None,
+            menu_items: Vec::new(),
+            menu_index: 0,
+            menu_generation: 0,
+            requested_snapshots: HashSet::new(),
             draft_interaction_mode: "default".into(),
             client: None,
             shell: Shell::default(),
@@ -763,6 +780,11 @@ impl T3App {
     ) {
         let k = &e.keystroke;
         let m = &k.modifiers;
+        if !(m.control || m.alt || m.platform || m.shift)
+            && self.composer_menu_key(&k.key, window, cx)
+        {
+            return cx.stop_propagation();
+        }
         if !matches!(k.key.as_str(), "up" | "down") || m.control || m.alt || m.platform || m.shift {
             return;
         }
@@ -1145,6 +1167,10 @@ impl T3App {
                                 .child("No available provider")
                                 .into_any_element(),
                         })
+                        .when(
+                            self.menu_trigger.is_some() && !self.menu_items.is_empty(),
+                            |col| col.child(self.render_composer_menu(cx)),
+                        )
                         .child(self.render_attachments(cx))
                         .child(Textarea::new(&self.composer))
                         .children(
@@ -1291,6 +1317,10 @@ impl T3App {
                     .w_full()
                     .p_4()
                     .gap_2()
+                    .when(
+                        self.menu_trigger.is_some() && !self.menu_items.is_empty(),
+                        |col| col.child(self.render_composer_menu(cx)),
+                    )
                     .child(self.render_attachments(cx))
                     .child(
                         div()

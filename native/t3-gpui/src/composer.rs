@@ -51,7 +51,7 @@ impl T3App {
         }
     }
 
-    fn set_interaction_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
+    pub(crate) fn set_interaction_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
         if self.draft_project.is_some() {
             self.draft_interaction_mode = mode.to_owned();
             return cx.notify();

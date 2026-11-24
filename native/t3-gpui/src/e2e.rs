@@ -795,3 +795,71 @@ async fn e2e_attachment() {
     println!("attachments on the message: {sent:?}");
     wait_idle(&env, &thread_id).await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_composer_menu_sources() {
+    let env = connect().await;
+    let cwd = {
+        let shell = env.shell.state.lock().unwrap();
+        shell
+            .projects
+            .iter()
+            .find(|p| p.id == env.project_id)
+            .unwrap()
+            .workspace_root
+            .clone()
+    };
+    let found = env
+        .client
+        .call(
+            "projects.searchEntries",
+            json!({ "cwd": cwd, "query": "", "limit": 20 }),
+        )
+        .await
+        .unwrap();
+    let items = crate::composer_menu::path_items(found["entries"].as_array().unwrap());
+    println!(
+        "@ items: {:?}",
+        items.iter().map(|i| &i.insert).collect::<Vec<_>>()
+    );
+
+    let reply = env
+        .client
+        .call(
+            "server.refreshProviders",
+            json!({ "instanceId": REPLAY, "cwd": cwd }),
+        )
+        .await
+        .unwrap();
+    let mut config = ServerConfig::default();
+    config.providers = env.config.state.lock().unwrap().providers.clone();
+    config.merge_workspace_snapshots(&reply);
+    let replay = config
+        .providers
+        .iter()
+        .find(|p| p.instance_id == REPLAY)
+        .unwrap();
+    let snapshot = replay
+        .workspace_snapshots
+        .iter()
+        .find(|s| s["cwd"] == cwd.as_str());
+    println!(
+        "replay snapshot for cwd: {} commands, {} skills (machine: {} commands)",
+        snapshot
+            .and_then(|s| s["slashCommands"].as_array())
+            .map_or(0, Vec::len),
+        snapshot
+            .and_then(|s| s["skills"].as_array())
+            .map_or(0, Vec::len),
+        replay.slash_commands.len()
+    );
+    // Replay reports no commands, so the menu falls back to the (empty) machine list; the reply
+    // must still decode into providers the merge understands.
+    assert!(
+        reply["providers"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|p| p["instanceId"] == REPLAY))
+    );
+    assert!(!items.is_empty(), "the new project has files to mention");
+}
