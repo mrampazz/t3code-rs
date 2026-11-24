@@ -82,9 +82,12 @@ async fn session() -> auth::Session {
     if let (Ok(base_url), Ok(access_token)) =
         (std::env::var("T3_SERVER"), std::env::var("T3_TOKEN"))
     {
+        let token_type = std::env::var("T3_TOKEN_TYPE").unwrap_or_else(|_| "Bearer".into());
         return auth::Session {
             base_url,
             access_token,
+            token_type,
+            expires_at: None,
         };
     }
     let url = std::env::var("T3_PAIRING_URL").expect("set T3_PAIRING_URL or T3_SERVER + T3_TOKEN");
@@ -942,4 +945,37 @@ async fn e2e_settings() {
                 .map(|_| ())
         })
         .await;
+}
+
+/// Pairs with a DPoP key, connects, renews in place, and connects again with the renewed token.
+#[tokio::test]
+#[ignore]
+async fn e2e_dpop_pair_and_renew() {
+    let url = std::env::var("T3_PAIRING_URL").expect("T3_PAIRING_URL (one-time link)");
+    let session = auth::pair(&url).await.unwrap();
+    assert!(
+        session.is_dpop(),
+        "the server advertises accessTokenRenewal, so pairing binds a DPoP key"
+    );
+    let connect_once = |s: auth::Session| async move {
+        let client = RpcClient::connect(&auth::socket_url(&s).await.unwrap())
+            .await
+            .unwrap();
+        let shell = Live::start(
+            &client,
+            "orchestration.subscribeShell",
+            json!({ "requestCompletionMarker": true }),
+            Shell::apply,
+        );
+        shell.until("shell sync", |s| s.synced.then_some(())).await;
+        client.close();
+    };
+    connect_once(session.clone()).await;
+    let renewed = auth::renew(&session).await.unwrap();
+    assert_ne!(renewed.access_token, session.access_token);
+    println!(
+        "renewed; expires in {}s",
+        (renewed.expires_at.unwrap() - jiff::Timestamp::now().as_millisecond()) / 1000
+    );
+    connect_once(renewed).await;
 }

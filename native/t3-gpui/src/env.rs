@@ -118,13 +118,21 @@ impl T3App {
         }
         cx.notify();
         cx.spawn(async move |this, cx| {
+            let mut session = session;
             let alive = |app: &T3App| app.env_by(&key).is_some_and(|e| e.generation == generation);
             let mut attempt = 0u32;
             loop {
                 let s = session.clone();
                 let result = on_tokio(async move {
+                    // A renewable DPoP session renews itself just before its token expires.
+                    let now = jiff::Timestamp::now().as_millisecond();
+                    let s = if s.needs_renewal(now) {
+                        auth::renew(&s).await?
+                    } else {
+                        s
+                    };
                     let url = auth::socket_url(&s).await?;
-                    RpcClient::connect(&url).await
+                    anyhow::Ok((s, RpcClient::connect(&url).await?))
                 })
                 .await
                 .map_err(anyhow::Error::from)
@@ -141,7 +149,8 @@ impl T3App {
                         return;
                     }
                     Err(e) => e.to_string(),
-                    Ok(client) => {
+                    Ok((renewed, client)) => {
+                        session = renewed.clone();
                         let Ok(Some(after)) = this.update(cx, |app, cx| {
                             if !alive(app) {
                                 client.close();
@@ -149,6 +158,7 @@ impl T3App {
                             }
                             let active = app.env().is_some_and(|e| e.key == key);
                             let env = app.env_by_mut(&key)?;
+                            env.session = renewed;
                             env.client = Some(client.clone());
                             env.error = None;
                             let after = env.shell.sequence;

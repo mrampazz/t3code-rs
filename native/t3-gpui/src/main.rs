@@ -3,6 +3,7 @@ mod auth;
 mod composer;
 mod composer_menu;
 mod diff_panel;
+mod dpop;
 mod drag;
 mod env;
 mod git;
