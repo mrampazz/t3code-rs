@@ -18,6 +18,8 @@ pub struct Env {
     pub client: Option<RpcClient>,
     pub shell: Shell,
     pub config: ServerConfig,
+    /// Every terminal on the environment (`subscribeTerminalMetadata`).
+    pub terminals: crate::terminal::TerminalList,
     /// Bumped per connect or removal so a stale supervisor loop stops.
     pub generation: u64,
     pub error: Option<SharedString>,
@@ -104,6 +106,7 @@ impl T3App {
                     client: None,
                     shell: Shell::new(&key),
                     config: ServerConfig::default(),
+                    terminals: Default::default(),
                     generation: 1,
                     error: None,
                 });
@@ -163,6 +166,7 @@ impl T3App {
                             env.error = None;
                             let after = env.shell.sequence;
                             app.subscribe_config(&key, &client, cx);
+                            app.subscribe_terminal_list(&key, &client, cx);
                             app.screen = Screen::Connected;
                             if active && app.selected.is_some() {
                                 app.subscribe_thread(cx);
@@ -310,6 +314,26 @@ impl T3App {
                 let applied = this.update(cx, |app, cx| {
                     if let Some(env) = app.env_by_mut(&key) {
                         env.config.apply(&event);
+                    }
+                    cx.notify();
+                });
+                if applied.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Lives as long as the socket, like the config stream.
+    fn subscribe_terminal_list(&mut self, key: &str, client: &RpcClient, cx: &mut Context<Self>) {
+        let (_, mut rx) = client.request("subscribeTerminalMetadata", json!({}));
+        let key = key.to_owned();
+        cx.spawn(async move |this, cx| {
+            while let Some(Ok(event)) = rx.recv().await {
+                let applied = this.update(cx, |app, cx| {
+                    if let Some(env) = app.env_by_mut(&key) {
+                        env.terminals.apply(&event);
                     }
                     cx.notify();
                 });

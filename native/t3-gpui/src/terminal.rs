@@ -10,6 +10,7 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, Rgb};
 
+#[cfg(test)]
 pub const TERMINAL_ID: &str = "term-1";
 /// `DEFAULT_MAX_TERMINAL_BUFFER_BYTES` (packages/contracts/src/terminal.ts).
 pub const MAX_HISTORY_BYTES: usize = 512 * 1024;
@@ -275,6 +276,57 @@ pub fn key_bytes(
     Some(if alt { format!("\x1b{text}") } else { text })
 }
 
+/// `subscribeTerminalMetadata` projection: every terminal on the environment.
+#[derive(Default)]
+pub struct TerminalList(pub Vec<serde_json::Value>);
+
+impl TerminalList {
+    pub fn apply(&mut self, event: &serde_json::Value) {
+        let same = |t: &serde_json::Value, thread: &serde_json::Value, id: &serde_json::Value| {
+            t["threadId"] == *thread && t["terminalId"] == *id
+        };
+        match event["type"].as_str() {
+            Some("snapshot") => self.0 = event["terminals"].as_array().cloned().unwrap_or_default(),
+            Some("upsert") => {
+                let t = &event["terminal"];
+                self.0
+                    .retain(|x| !same(x, &t["threadId"], &t["terminalId"]));
+                self.0.push(t.clone());
+            }
+            Some("remove") => self
+                .0
+                .retain(|x| !same(x, &event["threadId"], &event["terminalId"])),
+            _ => {}
+        }
+    }
+
+    /// A thread's terminals, in id order.
+    pub fn of_thread(&self, thread_id: &str) -> Vec<&serde_json::Value> {
+        let mut out: Vec<&serde_json::Value> = self
+            .0
+            .iter()
+            .filter(|t| t["threadId"] == thread_id)
+            .collect();
+        out.sort_by_key(|t| terminal_number(t["terminalId"].as_str().unwrap_or("")));
+        out
+    }
+}
+
+fn terminal_number(id: &str) -> u64 {
+    id.rsplit('-')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
+/// The next `term-N` id not taken (ids are client-chosen; the server never allocates them).
+pub fn next_terminal_id(taken: &[&str]) -> String {
+    (1..)
+        .map(|n| format!("term-{n}"))
+        .find(|id| !taken.contains(&id.as_str()))
+        .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +392,25 @@ mod tests {
             key_bytes("space", None, false, false, false).as_deref(),
             Some(" ")
         );
+    }
+
+    #[test]
+    fn tracks_terminals_per_thread() {
+        use serde_json::json;
+        let mut list = TerminalList::default();
+        list.apply(&json!({"type": "snapshot", "terminals": [
+            {"threadId": "t", "terminalId": "term-2", "label": "b"},
+            {"threadId": "t", "terminalId": "term-1", "label": "a"},
+            {"threadId": "u", "terminalId": "term-1", "label": "x"}]}));
+        list.apply(&json!({"type": "upsert", "terminal": {"threadId": "t", "terminalId": "term-1", "label": "npm"}}));
+        list.apply(&json!({"type": "remove", "threadId": "u", "terminalId": "term-1"}));
+        let labels: Vec<&str> = list
+            .of_thread("t")
+            .iter()
+            .map(|t| t["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["npm", "b"]);
+        assert!(list.of_thread("u").is_empty());
+        assert_eq!(next_terminal_id(&["term-1", "term-3"]), "term-2");
     }
 }

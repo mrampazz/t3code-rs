@@ -2,10 +2,11 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{Value, json};
 
-use crate::terminal::{MAX_HISTORY_BYTES, TERMINAL_ID, TermView, key_bytes};
+use crate::terminal::{MAX_HISTORY_BYTES, TermView, key_bytes, next_terminal_id};
 use crate::{T3App, on_tokio};
 
 /// shortcut: a fixed grid; upgrade by measuring the drawer and sending `terminal.resize`.
@@ -21,6 +22,73 @@ impl T3App {
             window.focus(&self.term_focus, cx);
         }
         cx.notify();
+    }
+
+    /// Opens another terminal for the thread, on the next free `term-N`.
+    pub(crate) fn new_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(thread) = self.selected.clone() else {
+            return;
+        };
+        let ids: Vec<String> = self
+            .terminal_tabs(&thread)
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        self.term_id = next_terminal_id(&ids.iter().map(String::as_str).collect::<Vec<_>>());
+        self.open_terminal(false, cx);
+    }
+
+    pub(crate) fn switch_terminal(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.term_id != id {
+            self.term_id = id;
+            self.open_terminal(false, cx);
+        }
+    }
+
+    /// Closes one terminal on the server; the drawer moves to another or hides.
+    pub(crate) fn close_terminal_tab(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(thread) = self.selected.clone() else {
+            return;
+        };
+        if let Some(client) = self.client() {
+            let payload = json!({ "threadId": thread, "terminalId": id, "deleteHistory": true });
+            on_tokio(async move { client.call("terminal.close", payload).await });
+        }
+        if id != self.term_id {
+            return cx.notify();
+        }
+        let next = self
+            .terminal_tabs(&thread)
+            .into_iter()
+            .map(|(t, _, _)| t)
+            .find(|t| *t != id);
+        match next {
+            Some(next) => self.switch_terminal(next, cx),
+            None => self.close_terminal(cx),
+        }
+    }
+
+    /// (id, label, running a command) for the thread's terminals, including the attached one.
+    pub(crate) fn terminal_tabs(&self, thread: &str) -> Vec<(String, String, bool)> {
+        let mut tabs: Vec<(String, String, bool)> = self
+            .env()
+            .map(|e| e.terminals.of_thread(thread))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| {
+                let id = t["terminalId"].as_str().unwrap_or("").to_owned();
+                let label = t["label"]
+                    .as_str()
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or(&id)
+                    .to_owned();
+                (id, label, t["hasRunningSubprocess"] == true)
+            })
+            .collect();
+        if self.term.is_some() && !tabs.iter().any(|t| t.0 == self.term_id) {
+            tabs.push((self.term_id.clone(), self.term_id.clone(), false));
+        }
+        tabs
     }
 
     /// The server sizes the PTY to every attached viewer, so a hidden drawer detaches.
@@ -52,7 +120,7 @@ impl T3App {
         self.term_status = Some("Starting…".into());
         let mut payload = json!({
             "threadId": thread.id,
-            "terminalId": TERMINAL_ID,
+            "terminalId": self.term_id,
             "cwd": cwd,
             "worktreePath": thread.worktree_path,
             "cols": COLS,
@@ -151,7 +219,8 @@ impl T3App {
         let (Some(client), Some(thread_id)) = (self.client(), self.selected.clone()) else {
             return;
         };
-        let mut payload = json!({ "threadId": thread_id, "terminalId": TERMINAL_ID, "data": data });
+        let mut payload =
+            json!({ "threadId": thread_id, "terminalId": self.term_id, "data": data });
         if reply {
             payload["reply"] = json!(true);
         }
@@ -205,7 +274,46 @@ impl T3App {
                     .gap_2()
                     .text_xs()
                     .text_color(c.muted_foreground)
-                    .child("Terminal")
+                    .children(
+                        self.selected
+                            .iter()
+                            .flat_map(|thread| self.terminal_tabs(thread))
+                            .enumerate()
+                            .map(|(i, (id, label, busy))| {
+                                let current = id == self.term_id;
+                                let (switch_id, close_id) = (id.clone(), id.clone());
+                                h_flex()
+                                    .id(("terminal-tab", i))
+                                    .gap_1()
+                                    .px_2()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .when(current, |t| t.bg(c.secondary).text_color(c.foreground))
+                                    .when(busy, |t| t.child(div().text_color(c.info).child("●")))
+                                    .child(label)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.switch_terminal(switch_id.clone(), cx)
+                                    }))
+                                    .child(
+                                        Button::new(("terminal-tab-close", i))
+                                            .xsmall()
+                                            .ghost()
+                                            .label("×")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.close_terminal_tab(close_id.clone(), cx)
+                                            })),
+                                    )
+                            }),
+                    )
+                    .child(
+                        Button::new("terminal-new")
+                            .xsmall()
+                            .ghost()
+                            .label("+")
+                            .tooltip("New terminal")
+                            .on_click(cx.listener(|this, _, _, cx| this.new_terminal(cx))),
+                    )
                     .children(self.term_status.clone())
                     .child(div().flex_1())
                     .child(
@@ -216,7 +324,7 @@ impl T3App {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(id) = thread_id.clone() {
                                     let payload =
-                                        json!({ "threadId": id, "terminalId": TERMINAL_ID });
+                                        json!({ "threadId": id, "terminalId": this.term_id });
                                     if let Some(client) = this.client() {
                                         on_tokio(async move {
                                             client.call("terminal.clear", payload).await

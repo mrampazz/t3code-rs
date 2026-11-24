@@ -121,6 +121,8 @@ struct T3App {
     /// Request id of the `terminal.attach` stream.
     term_sub: Option<String>,
     term_status: Option<SharedString>,
+    /// The attached terminal's id (`term-N`, client-chosen).
+    term_id: String,
     term_focus: FocusHandle,
     git: git::GitStatus,
     /// Request id of the `subscribeVcsStatus` stream.
@@ -276,6 +278,7 @@ impl T3App {
             term: None,
             term_sub: None,
             term_status: None,
+            term_id: "term-1".into(),
             term_focus: cx.focus_handle(),
             git: Default::default(),
             git_sub: None,
@@ -443,6 +446,7 @@ impl T3App {
         if !same_env || self.selected.as_deref() != Some(id.as_str()) {
             self.thread = ThreadView::default();
             self.find_open = false;
+            self.term_id = "term-1".into();
             self.history_pos = None;
             self.diff_generation += 1;
             self.diff_target = None;
@@ -885,6 +889,11 @@ impl T3App {
                 self.new_thread(env, project, window, cx);
             }
             "chat.find" if thread.is_some() => self.open_find(window, cx),
+            "terminal.new" if self.term.is_some() => self.new_terminal(cx),
+            "terminal.close" if self.term.is_some() => {
+                let id = self.term_id.clone();
+                self.close_terminal_tab(id, cx);
+            }
             "thread.next" | "thread.previous" => {
                 return self.step_thread(command == "thread.next", cx);
             }
