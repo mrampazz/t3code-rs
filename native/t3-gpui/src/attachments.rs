@@ -14,6 +14,12 @@ use crate::{T3App, on_tokio};
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
+/// Where an attachment's bytes come from.
+enum Source {
+    Path(PathBuf),
+    Bytes(Vec<u8>),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Upload {
     Uploading,
@@ -95,76 +101,114 @@ impl T3App {
         for path in paths {
             let (mime, image) = classify(&path);
             let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            self.attachment_seq += 1;
-            let key = self.attachment_seq;
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("file")
                 .to_string();
-            let limit = if image {
-                MAX_IMAGE_BYTES
-            } else {
-                MAX_FILE_BYTES
-            };
-            let upload = if size == 0 || size > limit {
-                Upload::Failed(format!("Must be 1 byte to {} MB", limit / 1024 / 1024))
-            } else {
-                Upload::Uploading
-            };
-            let start = upload == Upload::Uploading;
-            self.attachments.push(Attachment {
-                key,
-                name: name.clone(),
-                mime: mime.clone(),
-                size,
-                image,
-                upload,
-            });
-            if !start {
-                continue;
-            }
-            let (Some(client), Some(session)) =
-                (self.client(), self.env().map(|e| e.session.clone()))
-            else {
-                continue;
-            };
-            let request = json!({ "type": if image { "image" } else { "file" }, "name": name, "mimeType": mime, "sizeBytes": size });
-            cx.spawn(async move |this, cx| {
-                let result = on_tokio(async move {
-                    let url = client.call("attachments.createUploadUrl", request).await?;
-                    let bytes = tokio::task::spawn_blocking(move || std::fs::read(path)).await??;
-                    let relative = url["relativeUrl"].as_str().unwrap_or_default();
-                    let res = reqwest::Client::new()
-                        .post(format!("{}{relative}", session.base_url))
-                        .header("content-type", mime)
-                        .body(bytes)
-                        .send()
-                        .await?;
-                    anyhow::ensure!(
-                        res.status().is_success(),
-                        "upload rejected ({})",
-                        res.status()
-                    );
-                    Ok(url["attachmentId"].as_str().unwrap_or_default().to_string())
-                })
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|r| r);
-                this.update(cx, |app, cx| {
-                    if let Some(a) = app.attachments.iter_mut().find(|a| a.key == key) {
-                        a.upload = match result {
-                            Ok(id) => Upload::Ready(id),
-                            Err(e) => Upload::Failed(e.to_string()),
-                        };
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
+            self.add_attachment(name, mime, image, size, Source::Path(path), cx);
         }
+    }
+
+    /// A pasted image (web: composer paste): supported formats upload, others are refused.
+    pub(crate) fn add_pasted_image(&mut self, image: &gpui_kit::Image, cx: &mut Context<Self>) {
+        let (mime, ext) = match image.format {
+            ImageFormat::Png => ("image/png", "png"),
+            ImageFormat::Jpeg => ("image/jpeg", "jpg"),
+            ImageFormat::Gif => ("image/gif", "gif"),
+            ImageFormat::Webp => ("image/webp", "webp"),
+            _ => {
+                self.error = Some("Paste a PNG, JPEG, GIF, or WebP image.".into());
+                return cx.notify();
+            }
+        };
+        let size = image.bytes.len() as u64;
+        self.add_attachment(
+            format!("pasted-image.{ext}"),
+            mime.into(),
+            true,
+            size,
+            Source::Bytes(image.bytes.clone()),
+            cx,
+        );
+    }
+
+    /// Validates the size, then uploads: `attachments.createUploadUrl` and POST to the signed URL.
+    fn add_attachment(
+        &mut self,
+        name: String,
+        mime: String,
+        image: bool,
+        size: u64,
+        source: Source,
+        cx: &mut Context<Self>,
+    ) {
+        self.attachment_seq += 1;
+        let key = self.attachment_seq;
+        let limit = if image {
+            MAX_IMAGE_BYTES
+        } else {
+            MAX_FILE_BYTES
+        };
+        let valid = size > 0 && size <= limit;
+        let upload = if valid {
+            Upload::Uploading
+        } else {
+            Upload::Failed(format!("Must be 1 byte to {} MB", limit / 1024 / 1024))
+        };
+        self.attachments.push(Attachment {
+            key,
+            name: name.clone(),
+            mime: mime.clone(),
+            size,
+            image,
+            upload,
+        });
         cx.notify();
+        let (true, Some(client), Some(session)) =
+            (valid, self.client(), self.env().map(|e| e.session.clone()))
+        else {
+            return;
+        };
+        let request = json!({ "type": if image { "image" } else { "file" }, "name": name, "mimeType": mime, "sizeBytes": size });
+        cx.spawn(async move |this, cx| {
+            let result = on_tokio(async move {
+                let url = client.call("attachments.createUploadUrl", request).await?;
+                let bytes = match source {
+                    Source::Bytes(bytes) => bytes,
+                    Source::Path(path) => {
+                        tokio::task::spawn_blocking(move || std::fs::read(path)).await??
+                    }
+                };
+                let relative = url["relativeUrl"].as_str().unwrap_or_default();
+                let res = reqwest::Client::new()
+                    .post(format!("{}{relative}", session.base_url))
+                    .header("content-type", mime)
+                    .body(bytes)
+                    .send()
+                    .await?;
+                anyhow::ensure!(
+                    res.status().is_success(),
+                    "upload rejected ({})",
+                    res.status()
+                );
+                Ok(url["attachmentId"].as_str().unwrap_or_default().to_string())
+            })
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|r| r);
+            this.update(cx, |app, cx| {
+                if let Some(a) = app.attachments.iter_mut().find(|a| a.key == key) {
+                    a.upload = match result {
+                        Ok(id) => Upload::Ready(id),
+                        Err(e) => Upload::Failed(e.to_string()),
+                    };
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The attachments to send, or an error while any is uploading or failed.

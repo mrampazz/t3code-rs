@@ -699,6 +699,31 @@ impl T3App {
     ) {
         let k = &e.keystroke;
         let m = &k.modifiers;
+        // Images and files on the clipboard become attachments; text pastes as usual.
+        if k.key == "v"
+            && (m.platform || m.control)
+            && !m.shift
+            && !m.alt
+            && let Some(item) = cx.read_from_clipboard()
+        {
+            let mut handled = false;
+            for entry in item.entries() {
+                match entry {
+                    ClipboardEntry::Image(image) => {
+                        self.add_pasted_image(image, cx);
+                        handled = true;
+                    }
+                    ClipboardEntry::ExternalPaths(paths) => {
+                        self.add_attachments(paths.paths().to_vec(), cx);
+                        handled = true;
+                    }
+                    _ => {}
+                }
+            }
+            if handled {
+                return cx.stop_propagation();
+            }
+        }
         if !(m.control || m.alt || m.platform || m.shift)
             && self.composer_menu_key(&k.key, window, cx)
         {
