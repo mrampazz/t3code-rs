@@ -14,14 +14,36 @@ use crate::model::TurnItem;
 const OUTPUT_TAIL_CHARS: usize = 8_000;
 
 impl T3App {
-    pub(crate) fn render_item(&self, item: &TurnItem, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_item(
+        &self,
+        item: &TurnItem,
+        revert_turn: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let c = cx.theme().colors;
         let mono = cx.theme().mono_font_family.clone();
         let expanded = self.expanded.contains(&item.id);
         let text = item.str("text").to_string();
         match item.kind.as_str() {
             "user_message" => h_flex()
+                .group("user-row")
                 .justify_end()
+                .gap_2()
+                .when_some(revert_turn, |row, turn| {
+                    let text = text.clone();
+                    row.child(
+                        Button::new(SharedString::from(format!("revert-{}", item.id)))
+                            .xsmall()
+                            .ghost()
+                            .label("↺")
+                            .tooltip("Revert to here")
+                            .invisible()
+                            .group_hover("user-row", |s| s.visible())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.confirm_revert(turn, text.clone(), window, cx)
+                            })),
+                    )
+                })
                 .child(
                     div()
                         .max_w(relative(0.8))

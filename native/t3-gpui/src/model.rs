@@ -29,6 +29,10 @@ pub struct ThreadShell {
     #[serde(default)]
     pub active_run_id: Option<String>,
     #[serde(default)]
+    pub runtime_mode: String,
+    #[serde(default)]
+    pub interaction_mode: String,
+    #[serde(default)]
     pub last_error: Option<String>,
     #[serde(default)]
     pub pinned_at: Option<String>,
@@ -139,6 +143,12 @@ pub struct Provider {
     pub auth: Value,
     #[serde(default)]
     pub models_retained: bool,
+    #[serde(default)]
+    pub supports_conversation_rollback: Option<bool>,
+    #[serde(default)]
+    pub supported_runtime_modes: Option<Vec<String>>,
+    #[serde(default)]
+    pub show_interaction_mode_toggle: Option<bool>,
     #[serde(default)]
     pub models: Vec<ProviderModel>,
 }
@@ -319,6 +329,15 @@ impl Checkpoint {
 }
 
 #[derive(Clone, Debug)]
+struct RewindPoint {
+    turn: u64,
+    run_id: Option<String>,
+    id: String,
+    scope_id: String,
+    status: String,
+}
+
+#[derive(Clone, Debug)]
 struct Run {
     status: String,
     started: bool,
@@ -333,17 +352,114 @@ pub struct ThreadView {
     superseded: HashMap<String, HashSet<String>>,
     /// Newest turn first.
     pub checkpoints: Vec<Checkpoint>,
+    /// Every checkpoint a rewind can target, keyed by turn (0 = thread start).
+    rewind: Vec<RewindPoint>,
     /// Resume cursor for `afterSequence`; 0 until the first snapshot.
     pub sequence: u64,
 }
 
 impl ThreadView {
     fn apply_checkpoint(&mut self, v: &Value) {
+        let turn = match (
+            v["appRunOrdinal"].as_u64(),
+            v["ordinalWithinScope"].as_u64(),
+        ) {
+            (Some(turn), _) => Some(turn),
+            (None, Some(0)) => Some(0),
+            _ => None,
+        };
+        if let (Some(turn), Some(id), Some(scope_id)) =
+            (turn, v["id"].as_str(), v["scopeId"].as_str())
+        {
+            // shortcut: tracked-repository scopes also have a turn-0 baseline; the first wins here,
+            // while the web skips repository scopes (findRevertCheckpoint). Upgrade with multi-repo support.
+            self.rewind.retain(|p| p.id != id);
+            self.rewind.push(RewindPoint {
+                turn,
+                run_id: v["runId"].as_str().map(str::to_owned),
+                id: id.to_owned(),
+                scope_id: scope_id.to_owned(),
+                status: v["status"].as_str().unwrap_or("").to_owned(),
+            });
+        }
         let Some(checkpoint) = Checkpoint::from_value(v) else {
             return;
         };
         upsert(&mut self.checkpoints, checkpoint, |c| &c.id);
         self.checkpoints.sort_by_key(|c| std::cmp::Reverse(c.turn));
+    }
+
+    /// The turn each user message rewinds to: the previous run's checkpoint, or the thread start.
+    /// Port of `deriveRevertTurnCountByUserMessageId` (apps/web/src/session-logic.ts).
+    pub fn revert_turns(&self, running_run: Option<&str>) -> HashMap<String, u64> {
+        let rewindable = |p: &&RewindPoint| p.status != "stale";
+        let turn_by_run: HashMap<&str, u64> = self
+            .rewind
+            .iter()
+            .filter(rewindable)
+            .filter_map(|p| Some((p.run_id.as_deref()?, p.turn)))
+            .collect();
+        let start_available = self
+            .rewind
+            .iter()
+            .filter(rewindable)
+            .any(|p| p.turn == 0 && p.run_id.is_none());
+        let mut target_by_run: HashMap<&str, Option<u64>> = HashMap::new();
+        let mut previous: Option<&str> = None;
+        let mut out = HashMap::new();
+        for row in self
+            .rows
+            .iter()
+            .filter(|r| r.local && self.visible(&r.item))
+        {
+            let item = &row.item;
+            let Some(run) = item.run_id.as_deref() else {
+                continue;
+            };
+            if !target_by_run.contains_key(run) {
+                let target = match previous {
+                    None => start_available.then_some(0),
+                    Some(prev) => turn_by_run.get(prev).copied(),
+                };
+                target_by_run.insert(run, target);
+                previous = Some(run);
+            }
+            let intent = item.str("inputIntent");
+            if item.kind != "user_message"
+                || Some(run) == running_run
+                || !matches!(intent, "turn_start" | "queued_turn")
+            {
+                continue;
+            }
+            if let Some(Some(target)) = target_by_run.get(run) {
+                out.insert(item.id.clone(), *target);
+            }
+        }
+        out
+    }
+
+    /// `checkpoint.rollback` to `turn`; restoring files needs a ready snapshot.
+    pub fn rollback_command(
+        &self,
+        thread_id: &str,
+        turn: u64,
+        restore_files: bool,
+    ) -> Option<Value> {
+        let point = self
+            .rewind
+            .iter()
+            .rev()
+            .find(|p| p.turn == turn && (turn > 0 || p.run_id.is_none()))?;
+        let usable = point.status == "ready" || (!restore_files && point.status != "stale");
+        usable.then(|| {
+            serde_json::json!({
+                "type": "checkpoint.rollback",
+                "threadId": thread_id,
+                "scopeId": point.scope_id,
+                "checkpointId": point.id,
+                "restoreFiles": restore_files,
+            })
+        })
     }
 
     pub fn latest_turn(&self) -> Option<u64> {
@@ -364,6 +480,7 @@ impl ThreadView {
                     self.apply_attempt(attempt);
                 }
                 self.checkpoints.clear();
+                self.rewind.clear();
                 for checkpoint in projection["checkpoints"].as_array().into_iter().flatten() {
                     self.apply_checkpoint(checkpoint);
                 }
@@ -708,5 +825,33 @@ mod tests {
             (2, 5, 1)
         );
         assert_eq!(view.latest_turn(), Some(2));
+    }
+
+    #[test]
+    fn user_messages_rewind_to_the_previous_turn() {
+        let mut view = ThreadView::default();
+        let user = |id: &str, ord: u64, run: &str| json!({"visibility": "local", "item": {"id": id, "ordinal": ord, "type": "user_message", "runId": run, "nodeId": null, "inputIntent": "turn_start", "text": id}});
+        let cp = |id: &str, run: Value, turn: Value, within: u64, status: &str| json!({"id": id, "scopeId": "s", "runId": run, "appRunOrdinal": turn, "ordinalWithinScope": within, "status": status, "files": []});
+        view.apply(&json!({"kind": "snapshot", "snapshotSequence": 1, "projection": {
+            "runs": [], "attempts": [],
+            "checkpoints": [cp("base", json!(null), json!(null), 0, "ready"), cp("c1", json!("r1"), json!(1), 1, "ready"), cp("c2", json!("r2"), json!(2), 2, "missing")],
+            "visibleTurnItems": [user("u1", 1, "r1"), user("u2", 2, "r2"), user("u3", 3, "r3")]}}));
+        let turns = view.revert_turns(Some("r3"));
+        assert_eq!(
+            (turns.get("u1"), turns.get("u2"), turns.get("u3")),
+            (Some(&0), Some(&1), None)
+        );
+        assert_eq!(
+            view.rollback_command("t", 0, true).unwrap()["checkpointId"],
+            "base"
+        );
+        assert!(
+            view.rollback_command("t", 2, true).is_none(),
+            "missing snapshot cannot restore files"
+        );
+        assert_eq!(
+            view.rollback_command("t", 2, false).unwrap()["checkpointId"],
+            "c2"
+        );
     }
 }

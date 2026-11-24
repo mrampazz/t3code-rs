@@ -401,6 +401,36 @@ async fn e2e_thread_actions() {
         })
         .await;
     dispatch(&env.client, cmd("thread.mark-unread", json!({}))).await;
+    dispatch(
+        &env.client,
+        cmd(
+            "thread.runtime-mode.set",
+            json!({ "runtimeMode": "approval-required" }),
+        ),
+    )
+    .await;
+    env.shell
+        .until("runtime mode", |s| {
+            thread(s)
+                .filter(|t| t.runtime_mode == "approval-required")
+                .map(|_| ())
+        })
+        .await;
+    dispatch(
+        &env.client,
+        cmd(
+            "thread.interaction-mode.set",
+            json!({ "interactionMode": "plan" }),
+        ),
+    )
+    .await;
+    env.shell
+        .until("plan mode", |s| {
+            thread(s)
+                .filter(|t| t.interaction_mode == "plan")
+                .map(|_| ())
+        })
+        .await;
     let removals = env.shell.state.lock().unwrap().removals;
     dispatch(&env.client, cmd("thread.archive", json!({}))).await;
     env.shell
@@ -434,4 +464,43 @@ async fn e2e_thread_actions() {
             (thread(s).is_none() && !s.archived.iter().any(|t| t.id == thread_id)).then_some(())
         })
         .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_rewind() {
+    let env = connect().await;
+    let (thread_id, view) = launch(&env, "multi-turn", "first").await;
+    wait_idle(&env, &thread_id).await;
+    dispatch(
+        &env.client,
+        json!({
+            "type": "message.dispatch", "threadId": thread_id, "messageId": uuid::Uuid::new_v4().to_string(),
+            "text": "second", "attachments": [], "dispatchMode": { "type": "queue_after_active" },
+            "createdBy": "user", "creationSource": "web",
+        }),
+    )
+    .await;
+    let (second_id, turn) = view
+        .until("revert target for the second message", |v| {
+            let turns = v.revert_turns(None);
+            v.items()
+                .filter(|i| i.kind == "user_message" && i.str("text") == "second")
+                .find_map(|i| turns.get(&i.id).map(|t| (i.id.clone(), *t)))
+        })
+        .await;
+    wait_idle(&env, &thread_id).await;
+    let command = view
+        .state
+        .lock()
+        .unwrap()
+        .rollback_command(&thread_id, turn, false)
+        .expect("rollback checkpoint");
+    println!("rewinding to turn {turn}: {command}");
+    dispatch(&env.client, command).await;
+    view.until("second turn removed", |v| {
+        (!v.items().any(|i| i.id == second_id)).then_some(())
+    })
+    .await;
+    println!("after rewind: {:?}", kinds(&view.state.lock().unwrap()));
 }

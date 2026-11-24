@@ -1,4 +1,5 @@
 mod auth;
+mod composer;
 mod diff_panel;
 mod model;
 mod rpc;
@@ -15,7 +16,7 @@ use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
-use gpui_kit::component::select::{Select, SelectEvent, SelectState};
+use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, Disableable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -74,6 +75,8 @@ struct T3App {
     picker_synced: (u64, String),
     /// Model chosen for the new-thread draft; `None` uses the default.
     draft_model: Option<serde_json::Value>,
+    draft_runtime_mode: String,
+    draft_interaction_mode: String,
     client: Option<RpcClient>,
     shell: Shell,
     config: ServerConfig,
@@ -149,6 +152,8 @@ impl T3App {
             model_picker,
             picker_synced: (u64::MAX, String::new()),
             draft_model: None,
+            draft_runtime_mode: "full-access".into(),
+            draft_interaction_mode: "default".into(),
             client: None,
             shell: Shell::default(),
             config: ServerConfig::default(),
@@ -387,8 +392,8 @@ impl T3App {
             "title": if title.trim().is_empty() { "New thread".to_string() } else { title },
             "generateTitle": true,
             "modelSelection": model,
-            "runtimeMode": "full-access",
-            "interactionMode": "default",
+            "runtimeMode": self.draft_runtime_mode,
+            "interactionMode": self.draft_interaction_mode,
             "workspaceStrategy": { "type": "root" },
             "initialMessage": { "messageId": command_id, "text": text, "attachments": [] },
         });
@@ -595,6 +600,80 @@ impl T3App {
             }
             picker.set_selected_value(&SharedString::from(key), window, cx);
         });
+    }
+
+    fn confirm_revert(
+        &mut self,
+        turn: u64,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let choice = |id: &'static str, label: &'static str, restore_files: Option<bool>| {
+                let (app, text) = (app.clone(), text.clone());
+                Button::new(id).label(label).on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    if let Some(restore_files) = restore_files {
+                        app.update(cx, |this, cx| {
+                            this.revert(turn, restore_files, text.clone(), window, cx)
+                        })
+                        .ok();
+                    }
+                })
+            };
+            dialog
+                .title("Revert to this message?")
+                .child(div().text_sm().child(
+                    "Later messages are removed and the message goes back into the composer.",
+                ))
+                .footer(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(choice("revert-cancel", "Cancel", None).ghost())
+                        .child(choice("revert-chat", "Conversation only", Some(false)).outline())
+                        .child(
+                            choice("revert-all", "Revert files and conversation", Some(true))
+                                .primary(),
+                        ),
+                )
+        });
+    }
+
+    fn revert(
+        &mut self,
+        turn: u64,
+        restore_files: bool,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread_id) = self.selected.clone() else {
+            return;
+        };
+        if self
+            .shell
+            .threads
+            .iter()
+            .any(|t| t.id == thread_id && t.is_running())
+        {
+            self.error = Some("Interrupt the current turn before reverting.".into());
+            return cx.notify();
+        }
+        let Some(command) = self
+            .thread
+            .rollback_command(&thread_id, turn, restore_files)
+        else {
+            self.error =
+                Some("This checkpoint has no file snapshot. Revert the conversation only.".into());
+            return cx.notify();
+        };
+        self.error = None;
+        self.dispatch(command, cx);
+        self.composer
+            .update(cx, |input, cx| input.set_value(text, window, cx));
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
@@ -861,10 +940,7 @@ impl T3App {
                                 .child(format!("New thread in {}", project.title)),
                         )
                         .child(match &model {
-                            Some(_) => div()
-                                .w(px(320.))
-                                .child(Select::new(&self.model_picker))
-                                .into_any_element(),
+                            Some(_) => self.render_composer_controls(cx).into_any_element(),
                             None => div()
                                 .text_sm()
                                 .text_color(theme.muted_foreground)
@@ -897,10 +973,21 @@ impl T3App {
                 })
                 .into_any_element();
         };
+        let rollback_supported = self
+            .config
+            .providers
+            .iter()
+            .find(|p| thread.model_selection["instanceId"] == p.instance_id.as_str())
+            .is_none_or(|p| p.supports_conversation_rollback != Some(false));
+        let revert_turns = if rollback_supported && !thread.is_running() {
+            self.thread.revert_turns(thread.active_run_id.as_deref())
+        } else {
+            Default::default()
+        };
         let items: Vec<AnyElement> = self
             .thread
             .items()
-            .map(|item| self.render_item(item, cx))
+            .map(|item| self.render_item(item, revert_turns.get(&item.id).copied(), cx))
             .collect();
         v_flex()
             .flex_1()
@@ -991,11 +1078,7 @@ impl T3App {
                     .p_4()
                     .gap_2()
                     .child(Textarea::new(&self.composer))
-                    .child(
-                        div()
-                            .w(px(280.))
-                            .child(Select::new(&self.model_picker).small()),
-                    ),
+                    .child(self.render_composer_controls(cx)),
             )
             .into_any_element()
     }
