@@ -1,7 +1,8 @@
 //! Timeline rows per turn item type (web: `apps/web/src/components/chat/Timeline*.tsx`).
 
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::{ActiveTheme, ThemeColor, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Sizable, ThemeColor, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::Value;
@@ -88,26 +89,60 @@ impl T3App {
                         .to_string(),
                 )
                 .into_any_element(),
-            "approval_request" => v_flex()
-                .gap_1()
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .border_1()
-                .border_color(c.warning)
-                .text_sm()
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title_or(item, "Approval requested")),
-                )
-                .children(
-                    [item.str("prompt"), item.str("reason")]
-                        .into_iter()
-                        .filter(|s| !s.is_empty())
-                        .map(|s| div().text_color(c.muted_foreground).child(s.to_string())),
-                )
-                .into_any_element(),
+            "approval_request" => {
+                let pending = !matches!(
+                    item.str("status"),
+                    "completed" | "failed" | "cancelled" | "interrupted"
+                );
+                let request_id = item.str("requestId").to_string();
+                let thread_id = item.str("threadId").to_string();
+                let buttons: Vec<Button> = approval_options(item)
+                    .into_iter()
+                    .map(|(decision, label)| {
+                        let command = serde_json::json!({
+                            "type": "runtime-request.respond",
+                            "threadId": thread_id,
+                            "requestId": request_id,
+                            "decision": decision,
+                        });
+                        let button =
+                            Button::new(SharedString::from(format!("{}-{decision}", item.id)))
+                                .small()
+                                .label(label)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.dispatch(command.clone(), cx)
+                                }));
+                        if decision == "accept" {
+                            button.primary()
+                        } else {
+                            button.outline()
+                        }
+                    })
+                    .collect();
+                v_flex()
+                    .gap_1()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(c.warning)
+                    .text_sm()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title_or(item, "Approval requested")),
+                    )
+                    .children(
+                        [item.str("prompt"), item.str("reason")]
+                            .into_iter()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| div().text_color(c.muted_foreground).child(s.to_string())),
+                    )
+                    .when(pending, |col| {
+                        col.child(h_flex().pt_1().gap_2().children(buttons))
+                    })
+                    .into_any_element()
+            }
             "system_notice" | "run_interrupt_request" | "run_interrupt_result" => div()
                 .text_xs()
                 .text_color(c.muted_foreground)
@@ -183,6 +218,36 @@ impl T3App {
             })
             .into_any_element()
     }
+}
+
+/// Server-provided options, else the web client's defaults; decline first, approve last.
+pub(crate) fn approval_options(item: &TurnItem) -> Vec<(String, String)> {
+    let mut options: Vec<(String, String)> = item.raw["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|o| {
+            Some((
+                o["decision"].as_str()?.to_owned(),
+                o["label"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    if options.is_empty() {
+        options = [
+            ("decline", "Decline"),
+            ("acceptForSession", "Always allow this session"),
+            ("accept", "Approve"),
+        ]
+        .map(|(d, l)| (d.to_owned(), l.to_owned()))
+        .into();
+    }
+    options.sort_by_key(|(d, _)| match d.as_str() {
+        "decline" => 0,
+        "accept" => 2,
+        _ => 1,
+    });
+    options
 }
 
 fn title_or(item: &TurnItem, fallback: &str) -> String {
@@ -304,7 +369,7 @@ fn tail(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{OUTPUT_TAIL_CHARS, TurnItem, tail, tool_parts};
+    use super::{OUTPUT_TAIL_CHARS, TurnItem, approval_options, tail, tool_parts};
     use serde_json::{Value, json};
 
     fn item(v: Value) -> TurnItem {
@@ -327,6 +392,22 @@ mod tests {
 
         let unknown = item(json!({"id": "3", "ordinal": 3, "type": "future_thing", "title": null}));
         assert_eq!(tool_parts(&unknown).0, "future thing");
+    }
+
+    #[test]
+    fn approval_options_put_decline_first_and_accept_last() {
+        let defaults = item(json!({"id": "a", "ordinal": 1, "type": "approval_request"}));
+        let decisions: Vec<String> = approval_options(&defaults)
+            .into_iter()
+            .map(|o| o.0)
+            .collect();
+        assert_eq!(decisions, ["decline", "acceptForSession", "accept"]);
+        let custom = item(
+            json!({"id": "b", "ordinal": 1, "type": "approval_request", "options": [
+            {"decision": "accept", "label": "Yes"}, {"decision": "cancel", "label": "Stop"}, {"decision": "decline", "label": "No"}]}),
+        );
+        let labels: Vec<String> = approval_options(&custom).into_iter().map(|o| o.1).collect();
+        assert_eq!(labels, ["No", "Stop", "Yes"]);
     }
 
     #[test]

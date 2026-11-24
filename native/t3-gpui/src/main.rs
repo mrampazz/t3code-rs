@@ -10,12 +10,14 @@ use std::time::Duration;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, Disableable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::json;
 
-use model::{ServerConfig, Shell, ThreadView};
+use model::{ServerConfig, Shell, ThreadView, model_key};
 use rpc::RpcClient;
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -28,6 +30,26 @@ where
 {
     RUNTIME.get().unwrap().spawn(f)
 }
+
+#[derive(Clone)]
+struct ModelOption {
+    title: SharedString,
+    key: SharedString,
+}
+
+impl SearchableListItem for ModelOption {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.title.clone()
+    }
+
+    fn value(&self) -> &SharedString {
+        &self.key
+    }
+}
+
+type ModelPicker = SelectState<SearchableVec<ModelOption>>;
 
 enum Screen {
     Pair,
@@ -43,6 +65,11 @@ struct T3App {
     generation: u64,
     pair_input: Entity<InputState>,
     composer: Entity<InputState>,
+    model_picker: Entity<ModelPicker>,
+    /// What the picker was last synced to: config revision and selected key.
+    picker_synced: (u64, String),
+    /// Model chosen for the new-thread draft; `None` uses the default.
+    draft_model: Option<serde_json::Value>,
     client: Option<RpcClient>,
     shell: Shell,
     config: ServerConfig,
@@ -62,7 +89,25 @@ impl T3App {
         let pair_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("http://host:3773/pair#token=…"));
         let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Ask anything…"));
+        let model_picker = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(Vec::<ModelOption>::new()),
+                None,
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
         let _subscriptions = vec![
+            cx.subscribe_in(
+                &model_picker,
+                window,
+                |this, _, e: &SelectEvent<SearchableVec<ModelOption>>, _, cx| {
+                    if let SelectEvent::Confirm(Some(key)) = e {
+                        this.pick_model(key, cx);
+                    }
+                },
+            ),
             cx.subscribe_in(&pair_input, window, |this, _, e: &InputEvent, _, cx| {
                 if matches!(e, InputEvent::PressEnter { .. }) {
                     this.pair(cx);
@@ -81,6 +126,9 @@ impl T3App {
             generation: 0,
             pair_input,
             composer,
+            model_picker,
+            picker_synced: (u64::MAX, String::new()),
+            draft_model: None,
             client: None,
             shell: Shell::default(),
             config: ServerConfig::default(),
@@ -256,6 +304,7 @@ impl T3App {
         self.selected = None;
         self.thread = ThreadView::default();
         self.draft_project = Some(project_id);
+        self.draft_model = None;
         self.composer
             .update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
@@ -266,7 +315,11 @@ impl T3App {
             return;
         };
         let project = self.shell.projects.iter().find(|p| p.id == project_id);
-        let Some(model) = self.config.model_for(project) else {
+        let Some(model) = self
+            .draft_model
+            .clone()
+            .or_else(|| self.config.model_for(project))
+        else {
             self.error = Some("No available provider on this server.".into());
             return cx.notify();
         };
@@ -359,38 +412,139 @@ impl T3App {
                 .update(cx, |input, cx| input.set_value("", window, cx));
             return self.launch(project_id, text, cx);
         }
-        let (Some(client), Some(thread_id)) = (self.client.clone(), self.selected.clone()) else {
+        let Some(thread_id) = self.selected.clone() else {
             return;
         };
         self.composer
             .update(cx, |input, cx| input.set_value("", window, cx));
         let command_id = uuid::Uuid::new_v4().to_string();
-        let command = json!({
-            "type": "message.dispatch",
-            "commandId": command_id,
-            "messageId": command_id,
-            "threadId": thread_id,
-            "text": text,
-            "attachments": [],
-            "dispatchMode": { "type": "queue_after_active" },
-            "createdBy": "user",
-            "creationSource": "web",
-        });
+        self.dispatch(
+            json!({
+                "type": "message.dispatch",
+                "commandId": command_id,
+                "messageId": command_id,
+                "threadId": thread_id,
+                "text": text,
+                "attachments": [],
+                "dispatchMode": { "type": "queue_after_active" },
+                "createdBy": "user",
+                "creationSource": "web",
+            }),
+            cx,
+        );
+    }
+
+    /// Sends an `OrchestrationV2Command`, filling in `commandId`. Failures show in the error line.
+    pub(crate) fn dispatch(&mut self, mut command: serde_json::Value, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else {
+            self.error = Some("Not connected.".into());
+            return cx.notify();
+        };
+        if command["commandId"].is_null() {
+            command["commandId"] = json!(uuid::Uuid::new_v4().to_string());
+        }
+        let kind = command["type"].as_str().unwrap_or("command").to_string();
         cx.spawn(async move |this, cx| {
             let result =
                 on_tokio(
                     async move { client.call("orchestration.dispatchCommand", command).await },
                 )
                 .await;
-            if let Ok(Err(e)) = result {
-                this.update(cx, |app, cx| {
-                    app.error = Some(format!("Send failed: {e}").into());
-                    cx.notify();
-                })
-                .ok();
-            }
+            let error = match result {
+                Ok(Ok(_)) => return,
+                Ok(Err(e)) => e.to_string(),
+                Err(e) => e.to_string(),
+            };
+            this.update(cx, |app, cx| {
+                app.error = Some(format!("{kind} failed: {error}").into());
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
+    }
+
+    /// The selection the picker shows: the draft's choice or default, else the open thread's.
+    fn current_model(&self) -> Option<serde_json::Value> {
+        if let Some(project_id) = &self.draft_project {
+            let project = self.shell.projects.iter().find(|p| &p.id == project_id);
+            return self
+                .draft_model
+                .clone()
+                .or_else(|| self.config.model_for(project));
+        }
+        let thread = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))?;
+        Some(thread.model_selection.clone())
+    }
+
+    fn pick_model(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some((_, selection)) = self
+            .config
+            .model_options()
+            .into_iter()
+            .find(|(_, s)| model_key(s) == key)
+        else {
+            return;
+        };
+        if self.draft_project.is_some() {
+            self.draft_model = Some(selection);
+            return cx.notify();
+        }
+        if let Some(thread_id) = self.selected.clone() {
+            self.dispatch(
+                json!({ "type": "thread.model-selection.set", "threadId": thread_id, "modelSelection": selection }),
+                cx,
+            );
+        }
+    }
+
+    /// Select state needs a window, so the picker catches up with config and selection at render.
+    fn sync_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self
+            .current_model()
+            .map(|m| model_key(&m))
+            .unwrap_or_default();
+        if self.picker_synced == (self.config.revision, key.clone()) {
+            return;
+        }
+        let items: Vec<ModelOption> = self
+            .config
+            .model_options()
+            .into_iter()
+            .map(|(title, selection)| ModelOption {
+                title: title.into(),
+                key: model_key(&selection).into(),
+            })
+            .collect();
+        let rebuild = self.picker_synced.0 != self.config.revision;
+        self.picker_synced = (self.config.revision, key.clone());
+        self.model_picker.update(cx, |picker, cx| {
+            if rebuild {
+                picker.set_items(SearchableVec::new(items), window, cx);
+            }
+            picker.set_selected_value(&SharedString::from(key), window, cx);
+        });
+    }
+
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        let Some(thread) = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))
+        else {
+            return;
+        };
+        let command = match (&thread.active_run_id, self.config.thread_stop) {
+            (_, true) => json!({ "type": "thread.stop", "threadId": thread.id }),
+            (Some(run), false) => {
+                json!({ "type": "run.interrupt", "threadId": thread.id, "runId": run })
+            }
+            (None, false) => return,
+        };
+        self.dispatch(command, cx);
     }
 
     fn forget_session(&mut self, cx: &mut Context<Self>) {
@@ -541,7 +695,7 @@ impl T3App {
             .as_ref()
             .and_then(|id| self.shell.projects.iter().find(|p| &p.id == id))
         {
-            let model = self.config.model_for(Some(project));
+            let model = self.current_model();
             return v_flex()
                 .flex_1()
                 .h_full()
@@ -559,12 +713,17 @@ impl T3App {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(format!("New thread in {}", project.title)),
                         )
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(
-                            match &model {
-                                Some(m) => self.config.label(m),
-                                None => "No available provider".to_string(),
-                            },
-                        ))
+                        .child(match &model {
+                            Some(_) => div()
+                                .w(px(320.))
+                                .child(Select::new(&self.model_picker))
+                                .into_any_element(),
+                            None => div()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child("No available provider")
+                                .into_any_element(),
+                        })
                         .child(Input::new(&self.composer))
                         .children(
                             self.error
@@ -617,7 +776,17 @@ impl T3App {
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .child(self.config.label(&thread.model_selection)),
-                    ),
+                    )
+                    .child(div().flex_1())
+                    .when(thread.is_running(), |header| {
+                        header.child(
+                            Button::new("stop")
+                                .small()
+                                .outline()
+                                .label("Stop")
+                                .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -642,19 +811,26 @@ impl T3App {
                     .map(|e| div().px_4().text_sm().text_color(theme.danger).child(e)),
             )
             .child(
-                div()
+                v_flex()
                     .mx_auto()
                     .max_w(px(760.))
                     .w_full()
                     .p_4()
-                    .child(Input::new(&self.composer)),
+                    .gap_2()
+                    .child(Input::new(&self.composer))
+                    .child(
+                        div()
+                            .w(px(280.))
+                            .child(Select::new(&self.model_picker).small()),
+                    ),
             )
             .into_any_element()
     }
 }
 
 impl Render for T3App {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_picker(window, cx);
         let theme = cx.theme();
         let root = h_flex()
             .size_full()

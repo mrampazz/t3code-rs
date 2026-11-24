@@ -26,6 +26,8 @@ pub struct ThreadShell {
     pub updated_at: String,
     #[serde(default)]
     pub model_selection: Value,
+    #[serde(default)]
+    pub active_run_id: Option<String>,
 }
 
 impl ThreadShell {
@@ -119,15 +121,48 @@ pub struct ProviderModel {
 #[derive(Default)]
 pub struct ServerConfig {
     pub providers: Vec<Provider>,
+    /// Server supports `thread.stop`; older servers need `run.interrupt`.
+    pub thread_stop: bool,
+    /// Bumped on every provider change so views can rebuild derived lists.
+    pub revision: u64,
+}
+
+/// Picker key for a model selection: provider instance and model slug.
+pub fn model_key(selection: &Value) -> String {
+    format!(
+        "{}/{}",
+        selection["instanceId"].as_str().unwrap_or(""),
+        selection["model"].as_str().unwrap_or("")
+    )
 }
 
 impl ServerConfig {
     pub fn apply(&mut self, event: &Value) {
+        self.revision += 1;
         match event["type"].as_str() {
-            Some("snapshot") => self.providers = decode_vec(&event["config"]["providers"]),
+            Some("snapshot") => {
+                let config = &event["config"];
+                self.providers = decode_vec(&config["providers"]);
+                self.thread_stop = config["environment"]["capabilities"]["threadStop"] == true;
+            }
             Some("providerStatuses") => self.providers = decode_vec(&event["payload"]["providers"]),
             _ => {}
         }
+    }
+
+    /// Every model of every available provider, as (label, selection).
+    pub fn model_options(&self) -> Vec<(String, Value)> {
+        self.providers
+            .iter()
+            .filter(|p| p.availability != "unavailable")
+            .flat_map(|p| {
+                p.models.iter().map(move |m| {
+                    let selection =
+                        serde_json::json!({ "instanceId": p.instance_id, "model": m.slug });
+                    (self.label(&selection), selection)
+                })
+            })
+            .collect()
     }
 
     /// "Provider · Model" with display names when this server knows them.
@@ -423,6 +458,12 @@ mod tests {
             config.label(&json!({"instanceId": "c", "model": "m"})),
             "c · m"
         );
+        let options: Vec<String> = config
+            .model_options()
+            .into_iter()
+            .map(|o| model_key(&o.1))
+            .collect();
+        assert_eq!(options, ["codex/a", "codex/b"]);
     }
 
     #[test]
