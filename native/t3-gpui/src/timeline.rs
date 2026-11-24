@@ -90,10 +90,7 @@ impl T3App {
                 )
                 .into_any_element(),
             "approval_request" => {
-                let pending = !matches!(
-                    item.str("status"),
-                    "completed" | "failed" | "cancelled" | "interrupted"
-                );
+                let pending = is_open(item);
                 let request_id = item.str("requestId").to_string();
                 let thread_id = item.str("threadId").to_string();
                 let buttons: Vec<Button> = approval_options(item)
@@ -143,6 +140,7 @@ impl T3App {
                     })
                     .into_any_element()
             }
+            "user_input_request" if is_open(item) => self.render_question(item, &c, cx),
             "system_notice" | "run_interrupt_request" | "run_interrupt_result" => div()
                 .text_xs()
                 .text_color(c.muted_foreground)
@@ -150,6 +148,132 @@ impl T3App {
                 .into_any_element(),
             _ => self.render_tool(item, expanded, &c, mono, cx),
         }
+    }
+
+    /// Agent questions: toggle options, then submit; composer text answers as a custom reply.
+    fn render_question(
+        &self,
+        item: &TurnItem,
+        c: &ThemeColor,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let request_id = item.str("requestId").to_string();
+        let thread_id = item.str("threadId").to_string();
+        let questions = item.raw["questions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut card = v_flex()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .border_1()
+            .border_color(c.info)
+            .text_sm();
+        for q in &questions {
+            let qid = q["id"].as_str().unwrap_or("").to_string();
+            let key = format!("{request_id}:{qid}");
+            let picked = self.input_picks.get(&key).cloned().unwrap_or_default();
+            let multi = q["multiSelect"] == true;
+            let options = q["options"].as_array().cloned().unwrap_or_default();
+            card =
+                card.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(c.muted_foreground)
+                                .child(q["header"].as_str().unwrap_or("").to_string()),
+                        )
+                        .child(div().child(q["question"].as_str().unwrap_or("").to_string()))
+                        .child(h_flex().flex_wrap().gap_2().children(
+                            options.iter().enumerate().map(|(i, option)| {
+                                let value = crate::model::option_value(option);
+                                let on = picked.contains(&value);
+                                let key = key.clone();
+                                let button = Button::new(SharedString::from(format!(
+                                    "{}-{qid}-{i}",
+                                    item.id
+                                )))
+                                .small()
+                                .label(option["label"].as_str().unwrap_or("").to_string())
+                                .tooltip(option["description"].as_str().unwrap_or("").to_string())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let picks = this.input_picks.entry(key.clone()).or_default();
+                                    match (picks.iter().position(|v| v == &value), multi) {
+                                        (Some(i), _) => {
+                                            picks.remove(i);
+                                        }
+                                        (None, true) => picks.push(value.clone()),
+                                        (None, false) => *picks = vec![value.clone()],
+                                    }
+                                    cx.notify();
+                                }));
+                                if on {
+                                    button.primary()
+                                } else {
+                                    button.outline()
+                                }
+                            }),
+                        )),
+                );
+        }
+        let submit = {
+            let (request_id, thread_id) = (request_id.clone(), thread_id.clone());
+            Button::new(SharedString::from(format!("{}-submit", item.id)))
+                .small()
+                .primary()
+                .label("Submit")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let custom = this.composer.read(cx).value().to_string();
+                    let picks = |qid: &str| {
+                        this.input_picks
+                            .get(&format!("{request_id}:{qid}"))
+                            .cloned()
+                            .unwrap_or_default()
+                    };
+                    let Some(answers) = crate::model::build_answers(&questions, picks, &custom)
+                    else {
+                        this.error = Some("Answer every required question first.".into());
+                        return cx.notify();
+                    };
+                    if !custom.trim().is_empty() {
+                        this.composer
+                            .update(cx, |input, cx| input.set_value("", window, cx));
+                    }
+                    this.error = None;
+                    this.dispatch(
+                        serde_json::json!({
+                            "type": "runtime-request.respond",
+                            "threadId": thread_id,
+                            "requestId": request_id,
+                            "answers": answers,
+                        }),
+                        cx,
+                    );
+                }))
+        };
+        let dismiss = Button::new(SharedString::from(format!("{}-dismiss", item.id)))
+            .small()
+            .ghost()
+            .label("Dismiss")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.dispatch(
+                    serde_json::json!({ "type": "thread.user-input.dismiss", "threadId": thread_id, "requestId": request_id }),
+                    cx,
+                )
+            }));
+        card.child(
+            h_flex().gap_2().child(submit).child(dismiss).child(
+                div()
+                    .text_xs()
+                    .text_color(c.muted_foreground)
+                    .child("Or type an answer in the composer."),
+            ),
+        )
+        .into_any_element()
     }
 
     /// One-line work entry that expands to its detail.
@@ -248,6 +372,14 @@ pub(crate) fn approval_options(item: &TurnItem) -> Vec<(String, String)> {
         _ => 1,
     });
     options
+}
+
+/// A request still waiting for the user.
+fn is_open(item: &TurnItem) -> bool {
+    !matches!(
+        item.str("status"),
+        "completed" | "failed" | "cancelled" | "interrupted"
+    )
 }
 
 fn title_or(item: &TurnItem, fallback: &str) -> String {

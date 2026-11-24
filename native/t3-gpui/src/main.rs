@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
@@ -65,7 +65,7 @@ struct T3App {
     /// Bumped per connect or disconnect so a stale supervisor loop stops.
     generation: u64,
     pair_input: Entity<InputState>,
-    composer: Entity<InputState>,
+    composer: Entity<TextareaState>,
     model_picker: Entity<ModelPicker>,
     /// What the picker was last synced to: config revision and selected key.
     picker_synced: (u64, String),
@@ -82,6 +82,8 @@ struct T3App {
     /// Timeline rows the user opened.
     expanded: HashSet<String>,
     show_archived: bool,
+    /// Selected option values per `requestId:questionId`.
+    input_picks: std::collections::HashMap<String, Vec<String>>,
     transcript_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -90,7 +92,13 @@ impl T3App {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let pair_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("http://host:3773/pair#token=…"));
-        let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Ask anything…"));
+        let composer = cx.new(|cx| {
+            let mut state = TextareaState::new(window, cx)
+                .placeholder("Ask anything…")
+                .submit_on_enter(true);
+            state.set_auto_grow(1, 12, cx);
+            state
+        });
         let model_picker = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(Vec::<ModelOption>::new()),
@@ -140,6 +148,7 @@ impl T3App {
             thread_sub: None,
             expanded: HashSet::new(),
             show_archived: false,
+            input_picks: Default::default(),
             transcript_scroll: ScrollHandle::new(),
             _subscriptions,
         };
@@ -803,7 +812,7 @@ impl T3App {
                                 .child("No available provider")
                                 .into_any_element(),
                         })
-                        .child(Input::new(&self.composer))
+                        .child(Textarea::new(&self.composer))
                         .children(
                             self.error
                                 .clone()
@@ -914,7 +923,7 @@ impl T3App {
                     .w_full()
                     .p_4()
                     .gap_2()
-                    .child(Input::new(&self.composer))
+                    .child(Textarea::new(&self.composer))
                     .child(
                         div()
                             .w(px(280.))

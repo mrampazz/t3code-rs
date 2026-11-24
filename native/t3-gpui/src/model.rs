@@ -398,6 +398,50 @@ impl ThreadView {
     }
 }
 
+/// The value an option answers with: its `value`, else its label.
+pub fn option_value(option: &Value) -> String {
+    option["value"]
+        .as_str()
+        .or(option["label"].as_str())
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// Provider answers for a `user_input_request`, or `None` while a required question is open.
+/// Port of `buildPendingUserInputAnswers` (client-runtime/src/state/pendingUserInput.ts);
+/// `custom` is the composer text, used where a question allows custom answers.
+pub fn build_answers(
+    questions: &[Value],
+    selected: impl Fn(&str) -> Vec<String>,
+    custom: &str,
+) -> Option<serde_json::Map<String, Value>> {
+    let custom = custom.trim();
+    let mut answers = serde_json::Map::new();
+    for q in questions {
+        let id = q["id"].as_str()?;
+        let options = q["options"].as_array().cloned().unwrap_or_default();
+        let allows_custom = q["allowCustomAnswer"] != false;
+        let required = q["required"] != false;
+        let answer = if allows_custom && !custom.is_empty() {
+            Value::from(custom)
+        } else if !required && options.is_empty() {
+            Value::from("")
+        } else {
+            let picked: Vec<String> = selected(id)
+                .into_iter()
+                .filter(|v| options.iter().any(|o| &option_value(o) == v))
+                .collect();
+            match (q["multiSelect"] == true, picked.first()) {
+                (true, _) if !picked.is_empty() || !required => Value::from(picked),
+                (false, Some(first)) => Value::from(first.clone()),
+                _ => return None,
+            }
+        };
+        answers.insert(id.to_owned(), answer);
+    }
+    Some(answers)
+}
+
 fn decode<T: for<'de> Deserialize<'de>>(v: &Value) -> Option<T> {
     serde_json::from_value(v.clone())
         .map_err(|e| eprintln!("decode: {e}"))
@@ -523,5 +567,32 @@ mod tests {
         assert_eq!(view.items().count(), 0);
         view.apply(&json!({"kind": "event", "sequence": 3, "event": {"type": "run.updated", "payload": {"id": "q", "status": "running", "startedAt": "t"}}}));
         assert_eq!(view.items().count(), 1);
+    }
+
+    #[test]
+    fn builds_user_input_answers() {
+        let questions = vec![
+            json!({"id": "color", "options": [{"label": "Red", "value": "r"}, {"label": "Blue"}]}),
+            json!({"id": "extras", "multiSelect": true, "required": false, "options": [{"label": "A"}]}),
+        ];
+        let picks = |id: &str| {
+            if id == "color" {
+                vec!["Blue".to_owned()]
+            } else {
+                vec![]
+            }
+        };
+        let answers = build_answers(&questions, picks, "").unwrap();
+        assert_eq!(answers["color"], "Blue");
+        assert_eq!(answers["extras"], json!([]));
+        assert!(
+            build_answers(&questions, |_| vec![], "").is_none(),
+            "color is required"
+        );
+        assert!(build_answers(&questions, |_| vec!["nope".into()], "").is_none());
+        assert_eq!(
+            build_answers(&questions, |_| vec![], " typed ").unwrap()["color"],
+            "typed"
+        );
     }
 }
