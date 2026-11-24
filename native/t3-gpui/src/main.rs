@@ -8,7 +8,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use gpui_kit::component::Sizable;
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
@@ -629,6 +631,7 @@ impl T3App {
         let app = cx.entity().downgrade();
         let (pinned, settled) = (thread.pinned_at.is_some(), thread.settled_at.is_some());
         let menu_id = id.clone();
+        let title = thread.title.clone();
         h_flex()
             .id(SharedString::from(format!("thread-{id}")))
             .gap_2()
@@ -687,8 +690,10 @@ impl T3App {
                     action("Settle", "thread.settle", json!({}))
                 })
                 .item(action("Mark unread", "thread.mark-unread", json!({})))
+                .item(rename_item(app.clone(), menu_id.clone(), title.clone()))
                 .separator()
                 .item(action("Archive", "thread.archive", json!({})))
+                .item(delete_item(app.clone(), menu_id.clone(), title.clone()))
             })
     }
 
@@ -968,6 +973,54 @@ fn main() {
         .expect("failed to open window");
         cx.activate(true);
     });
+}
+
+fn rename_item(app: WeakEntity<T3App>, thread_id: String, title: String) -> PopupMenuItem {
+    PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx);
+            state.set_value(title.clone(), window, cx);
+            state
+        });
+        let (app, thread_id) = (app.clone(), thread_id.clone());
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, thread_id, input) = (app.clone(), thread_id.clone(), input.clone());
+            dialog
+                .title("Rename thread")
+                .child(Input::new(&input))
+                .button_props(DialogButtonProps::default().ok_text("Rename").show_cancel(true))
+                .on_ok(move |_, _, cx: &mut App| {
+                    let title = input.read(cx).value().trim().to_string();
+                    if title.is_empty() {
+                        return false;
+                    }
+                    let command = json!({ "type": "thread.metadata.update", "threadId": thread_id, "title": title });
+                    app.update(cx, |this, cx| this.dispatch(command, cx)).ok();
+                    true
+                })
+        });
+    })
+}
+
+fn delete_item(app: WeakEntity<T3App>, thread_id: String, title: String) -> PopupMenuItem {
+    PopupMenuItem::new("Delete…").on_click(move |_, window, cx| {
+        let (app, thread_id, title) = (app.clone(), thread_id.clone(), title.clone());
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let (app, thread_id) = (app.clone(), thread_id.clone());
+            dialog
+                .confirm()
+                .title("Delete thread?")
+                .description(format!(
+                    "“{title}” and its history will be deleted. This cannot be undone."
+                ))
+                .ok_text("Delete")
+                .on_ok(move |_, _, cx| {
+                    let command = json!({ "type": "thread.delete", "threadId": thread_id });
+                    app.update(cx, |this, cx| this.dispatch(command, cx)).ok();
+                    true
+                })
+        });
+    })
 }
 
 /// Jittered, capped exponential backoff: 0.25–0.5s at first, up to 15–30s.
