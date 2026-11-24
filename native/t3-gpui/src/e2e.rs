@@ -375,6 +375,15 @@ async fn e2e_thread_actions() {
     env.shell
         .until("settled", |s| thread(s)?.settled_at.map(|_| ()))
         .await;
+    {
+        let shell = env.shell.state.lock().unwrap();
+        let sections =
+            crate::sidebar::sections(&shell.threads, jiff::Timestamp::now().as_millisecond());
+        assert!(
+            sections.settled.iter().any(|t| t.id == thread_id),
+            "settled section"
+        );
+    }
     dispatch(
         &env.client,
         cmd("thread.unsettle", json!({ "reason": "user" })),
@@ -401,6 +410,35 @@ async fn e2e_thread_actions() {
         })
         .await;
     dispatch(&env.client, cmd("thread.mark-unread", json!({}))).await;
+    let presets = crate::sidebar::snooze_presets(&jiff::Zoned::now(), None);
+    dispatch(
+        &env.client,
+        cmd(
+            "thread.snooze",
+            json!({ "snoozedUntil": presets[0].until.to_string() }),
+        ),
+    )
+    .await;
+    env.shell
+        .until("snoozed section", |s| {
+            let now = jiff::Timestamp::now().as_millisecond();
+            crate::sidebar::sections(&s.threads, now)
+                .snoozed
+                .iter()
+                .any(|t| t.id == thread_id)
+                .then_some(())
+        })
+        .await;
+    dispatch(
+        &env.client,
+        cmd("thread.unsnooze", json!({ "reason": "user" })),
+    )
+    .await;
+    env.shell
+        .until("unsnoozed", |s| {
+            thread(s).filter(|t| t.snoozed_until.is_none()).map(|_| ())
+        })
+        .await;
     dispatch(
         &env.client,
         cmd(

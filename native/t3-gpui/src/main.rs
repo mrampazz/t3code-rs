@@ -3,6 +3,7 @@ mod composer;
 mod diff_panel;
 mod model;
 mod rpc;
+mod sidebar;
 mod timeline;
 
 use std::collections::HashSet;
@@ -14,7 +15,7 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{ActiveTheme, Disableable, h_flex, v_flex};
@@ -88,6 +89,8 @@ struct T3App {
     /// Timeline rows the user opened.
     expanded: HashSet<String>,
     show_archived: bool,
+    /// Wake time a re-render is already scheduled for.
+    snooze_wake_at: Option<i64>,
     diff_open: bool,
     /// `None` = whole thread, `Some(turn)` = one turn.
     diff_target: Option<u64>,
@@ -163,6 +166,7 @@ impl T3App {
             thread_sub: None,
             expanded: HashSet::new(),
             show_archived: false,
+            snooze_wake_at: None,
             diff_open: false,
             diff_target: None,
             diff_state: None,
@@ -762,9 +766,18 @@ impl T3App {
         let id = thread.id.clone();
         let selected = self.selected.as_deref() == Some(id.as_str());
         let app = cx.entity().downgrade();
-        let (pinned, settled) = (thread.pinned_at.is_some(), thread.settled_at.is_some());
+        let pinned = thread.pinned_at.is_some();
+        let settled = thread.settled_override.as_deref() == Some("settled");
+        let snoozed = thread.snoozed_until.is_some();
         let menu_id = id.clone();
         let title = thread.title.clone();
+        let project = self
+            .shell
+            .projects
+            .iter()
+            .find(|p| p.id == thread.project_id)
+            .map(|p| p.title.clone());
+        let presets = self.config.snooze_presets.clone();
         h_flex()
             .id(SharedString::from(format!("thread-{id}")))
             .gap_2()
@@ -786,16 +799,16 @@ impl T3App {
                     .when(thread.is_running(), |d| d.bg(theme.success)),
             )
             .child(div().flex_1().truncate().child(thread.title.clone()))
-            .when(pinned, |d| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("📌"),
-                )
-            })
+            .children(project.map(|p| {
+                div()
+                    .max_w(px(90.))
+                    .truncate()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(p)
+            }))
             .on_click(cx.listener(move |this, _, _, cx| this.select_thread(id.clone(), cx)))
-            .context_menu(move |menu, _, _| {
+            .context_menu(move |menu, window, cx| {
                 let action = |label: &str, kind: &str, extra: serde_json::Value| {
                     let app = app.clone();
                     let mut command = json!({ "type": kind, "threadId": menu_id });
@@ -812,55 +825,83 @@ impl T3App {
                 if archived {
                     return menu.item(action("Unarchive", "thread.unarchive", json!({})));
                 }
-                menu.item(if pinned {
-                    action("Unpin", "thread.unpin", json!({}))
+                let menu = menu
+                    .item(if pinned {
+                        action("Unpin", "thread.unpin", json!({}))
+                    } else {
+                        action("Pin", "thread.pin", json!({}))
+                    })
+                    .item(if settled {
+                        action("Unsettle", "thread.unsettle", json!({ "reason": "user" }))
+                    } else {
+                        action("Settle", "thread.settle", json!({}))
+                    });
+                let menu = if snoozed {
+                    menu.item(action(
+                        "Unsnooze",
+                        "thread.unsnooze",
+                        json!({ "reason": "user" }),
+                    ))
                 } else {
-                    action("Pin", "thread.pin", json!({}))
-                })
-                .item(if settled {
-                    action("Unsettle", "thread.unsettle", json!({ "reason": "user" }))
-                } else {
-                    action("Settle", "thread.settle", json!({}))
-                })
-                .item(action("Mark unread", "thread.mark-unread", json!({})))
-                .item(rename_item(app.clone(), menu_id.clone(), title.clone()))
-                .separator()
-                .item(action("Archive", "thread.archive", json!({})))
-                .item(delete_item(app.clone(), menu_id.clone(), title.clone()))
+                    let (app, thread_id, presets) = (app.clone(), menu_id.clone(), presets.clone());
+                    menu.submenu("Snooze", window, cx, move |mut sub, _, _| {
+                        // Resolved when the menu opens, like the web, so times are never stale.
+                        let now = jiff::Zoned::now();
+                        for preset in sidebar::snooze_presets(&now, presets.as_ref()) {
+                            let app = app.clone();
+                            let command = json!({ "type": "thread.snooze", "threadId": thread_id,
+                                "snoozedUntil": preset.until.to_string() });
+                            sub = sub.item(PopupMenuItem::new(preset.label).on_click(
+                                move |_, _, cx| {
+                                    app.update(cx, |this, cx| this.dispatch(command.clone(), cx))
+                                        .ok();
+                                },
+                            ));
+                        }
+                        sub
+                    })
+                };
+                menu.item(action("Mark unread", "thread.mark-unread", json!({})))
+                    .item(rename_item(app.clone(), menu_id.clone(), title.clone()))
+                    .separator()
+                    .item(action("Archive", "thread.archive", json!({})))
+                    .item(delete_item(app.clone(), menu_id.clone(), title.clone()))
             })
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn section_header(&self, label: String, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .pt_3()
+            .pb_1()
+            .text_xs()
+            .text_color(cx.theme().colors.muted_foreground)
+            .child(label)
+    }
+
+    fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().colors;
+        let now_ms = jiff::Timestamp::now().as_millisecond();
+        self.schedule_snooze_wake(now_ms, cx);
+        let threads = self.shell.threads.clone();
+        let sections = sidebar::sections(&threads, now_ms);
         let mut list = v_flex()
             .id("threads")
             .flex_1()
             .overflow_y_scroll()
             .px_2()
             .pb_2();
-        for project in &self.shell.projects {
-            let project_id = project.id.clone();
-            list = list.child(
-                h_flex()
-                    .pl_2()
-                    .pt_3()
-                    .pb_1()
-                    .justify_between()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(project.title.clone())
-                    .child(
-                        Button::new(SharedString::from(format!("new-{project_id}")))
-                            .ghost()
-                            .xsmall()
-                            .label("+")
-                            .tooltip("New thread")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.new_thread(project_id.clone(), window, cx)
-                            })),
-                    ),
-            );
-            for thread in self.shell.threads_of(&project.id) {
+        for (label, rows) in [
+            ("Pinned", &sections.pinned),
+            ("Active", &sections.active),
+            ("Snoozed", &sections.snoozed),
+            ("Settled", &sections.settled),
+        ] {
+            if rows.is_empty() {
+                continue;
+            }
+            list = list.child(self.section_header(format!("{label} ({})", rows.len()), cx));
+            for thread in rows.iter() {
                 list = list.child(self.thread_row(thread, false, cx));
             }
         }
@@ -886,13 +927,20 @@ impl T3App {
                     })),
             );
             if open {
-                for thread in &self.shell.archived {
+                for thread in self.shell.archived.clone().iter() {
                     list = list.child(self.thread_row(thread, true, cx));
                 }
             }
         }
+        let projects: Vec<(String, String)> = self
+            .shell
+            .projects
+            .iter()
+            .map(|p| (p.id.clone(), p.title.clone()))
+            .collect();
+        let app = cx.entity().downgrade();
         v_flex()
-            .w(px(280.))
+            .w(px(300.))
             .h_full()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
@@ -901,17 +949,68 @@ impl T3App {
             .child(
                 h_flex()
                     .h(px(44.))
-                    .px_4()
-                    .justify_between()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("t3code-rs"))
+                    .px_3()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("t3code-rs"),
+                    )
+                    .child(
+                        Button::new("new-thread")
+                            .small()
+                            .ghost()
+                            .label("New thread")
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for (id, title) in projects.clone() {
+                                    let app = app.clone();
+                                    menu = menu.item(PopupMenuItem::new(title).on_click(
+                                        move |_, window, cx| {
+                                            app.update(cx, |this, cx| {
+                                                this.new_thread(id.clone(), window, cx)
+                                            })
+                                            .ok();
+                                        },
+                                    ));
+                                }
+                                menu
+                            }),
+                    )
                     .child(
                         Button::new("forget")
+                            .small()
                             .ghost()
                             .label("Disconnect")
                             .on_click(cx.listener(|this, _, _, cx| this.forget_session(cx))),
                     ),
             )
             .child(list)
+    }
+
+    /// Re-renders when the next snooze ends, so the thread leaves the Snoozed section on time.
+    fn schedule_snooze_wake(&mut self, now_ms: i64, cx: &mut Context<Self>) {
+        let next = self
+            .shell
+            .threads
+            .iter()
+            .filter_map(|t| sidebar::ts_ms(t.snoozed_until.as_deref()))
+            .filter(|&wake| wake > now_ms)
+            .min();
+        if next.is_none() || next == self.snooze_wake_at {
+            return;
+        }
+        self.snooze_wake_at = next;
+        let delay = Duration::from_millis((next.unwrap() - now_ms) as u64 + 50);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |app, cx| {
+                app.snooze_wake_at = None;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn render_thread(&self, cx: &mut Context<Self>) -> impl IntoElement {

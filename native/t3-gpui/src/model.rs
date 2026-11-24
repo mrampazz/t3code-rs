@@ -38,6 +38,24 @@ pub struct ThreadShell {
     pub pinned_at: Option<String>,
     #[serde(default)]
     pub settled_at: Option<String>,
+    #[serde(default)]
+    pub settled_override: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub unsettled_at: Option<String>,
+    #[serde(default)]
+    pub active_order_key: Option<String>,
+    #[serde(default)]
+    pub pin_order_key: Option<String>,
+    #[serde(default)]
+    pub snoozed_until: Option<String>,
+    #[serde(default)]
+    pub snoozed_at: Option<String>,
+    #[serde(default)]
+    pub latest_user_message_at: Option<String>,
+    #[serde(default)]
+    pub pending_runtime_request: Value,
 }
 
 impl ThreadShell {
@@ -117,12 +135,6 @@ impl Shell {
         self.archived
             .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     }
-
-    pub fn threads_of<'a>(&'a self, project_id: &'a str) -> impl Iterator<Item = &'a ThreadShell> {
-        self.threads
-            .iter()
-            .filter(move |t| t.project_id == project_id)
-    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -185,6 +197,8 @@ pub struct ServerConfig {
     pub thread_stop: bool,
     /// Bumped on every provider change so views can rebuild derived lists.
     pub revision: u64,
+    /// `settings.snoozePresets`; `None` uses the defaults.
+    pub snooze_presets: Option<Value>,
 }
 
 /// Picker key for a model selection: provider instance and model slug.
@@ -204,8 +218,14 @@ impl ServerConfig {
                 let config = &event["config"];
                 self.providers = decode_vec(&config["providers"]);
                 self.thread_stop = config["environment"]["capabilities"]["threadStop"] == true;
+                self.snooze_presets = config["settings"].get("snoozePresets").cloned();
             }
             Some("providerStatuses") => self.providers = decode_vec(&event["payload"]["providers"]),
+            Some("settingsUpdated") => {
+                if let Some(presets) = event["payload"]["settings"].get("snoozePresets") {
+                    self.snooze_presets = Some(presets.clone());
+                }
+            }
             _ => {}
         }
     }

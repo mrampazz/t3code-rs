@@ -1,0 +1,298 @@
+//! Sidebar sections and snooze presets, ported from `apps/web/src/components/Sidebar.tsx`
+//! (`partitionSidebarThreads`) and `client-runtime/src/state/{threadSort,threadSettled}.ts`.
+
+use jiff::civil::Weekday;
+use jiff::{Timestamp, ToSpan, Zoned};
+use serde_json::Value;
+
+use crate::model::ThreadShell;
+
+pub fn ts_ms(iso: Option<&str>) -> Option<i64> {
+    iso?.parse::<Timestamp>().ok().map(|t| t.as_millisecond())
+}
+
+#[derive(Default)]
+pub struct Sections<'a> {
+    pub pinned: Vec<&'a ThreadShell>,
+    pub active: Vec<&'a ThreadShell>,
+    pub snoozed: Vec<&'a ThreadShell>,
+    pub settled: Vec<&'a ThreadShell>,
+}
+
+/// `effectiveSnoozed`: a future wake time, unless a new request raised its hand meanwhile.
+pub fn is_snoozed(t: &ThreadShell, now_ms: i64) -> bool {
+    let Some(wake) = ts_ms(t.snoozed_until.as_deref()) else {
+        return false;
+    };
+    if wake <= now_ms {
+        return false;
+    }
+    let request = &t.pending_runtime_request;
+    if request.is_object() {
+        if request["kind"] != "user_input" {
+            return false;
+        }
+        // Snoozing an existing question means "ask me later"; only a newer one wakes it.
+        let asked = ts_ms(request["createdAt"].as_str());
+        let snoozed = ts_ms(t.snoozed_at.as_deref());
+        if !matches!((asked, snoozed), (Some(a), Some(s)) if a <= s) {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn sections(threads: &[ThreadShell], now_ms: i64) -> Sections<'_> {
+    let mut out = Sections::default();
+    for t in threads {
+        if is_snoozed(t, now_ms) {
+            out.snoozed.push(t);
+        } else if t.settled_override.as_deref() == Some("settled") {
+            out.settled.push(t);
+        } else if t.pinned_at.is_some() {
+            out.pinned.push(t);
+        } else {
+            out.active.push(t);
+        }
+    }
+    let created = |t: &ThreadShell| ts_ms(Some(&t.created_at)).unwrap_or(0);
+    out.pinned
+        .sort_by(|a, b| match (&a.pin_order_key, &b.pin_order_key) {
+            (Some(x), Some(y)) => x.cmp(y).then_with(|| a.id.cmp(&b.id)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => created(b).cmp(&created(a)).then_with(|| a.id.cmp(&b.id)),
+        });
+    out.active
+        .sort_by_cached_key(|t| (active_sort_key(t), t.id.clone()));
+    out.snoozed
+        .sort_by_key(|t| ts_ms(t.snoozed_until.as_deref()).unwrap_or(0));
+    let settled_ms = |t: &ThreadShell| {
+        ts_ms(t.settled_at.as_deref())
+            .or_else(|| ts_ms(t.latest_user_message_at.as_deref()))
+            .or_else(|| ts_ms(Some(&t.updated_at)))
+            .unwrap_or(0)
+    };
+    out.settled.sort_by(|a, b| {
+        settled_ms(b)
+            .cmp(&settled_ms(a))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    out
+}
+
+const IMPLIED_KEY_WIDTH: u32 = 10;
+
+/// `activeThreadSortKey`: arranged threads keep their key; the rest get an implied key from
+/// their anchor time, newest first, in the leading tier "0".
+pub fn active_sort_key(t: &ThreadShell) -> String {
+    if let Some(key) = &t.active_order_key {
+        return key.clone();
+    }
+    let max = 26i64.pow(IMPLIED_KEY_WIDTH) - 1;
+    let anchor = ts_ms(Some(&t.created_at))
+        .unwrap_or(0)
+        .max(ts_ms(t.unsettled_at.as_deref()).unwrap_or(0));
+    let mut value = max - anchor.clamp(0, max);
+    let mut digits = vec![b'a'; IMPLIED_KEY_WIDTH as usize];
+    for slot in digits.iter_mut().rev() {
+        *slot = b'a' + (value % 26) as u8;
+        value /= 26;
+    }
+    format!("0{}n", String::from_utf8(digits).unwrap())
+}
+
+/// One snooze choice: label and wake time.
+#[derive(Debug, PartialEq)]
+pub struct SnoozePreset {
+    pub label: String,
+    pub until: Timestamp,
+}
+
+/// `DEFAULT_SNOOZE_PRESETS` (packages/contracts/src/settings.ts).
+fn default_presets() -> Vec<Value> {
+    serde_json::from_str(
+        r#"[{"kind":"after","minutes":60},{"kind":"after","minutes":180},
+            {"kind":"at","day":"today","time":"18:00"},{"kind":"at","day":"tomorrow","time":"09:00"},
+            {"kind":"at","day":"monday","time":"09:00"}]"#,
+    )
+    .unwrap()
+}
+
+fn weekday(day: &str) -> Option<Weekday> {
+    Some(match day {
+        "sunday" => Weekday::Sunday,
+        "monday" => Weekday::Monday,
+        "tuesday" => Weekday::Tuesday,
+        "wednesday" => Weekday::Wednesday,
+        "thursday" => Weekday::Thursday,
+        "friday" => Weekday::Friday,
+        "saturday" => Weekday::Saturday,
+        _ => return None,
+    })
+}
+
+fn plural(n: i64, one: &str) -> String {
+    if n == 1 {
+        format!("In 1 {one}")
+    } else {
+        format!("In {n} {one}s")
+    }
+}
+
+/// `resolveSnoozePresets`: the environment's presets (or defaults) resolved against `now`,
+/// passed "today" times dropped, sorted by wake minute with duplicates removed.
+pub fn snooze_presets(now: &Zoned, settings: Option<&Value>) -> Vec<SnoozePreset> {
+    let presets = settings
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(default_presets);
+    let mut out: Vec<SnoozePreset> = presets
+        .iter()
+        .filter_map(|p| resolve_preset(now, p))
+        .collect();
+    out.sort_by_key(|p| p.until.as_second() / 60);
+    out.dedup_by_key(|p| p.until.as_second() / 60);
+    out
+}
+
+fn resolve_preset(now: &Zoned, preset: &Value) -> Option<SnoozePreset> {
+    if preset["kind"] == "after" {
+        let minutes = preset["minutes"].as_i64()?;
+        let label = if minutes % (24 * 60) == 0 {
+            plural(minutes / (24 * 60), "day")
+        } else if minutes % 60 == 0 {
+            plural(minutes / 60, "hour")
+        } else {
+            plural(minutes, "minute")
+        };
+        return Some(SnoozePreset {
+            label,
+            until: now.timestamp().checked_add(minutes.minutes()).ok()?,
+        });
+    }
+    let day = preset["day"].as_str()?;
+    let (hour, minute) = preset["time"].as_str()?.split_once(':')?;
+    let days_ahead: i64 = match day {
+        "today" => 0,
+        "tomorrow" => 1,
+        other => {
+            let target = weekday(other)?.to_sunday_zero_offset() as i64;
+            let today = now.weekday().to_sunday_zero_offset() as i64;
+            match (target - today).rem_euclid(7) {
+                0 => 7,
+                n => n,
+            }
+        }
+    };
+    let date = now.date().checked_add(days_ahead.days()).ok()?;
+    let wake = date
+        .at(hour.parse().ok()?, minute.parse().ok()?, 0, 0)
+        .to_zoned(now.time_zone().clone())
+        .ok()?;
+    if wake.timestamp() <= now.timestamp() {
+        return None;
+    }
+    let label = match (days_ahead, hour.parse::<i8>().ok()?) {
+        (0, h) if h < 12 => "This morning".to_string(),
+        (0, h) if h < 17 => "This afternoon".to_string(),
+        (0, _) => "This evening".to_string(),
+        (1, _) => "Tomorrow".to_string(),
+        (_, _) if day == "monday" => "Next week".to_string(),
+        (7, _) => format!("Next {}{}", day[..1].to_uppercase(), &day[1..]),
+        _ => format!("{}{}", day[..1].to_uppercase(), &day[1..]),
+    };
+    let time = wake.strftime("%-I:%M %p").to_string();
+    Some(SnoozePreset {
+        label: format!("{label} · {time}"),
+        until: wake.timestamp(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn thread(id: &str, extra: Value) -> ThreadShell {
+        let mut v = json!({"id": id, "projectId": "p", "title": id, "status": "idle",
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"});
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn partitions_like_the_web_sidebar() {
+        let now = ts_ms(Some("2026-06-01T12:00:00Z")).unwrap();
+        let threads = vec![
+            thread("old", json!({})),
+            thread("new", json!({"createdAt": "2026-05-01T00:00:00Z"})),
+            thread("pin", json!({"pinnedAt": "2026-01-02T00:00:00Z"})),
+            thread(
+                "nap",
+                json!({"snoozedUntil": "2026-06-02T00:00:00Z", "pinnedAt": "x"}),
+            ),
+            thread("woke", json!({"snoozedUntil": "2026-05-01T00:00:00Z"})),
+            thread(
+                "done",
+                json!({"settledOverride": "settled", "settledAt": "2026-05-05T00:00:00Z"}),
+            ),
+            thread(
+                "asks",
+                json!({"snoozedUntil": "2026-06-02T00:00:00Z",
+                "pendingRuntimeRequest": {"kind": "approval", "createdAt": "2026-06-01T11:00:00Z"}}),
+            ),
+        ];
+        let s = sections(&threads, now);
+        let ids = |v: &Vec<&ThreadShell>| v.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&s.pinned), ["pin"]);
+        assert_eq!(ids(&s.snoozed), ["nap"]);
+        assert_eq!(ids(&s.settled), ["done"]);
+        // Newest anchor first, ties by id; a new approval wakes the snoozed "asks".
+        assert_eq!(ids(&s.active), ["new", "asks", "old", "woke"]);
+    }
+
+    #[test]
+    fn implied_active_keys_order_newest_first() {
+        let a = thread("a", json!({"createdAt": "2026-01-01T00:00:00Z"}));
+        let b = thread("b", json!({"createdAt": "2026-02-01T00:00:00Z"}));
+        assert!(active_sort_key(&b) < active_sort_key(&a));
+        assert!(active_sort_key(&a).starts_with('0') && active_sort_key(&a).ends_with('n'));
+        let arranged = thread("c", json!({"activeOrderKey": "m"}));
+        assert_eq!(active_sort_key(&arranged), "m");
+    }
+
+    #[test]
+    fn resolves_default_snooze_presets() {
+        // A Wednesday afternoon in UTC.
+        let now: Zoned = "2026-06-03T15:00:00[UTC]".parse().unwrap();
+        let labels: Vec<String> = snooze_presets(&now, None)
+            .into_iter()
+            .map(|p| p.label)
+            .collect();
+        // 15:00 + 3h and 18:00 wake in the same minute; the earlier setting wins.
+        assert_eq!(
+            labels,
+            [
+                "In 1 hour",
+                "In 3 hours",
+                "Tomorrow · 9:00 AM",
+                "Next week · 9:00 AM"
+            ]
+        );
+        let noon: Zoned = "2026-06-03T12:00:00[UTC]".parse().unwrap();
+        assert!(
+            snooze_presets(&noon, None)
+                .iter()
+                .any(|p| p.label == "This evening · 6:00 PM")
+        );
+        let late: Zoned = "2026-06-03T19:00:00[UTC]".parse().unwrap();
+        assert!(
+            !snooze_presets(&late, None)
+                .iter()
+                .any(|p| p.label.starts_with("This evening"))
+        );
+    }
+}
