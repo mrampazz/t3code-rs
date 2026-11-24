@@ -17,6 +17,8 @@ pub struct Project {
     pub default_thread_env_mode: Option<String>,
     #[serde(default)]
     pub default_model_selection: Value,
+    #[serde(default)]
+    pub repository_identity: Value,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -73,6 +75,8 @@ pub struct ThreadShell {
     pub activity_run_started_at: Option<String>,
     #[serde(default)]
     pub latest_run_started_at: Option<String>,
+    #[serde(default)]
+    pub pull_requests: Vec<Value>,
 }
 
 impl ThreadShell {

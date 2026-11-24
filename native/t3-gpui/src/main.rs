@@ -15,6 +15,7 @@ mod keybindings;
 mod model;
 mod palette;
 mod projects;
+mod pull_requests;
 mod rpc;
 mod settings;
 mod sidebar;
@@ -1701,6 +1702,7 @@ impl T3App {
                             .child(self.config().label(&thread.model_selection)),
                     )
                     .child(div().flex_1())
+                    .child(self.render_pull_requests(cx))
                     .child(self.render_git_toolbar(cx))
                     .child(
                         Button::new("terminal-toggle")
