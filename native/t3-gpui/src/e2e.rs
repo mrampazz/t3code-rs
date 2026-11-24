@@ -737,3 +737,61 @@ async fn e2e_git_status_and_commit() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_attachment() {
+    let env = connect().await;
+    let session = session().await;
+    let (thread_id, view) = launch(&env, "multi-turn", "attach").await;
+    wait_idle(&env, &thread_id).await;
+    let bytes = b"hello from the rust client\n".to_vec();
+    let url = env
+        .client
+        .call("attachments.createUploadUrl", json!({ "type": "file", "name": "note.txt", "mimeType": "text/plain", "sizeBytes": bytes.len() }))
+        .await
+        .unwrap();
+    let res = reqwest::Client::new()
+        .post(format!(
+            "{}{}",
+            session.base_url,
+            url["relativeUrl"].as_str().unwrap()
+        ))
+        .header("content-type", "text/plain")
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "upload: {}", res.status());
+    let attachment = crate::attachments::Attachment {
+        key: 1,
+        name: "note.txt".into(),
+        mime: "text/plain".into(),
+        size: bytes.len() as u64,
+        image: false,
+        upload: crate::attachments::Upload::Ready(url["attachmentId"].as_str().unwrap().into()),
+    };
+    dispatch(
+        &env.client,
+        json!({
+            "type": "message.dispatch", "threadId": thread_id, "messageId": uuid::Uuid::new_v4().to_string(),
+            "text": "see attached", "attachments": [attachment.wire().unwrap()],
+            "dispatchMode": { "type": "queue_after_active" }, "createdBy": "user", "creationSource": "web",
+        }),
+    )
+    .await;
+    let sent = view
+        .until("message with attachment", |v| {
+            v.items()
+                .find(|i| i.kind == "user_message" && i.str("text") == "see attached")
+                .and_then(|i| {
+                    i.raw["attachments"]
+                        .as_array()
+                        .filter(|a| !a.is_empty())
+                        .cloned()
+                })
+        })
+        .await;
+    println!("attachments on the message: {sent:?}");
+    wait_idle(&env, &thread_id).await;
+}

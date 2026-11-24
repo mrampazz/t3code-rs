@@ -1,3 +1,4 @@
+mod attachments;
 mod auth;
 mod composer;
 mod diff_panel;
@@ -84,6 +85,8 @@ struct T3App {
     draft_runtime_mode: String,
     /// Prompt history position while Up/Down recall earlier messages.
     history_pos: Option<history::Position>,
+    attachments: Vec<attachments::Attachment>,
+    attachment_seq: u64,
     draft_interaction_mode: String,
     client: Option<RpcClient>,
     shell: Shell,
@@ -190,6 +193,8 @@ impl T3App {
             draft_model: None,
             draft_runtime_mode: "full-access".into(),
             history_pos: None,
+            attachments: Vec::new(),
+            attachment_seq: 0,
             draft_interaction_mode: "default".into(),
             client: None,
             shell: Shell::default(),
@@ -424,7 +429,13 @@ impl T3App {
         cx.notify();
     }
 
-    fn launch(&mut self, project_id: String, text: String, cx: &mut Context<Self>) {
+    fn launch(
+        &mut self,
+        project_id: String,
+        text: String,
+        attachments: Vec<serde_json::Value>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -449,7 +460,7 @@ impl T3App {
             "runtimeMode": self.draft_runtime_mode,
             "interactionMode": self.draft_interaction_mode,
             "workspaceStrategy": { "type": "root" },
-            "initialMessage": { "messageId": command_id, "text": text, "attachments": [] },
+            "initialMessage": { "messageId": command_id, "text": text, "attachments": attachments },
         });
         cx.spawn(async move |this, cx| {
             let result =
@@ -536,14 +547,21 @@ impl T3App {
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() && self.attachments.is_empty() {
             return;
         }
+        let attachments = match self.take_attachments() {
+            Ok(attachments) => attachments,
+            Err(message) => {
+                self.error = Some(message.into());
+                return cx.notify();
+            }
+        };
         self.history_pos = None;
         if let Some(project_id) = self.draft_project.clone() {
             self.composer
                 .update(cx, |input, cx| input.set_value("", window, cx));
-            return self.launch(project_id, text, cx);
+            return self.launch(project_id, text, attachments, cx);
         }
         let Some(thread_id) = self.selected.clone() else {
             return;
@@ -558,7 +576,7 @@ impl T3App {
                 "messageId": command_id,
                 "threadId": thread_id,
                 "text": text,
-                "attachments": [],
+                "attachments": attachments,
                 "dispatchMode": { "type": "queue_after_active" },
                 "createdBy": "user",
                 "creationSource": "web",
@@ -1127,6 +1145,7 @@ impl T3App {
                                 .child("No available provider")
                                 .into_any_element(),
                         })
+                        .child(self.render_attachments(cx))
                         .child(Textarea::new(&self.composer))
                         .children(
                             self.error
@@ -1272,10 +1291,14 @@ impl T3App {
                     .w_full()
                     .p_4()
                     .gap_2()
+                    .child(self.render_attachments(cx))
                     .child(
                         div()
                             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                                 this.composer_history_key(e, window, cx)
+                            }))
+                            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                                this.add_attachments(paths.paths().to_vec(), cx)
                             }))
                             .child(Textarea::new(&self.composer)),
                     )
