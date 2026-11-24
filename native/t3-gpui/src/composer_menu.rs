@@ -212,14 +212,14 @@ impl T3App {
         };
         let cwd = self.thread_cwd().or_else(|| {
             let project = self.draft_project.as_ref()?;
-            self.shell
+            self.shell()
                 .projects
                 .iter()
                 .find(|p| &p.id == project)
                 .map(|p| p.workspace_root.clone())
         });
         let Some(provider) = self
-            .config
+            .config()
             .providers
             .iter()
             .find(|p| p.instance_id == instance)
@@ -253,7 +253,7 @@ impl T3App {
     }
 
     fn fetch_workspace_snapshot(&mut self, instance: String, cwd: String, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.client() else {
             return;
         };
         cx.spawn(async move |this, cx| {
@@ -262,7 +262,9 @@ impl T3App {
                 on_tokio(async move { client.call("server.refreshProviders", payload).await }).await
             {
                 this.update(cx, |app, cx| {
-                    app.config.merge_workspace_snapshots(&reply);
+                    if let Some(env) = app.env_mut() {
+                        env.config.merge_workspace_snapshots(&reply);
+                    }
                     if app.menu_trigger.is_some() {
                         app.update_composer_menu(cx);
                     }
@@ -274,7 +276,7 @@ impl T3App {
     }
 
     fn search_paths(&mut self, query: String, cx: &mut Context<Self>) {
-        let (Some(client), Some(cwd)) = (self.client.clone(), self.thread_cwd()) else {
+        let (Some(client), Some(cwd)) = (self.client(), self.thread_cwd()) else {
             return;
         };
         let generation = self.menu_generation;

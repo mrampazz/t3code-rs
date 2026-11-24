@@ -36,7 +36,7 @@ impl T3App {
         }
         self.selected
             .as_ref()
-            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
             .map(|t| (t.runtime_mode.clone(), t.interaction_mode.clone()))
             .unwrap_or_default()
     }
@@ -67,7 +67,7 @@ impl T3App {
     pub(crate) fn render_composer_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (runtime, interaction) = self.current_modes();
         let provider = self.current_model().and_then(|m| {
-            self.config
+            self.config()
                 .providers
                 .iter()
                 .find(|p| m["instanceId"] == p.instance_id.as_str())

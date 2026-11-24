@@ -3,6 +3,7 @@ mod auth;
 mod composer;
 mod composer_menu;
 mod diff_panel;
+mod env;
 mod git;
 mod history;
 mod model;
@@ -31,8 +32,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::json;
 
-use model::{ServerConfig, Shell, ThreadView, model_key};
-use rpc::RpcClient;
+use model::{ThreadView, model_key};
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -74,9 +74,10 @@ enum Screen {
 struct T3App {
     screen: Screen,
     error: Option<SharedString>,
-    session: Option<auth::Session>,
-    /// Bumped per connect or disconnect so a stale supervisor loop stops.
-    generation: u64,
+    /// Connected environments (servers); see `env.rs`.
+    envs: Vec<env::Env>,
+    /// Key of the environment owning the open thread, draft, or settings.
+    active: Option<String>,
     pair_input: Entity<InputState>,
     composer: Entity<TextareaState>,
     model_picker: Entity<ModelPicker>,
@@ -97,9 +98,6 @@ struct T3App {
     /// Provider/folder pairs whose command snapshot was already requested.
     requested_snapshots: HashSet<String>,
     draft_interaction_mode: String,
-    client: Option<RpcClient>,
-    shell: Shell,
-    config: ServerConfig,
     /// Project of the new-thread draft shown instead of a thread.
     draft_project: Option<String>,
     selected: Option<String>,
@@ -207,8 +205,8 @@ impl T3App {
         let mut app = Self {
             screen: Screen::Pair,
             error: None,
-            session: None,
-            generation: 0,
+            envs: Vec::new(),
+            active: None,
             pair_input,
             composer,
             model_picker,
@@ -224,9 +222,6 @@ impl T3App {
             menu_generation: 0,
             requested_snapshots: HashSet::new(),
             draft_interaction_mode: "default".into(),
-            client: None,
-            shell: Shell::default(),
-            config: ServerConfig::default(),
             draft_project: None,
             selected: None,
             thread: ThreadView::default(),
@@ -262,7 +257,7 @@ impl T3App {
             transcript_scroll: ScrollHandle::new(),
             _subscriptions,
         };
-        if let Some(session) = auth::load() {
+        for session in auth::load_all() {
             app.connect(session, cx);
         }
         app
@@ -276,7 +271,12 @@ impl T3App {
         cx.spawn(async move |this, cx| {
             let result = on_tokio(async move { auth::pair(&url).await }).await;
             this.update(cx, |app, cx| match result {
-                Ok(Ok(session)) => app.connect(session, cx),
+                Ok(Ok(session)) => {
+                    let key = session.base_url.clone();
+                    app.connect(session, cx);
+                    app.activate(&key, cx);
+                    app.screen = Screen::Connected;
+                }
                 Ok(Err(e)) => app.fail(e.to_string(), cx),
                 Err(e) => app.fail(e.to_string(), cx),
             })
@@ -291,169 +291,15 @@ impl T3App {
         cx.notify();
     }
 
-    /// Owns the transport for one session: connects, streams the shell, and retries with backoff.
-    fn connect(&mut self, session: auth::Session, cx: &mut Context<Self>) {
-        self.generation += 1;
-        let generation = self.generation;
-        self.session = Some(session.clone());
-        if self.shell.sequence == 0 {
-            self.screen = Screen::Connecting;
-        }
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let alive = |app: &T3App| app.generation == generation;
-            let mut attempt = 0u32;
-            loop {
-                let s = session.clone();
-                let result = on_tokio(async move {
-                    let url = auth::socket_url(&s).await?;
-                    RpcClient::connect(&url).await
-                })
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|r| r);
-                let error = match result {
-                    Err(e) if e.is::<auth::Rejected>() => {
-                        this.update(cx, |app, cx| {
-                            if alive(app) {
-                                auth::forget();
-                                app.session = None;
-                                app.fail(e.to_string(), cx);
-                            }
-                        })
-                        .ok();
-                        return;
-                    }
-                    Err(e) => e.to_string(),
-                    Ok(client) => {
-                        let Ok(Some(after)) = this.update(cx, |app, cx| {
-                            if !alive(app) {
-                                client.close();
-                                return None;
-                            }
-                            app.client = Some(client.clone());
-                            app.subscribe_config(&client, cx);
-                            app.screen = Screen::Connected;
-                            app.error = None;
-                            if app.selected.is_some() {
-                                app.subscribe_thread(cx);
-                                app.subscribe_git(cx);
-                                if app.term.is_some() {
-                                    app.open_terminal(true, cx);
-                                }
-                            }
-                            cx.notify();
-                            Some(app.shell.sequence)
-                        }) else {
-                            return;
-                        };
-                        // The server sends `synchronized` only when asked; backoff resets on it.
-                        let mut payload = json!({ "requestCompletionMarker": true });
-                        if after > 0 {
-                            payload["afterSequence"] = json!(after);
-                        }
-                        let (_, mut shell) =
-                            client.request("orchestration.subscribeShell", payload);
-                        let mut ended = "connection closed".to_string();
-                        while let Some(item) = shell.recv().await {
-                            let item = match item {
-                                Ok(item) => item,
-                                Err(e) => {
-                                    ended = e.to_string();
-                                    break;
-                                }
-                            };
-                            let Ok(true) = this.update(cx, |app, cx| {
-                                let removals = app.shell.removals;
-                                app.shell.apply(&item);
-                                app.maybe_visit(cx);
-                                if app.shell.removals != removals || item["kind"] == "synchronized"
-                                {
-                                    app.load_archived(cx);
-                                }
-                                cx.notify();
-                                alive(app)
-                            }) else {
-                                client.close();
-                                return;
-                            };
-                            if item["kind"] == "synchronized" {
-                                attempt = 0;
-                            }
-                        }
-                        client.close();
-                        ended
-                    }
-                };
-                let delay = backoff(attempt);
-                attempt += 1;
-                let Ok(true) = this.update(cx, |app, cx| {
-                    if alive(app) {
-                        app.client = None;
-                        app.thread_sub = None;
-                        app.error = Some(
-                            format!(
-                                "Disconnected: {error}. Retrying in {}s…",
-                                delay.as_secs().max(1)
-                            )
-                            .into(),
-                        );
-                        cx.notify();
-                    }
-                    alive(app)
-                }) else {
-                    return;
-                };
-                cx.background_executor().timer(delay).await;
-            }
-        })
-        .detach();
-    }
-
-    /// Refreshes the Archived section; called on sync and whenever the shell reports a removal.
-    fn load_archived(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let result = on_tokio(async move {
-                client
-                    .call("orchestration.getArchivedShellSnapshot", json!({}))
-                    .await
-            })
-            .await;
-            if let Ok(Ok(snapshot)) = result {
-                this.update(cx, |app, cx| {
-                    app.shell.set_archived(&snapshot);
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
-        .detach();
-    }
-
-    /// Lives as long as the socket; a new connection starts a new one.
-    fn subscribe_config(&mut self, client: &RpcClient, cx: &mut Context<Self>) {
-        let (_, mut rx) = client.request("subscribeServerConfig", json!({}));
-        cx.spawn(async move |this, cx| {
-            while let Some(Ok(event)) = rx.recv().await {
-                if this
-                    .update(cx, |app, cx| {
-                        app.config.apply(&event);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
-    fn new_thread(&mut self, project_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        if let (Some(client), Some(sub)) = (&self.client, self.thread_sub.take()) {
+    fn new_thread(
+        &mut self,
+        env: String,
+        project_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.activate(&env, cx);
+        if let (Some(client), Some(sub)) = (self.client(), self.thread_sub.take()) {
             client.cancel(&sub);
         }
         self.selected = None;
@@ -461,7 +307,7 @@ impl T3App {
         self.draft_project = Some(project_id);
         self.draft_model = None;
         self.settings_open = false;
-        self.draft_runtime_mode = self.config.settings["defaultRuntimeMode"]
+        self.draft_runtime_mode = self.config().settings["defaultRuntimeMode"]
             .as_str()
             .unwrap_or("full-access")
             .to_string();
@@ -478,14 +324,14 @@ impl T3App {
         attachments: Vec<serde_json::Value>,
         cx: &mut Context<Self>,
     ) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.client() else {
             return;
         };
-        let project = self.shell.projects.iter().find(|p| p.id == project_id);
+        let project = self.shell().projects.iter().find(|p| p.id == project_id);
         let Some(model) = self
             .draft_model
             .clone()
-            .or_else(|| self.config.model_for(project))
+            .or_else(|| self.config().model_for(project))
         else {
             self.error = Some("No available provider on this server.".into());
             return cx.notify();
@@ -504,6 +350,7 @@ impl T3App {
             "workspaceStrategy": { "type": "root" },
             "initialMessage": { "messageId": command_id, "text": text, "attachments": attachments },
         });
+        let env_key = self.env().map(|e| e.key.clone()).unwrap_or_default();
         cx.spawn(async move |this, cx| {
             let result =
                 on_tokio(async move { client.call("orchestration.launchThread", input).await })
@@ -512,7 +359,7 @@ impl T3App {
                 Ok(Ok(launched)) => {
                     app.draft_project = None;
                     if let Some(id) = launched["threadId"].as_str() {
-                        app.select_thread(id.to_string(), cx);
+                        app.select_thread(env_key.clone(), id.to_string(), cx);
                     }
                 }
                 Ok(Err(e)) => app.error = Some(format!("Could not start thread: {e}").into()),
@@ -523,14 +370,16 @@ impl T3App {
         .detach();
     }
 
-    fn select_thread(&mut self, id: String, cx: &mut Context<Self>) {
-        if self.selected.as_deref() != Some(id.as_str()) {
+    fn select_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
+        let same_env = self.env().is_some_and(|e| e.key == env);
+        self.activate(&env, cx);
+        if !same_env || self.selected.as_deref() != Some(id.as_str()) {
             self.visit_open_pending = true;
             self.visit_sent_at = None;
         }
         self.draft_project = None;
         self.settings_open = false;
-        if self.selected.as_deref() != Some(id.as_str()) {
+        if !same_env || self.selected.as_deref() != Some(id.as_str()) {
             self.thread = ThreadView::default();
             self.history_pos = None;
             self.diff_generation += 1;
@@ -549,7 +398,7 @@ impl T3App {
 
     /// (Re)subscribes the selected thread, resuming from its cursor when it already has data.
     fn subscribe_thread(&mut self, cx: &mut Context<Self>) {
-        let (Some(client), Some(id)) = (self.client.clone(), self.selected.clone()) else {
+        let (Some(client), Some(id)) = (self.client(), self.selected.clone()) else {
             return;
         };
         if let Some(old) = self.thread_sub.take() {
@@ -635,7 +484,7 @@ impl T3App {
 
     /// Sends an `OrchestrationV2Command`, filling in `commandId`. Failures show in the error line.
     pub(crate) fn dispatch(&mut self, mut command: serde_json::Value, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.client() else {
             self.error = Some("Not connected.".into());
             return cx.notify();
         };
@@ -666,22 +515,22 @@ impl T3App {
     /// The selection the picker shows: the draft's choice or default, else the open thread's.
     fn current_model(&self) -> Option<serde_json::Value> {
         if let Some(project_id) = &self.draft_project {
-            let project = self.shell.projects.iter().find(|p| &p.id == project_id);
+            let project = self.shell().projects.iter().find(|p| &p.id == project_id);
             return self
                 .draft_model
                 .clone()
-                .or_else(|| self.config.model_for(project));
+                .or_else(|| self.config().model_for(project));
         }
         let thread = self
             .selected
             .as_ref()
-            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))?;
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))?;
         Some(thread.model_selection.clone())
     }
 
     fn pick_model(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some((_, selection)) = self
-            .config
+            .config()
             .model_options()
             .into_iter()
             .find(|(_, s)| model_key(s) == key)
@@ -706,11 +555,11 @@ impl T3App {
             .current_model()
             .map(|m| model_key(&m))
             .unwrap_or_default();
-        if self.picker_synced == (self.config.revision, key.clone()) {
+        if self.picker_synced == (self.config().revision, key.clone()) {
             return;
         }
         let items: Vec<ModelOption> = self
-            .config
+            .config()
             .model_options()
             .into_iter()
             .map(|(title, selection)| ModelOption {
@@ -718,8 +567,8 @@ impl T3App {
                 key: model_key(&selection).into(),
             })
             .collect();
-        let rebuild = self.picker_synced.0 != self.config.revision;
-        self.picker_synced = (self.config.revision, key.clone());
+        let rebuild = self.picker_synced.0 != self.config().revision;
+        self.picker_synced = (self.config().revision, key.clone());
         self.model_picker.update(cx, |picker, cx| {
             if rebuild {
                 picker.set_items(SearchableVec::new(items), window, cx);
@@ -780,7 +629,7 @@ impl T3App {
             return;
         };
         if self
-            .shell
+            .shell()
             .threads
             .iter()
             .any(|t| t.id == thread_id && t.is_running())
@@ -839,7 +688,7 @@ impl T3App {
         let Some(thread) = self
             .selected
             .as_ref()
-            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
         else {
             return;
         };
@@ -876,11 +725,11 @@ impl T3App {
         let Some(thread) = self
             .selected
             .as_ref()
-            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
         else {
             return;
         };
-        let command = match (&thread.active_run_id, self.config.thread_stop) {
+        let command = match (&thread.active_run_id, self.config().thread_stop) {
             (_, true) => json!({ "type": "thread.stop", "threadId": thread.id }),
             (Some(run), false) => {
                 json!({ "type": "run.interrupt", "threadId": thread.id, "runId": run })
@@ -890,17 +739,16 @@ impl T3App {
         self.dispatch(command, cx);
     }
 
+    /// Disconnects the active environment; others stay connected.
     fn forget_session(&mut self, cx: &mut Context<Self>) {
-        auth::forget();
-        self.generation += 1;
-        self.session = None;
-        self.shell = Shell::default();
-        self.thread = ThreadView::default();
-        if let Some(client) = self.client.take() {
-            client.close();
+        if let Some(key) = self.env().map(|e| e.key.clone()) {
+            self.remove_env(&key, cx);
         }
-        self.thread_sub = None;
-        self.selected = None;
+    }
+
+    /// Shows the pairing screen to add another environment; Cancel returns.
+    fn add_environment(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
         self.screen = Screen::Pair;
         cx.notify();
     }
@@ -944,7 +792,16 @@ impl T3App {
                     self.error
                         .clone()
                         .map(|e| div().text_sm().text_color(theme.danger).child(e)),
-                ),
+                )
+                .when(!self.envs.is_empty() && !connecting, |card| {
+                    card.child(Button::new("pair-cancel").ghost().label("Cancel").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.error = None;
+                            this.screen = Screen::Connected;
+                            cx.notify();
+                        }),
+                    ))
+                }),
         )
     }
 
@@ -956,6 +813,7 @@ impl T3App {
     ) -> impl IntoElement {
         let theme = cx.theme().colors;
         let id = thread.id.clone();
+        let env_key = thread.env.clone();
         let selected = self.selected.as_deref() == Some(id.as_str());
         let app = cx.entity().downgrade();
         let pinned = thread.pinned_at.is_some();
@@ -963,13 +821,14 @@ impl T3App {
         let snoozed = thread.snoozed_until.is_some();
         let menu_id = id.clone();
         let title = thread.title.clone();
-        let project = self
-            .shell
-            .projects
-            .iter()
-            .find(|p| p.id == thread.project_id)
-            .map(|p| p.title.clone());
-        let presets = self.config.snooze_presets.clone();
+        let env = self.env_by(&thread.env);
+        let project = env
+            .and_then(|e| e.shell.projects.iter().find(|p| p.id == thread.project_id))
+            .map(|p| match (self.envs.len() > 1, env) {
+                (true, Some(e)) => format!("{} · {}", p.title, e.label()),
+                _ => p.title.clone(),
+            });
+        let presets = env.and_then(|e| e.config.snooze_presets.clone());
         h_flex()
             .id(SharedString::from(format!("thread-{id}")))
             .gap_2()
@@ -1003,7 +862,9 @@ impl T3App {
                     .text_color(theme.muted_foreground)
                     .child(p)
             }))
-            .on_click(cx.listener(move |this, _, _, cx| this.select_thread(id.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_thread(env_key.clone(), id.clone(), cx)
+            }))
             .context_menu(move |menu, window, cx| {
                 let action = |label: &str, kind: &str, extra: serde_json::Value| {
                     let app = app.clone();
@@ -1079,14 +940,29 @@ impl T3App {
         let theme = cx.theme().colors;
         let now_ms = jiff::Timestamp::now().as_millisecond();
         self.schedule_snooze_wake(now_ms, cx);
-        let threads = self.shell.threads.clone();
+        let threads: Vec<model::ThreadShell> = self
+            .envs
+            .iter()
+            .flat_map(|e| e.shell.threads.iter().cloned())
+            .collect();
         let sections = sidebar::sections(&threads, now_ms);
         let mut list = v_flex()
             .id("threads")
             .flex_1()
             .overflow_y_scroll()
             .px_2()
-            .pb_2();
+            .pb_2()
+            .children(self.envs.iter().filter_map(|e| {
+                let error = e.error.clone()?;
+                Some(
+                    div()
+                        .px_2()
+                        .pt_2()
+                        .text_xs()
+                        .text_color(theme.danger)
+                        .child(format!("{}: {error}", e.label())),
+                )
+            }));
         for (label, rows) in [
             ("Pinned", &sections.pinned),
             ("Active", &sections.active),
@@ -1101,7 +977,12 @@ impl T3App {
                 list = list.child(self.thread_row(thread, false, cx));
             }
         }
-        if !self.shell.archived.is_empty() {
+        let archived: Vec<model::ThreadShell> = self
+            .envs
+            .iter()
+            .flat_map(|e| e.shell.archived.iter().cloned())
+            .collect();
+        if !archived.is_empty() {
             let open = self.show_archived;
             list = list.child(
                 div()
@@ -1115,7 +996,7 @@ impl T3App {
                     .child(format!(
                         "{} Archived ({})",
                         if open { "▾" } else { "▸" },
-                        self.shell.archived.len()
+                        archived.len()
                     ))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.show_archived = !this.show_archived;
@@ -1123,16 +1004,26 @@ impl T3App {
                     })),
             );
             if open {
-                for thread in self.shell.archived.clone().iter() {
+                for thread in archived.iter() {
                     list = list.child(self.thread_row(thread, true, cx));
                 }
             }
         }
-        let projects: Vec<(String, String)> = self
-            .shell
-            .projects
+        // Every environment's projects; named with their server when several are connected.
+        let many = self.envs.len() > 1;
+        let projects: Vec<(String, String, String)> = self
+            .envs
             .iter()
-            .map(|p| (p.id.clone(), p.title.clone()))
+            .flat_map(|e| {
+                e.shell.projects.iter().map(move |p| {
+                    let title = if many {
+                        format!("{} · {}", p.title, e.label())
+                    } else {
+                        p.title.clone()
+                    };
+                    (e.key.clone(), p.id.clone(), title)
+                })
+            })
             .collect();
         let app = cx.entity().downgrade();
         v_flex()
@@ -1159,12 +1050,12 @@ impl T3App {
                             .ghost()
                             .label("New thread")
                             .dropdown_menu(move |mut menu, _, _| {
-                                for (id, title) in projects.clone() {
+                                for (env, id, title) in projects.clone() {
                                     let app = app.clone();
                                     menu = menu.item(PopupMenuItem::new(title).on_click(
                                         move |_, window, cx| {
                                             app.update(cx, |this, cx| {
-                                                this.new_thread(id.clone(), window, cx)
+                                                this.new_thread(env.clone(), id.clone(), window, cx)
                                             })
                                             .ok();
                                         },
@@ -1172,6 +1063,14 @@ impl T3App {
                                 }
                                 menu
                             }),
+                    )
+                    .child(
+                        Button::new("add-server")
+                            .small()
+                            .ghost()
+                            .label("+ Server")
+                            .tooltip("Connect another T3 Code server")
+                            .on_click(cx.listener(|this, _, _, cx| this.add_environment(cx))),
                     )
                     .child(
                         Button::new("open-settings")
@@ -1187,9 +1086,9 @@ impl T3App {
     /// Re-renders when the next snooze ends, so the thread leaves the Snoozed section on time.
     fn schedule_snooze_wake(&mut self, now_ms: i64, cx: &mut Context<Self>) {
         let next = self
-            .shell
-            .threads
+            .envs
             .iter()
+            .flat_map(|e| e.shell.threads.iter())
             .filter_map(|t| sidebar::ts_ms(t.snoozed_until.as_deref()))
             .filter(|&wake| wake > now_ms)
             .min();
@@ -1214,7 +1113,7 @@ impl T3App {
         if let Some(project) = self
             .draft_project
             .as_ref()
-            .and_then(|id| self.shell.projects.iter().find(|p| &p.id == id))
+            .and_then(|id| self.shell().projects.iter().find(|p| &p.id == id))
         {
             let model = self.current_model();
             return v_flex()
@@ -1259,22 +1158,24 @@ impl T3App {
         let Some(thread) = self
             .selected
             .as_ref()
-            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
         else {
             return v_flex()
                 .flex_1()
                 .items_center()
                 .justify_center()
                 .text_color(theme.muted_foreground)
-                .child(if self.shell.synced || !self.shell.projects.is_empty() {
-                    "Select a thread"
-                } else {
-                    "Loading…"
-                })
+                .child(
+                    if self.shell().synced || !self.shell().projects.is_empty() {
+                        "Select a thread"
+                    } else {
+                        "Loading…"
+                    },
+                )
                 .into_any_element();
         };
         let rollback_supported = self
-            .config
+            .config()
             .providers
             .iter()
             .find(|p| thread.model_selection["instanceId"] == p.instance_id.as_str())
@@ -1313,7 +1214,7 @@ impl T3App {
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child(self.config.label(&thread.model_selection)),
+                            .child(self.config().label(&thread.model_selection)),
                     )
                     .child(div().flex_1())
                     .child(self.render_git_toolbar(cx))

@@ -27,8 +27,10 @@ const MAX_ROWS: usize = 12;
 
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) enum PaletteAction {
-    Open(String),
-    NewThread(String),
+    /// (environment, thread)
+    Open(String, String),
+    /// (environment, project)
+    NewThread(String, String),
     ToggleDiff,
     Disconnect,
     Settings,
@@ -72,8 +74,7 @@ impl T3App {
                 let query = self.palette_input.read(cx).value().trim().to_string();
                 self.palette_matches.clear();
                 cx.notify();
-                let Some(client) = self.client.clone().filter(|_| query.chars().count() >= 2)
-                else {
+                let Some(client) = self.client().filter(|_| query.chars().count() >= 2) else {
                     return;
                 };
                 cx.spawn(async move |this, cx| {
@@ -109,14 +110,16 @@ impl T3App {
     pub(crate) fn palette_rows(&self, cx: &App) -> Vec<PaletteRow> {
         let query = self.palette_input.read(cx).value().trim().to_lowercase();
         let title_of = |id: &str| {
-            self.shell
+            self.shell()
                 .threads
                 .iter()
-                .chain(&self.shell.archived)
+                .chain(&self.shell().archived)
                 .find(|t| t.id == id)
                 .map(|t| t.title.clone())
         };
-        let mut rows = palette_rows(&self.shell, &self.palette_matches, &query, title_of);
+        let shells: Vec<&crate::model::Shell> = self.envs.iter().map(|e| &e.shell).collect();
+        let active = self.env().map(|e| e.key.clone()).unwrap_or_default();
+        let mut rows = palette_rows(&shells, &self.palette_matches, &active, &query, title_of);
         if self.selected.is_some() && "toggle diff".contains(&query) {
             rows.push(PaletteRow {
                 label: "Toggle diff".into(),
@@ -145,8 +148,8 @@ impl T3App {
     fn run_palette(&mut self, action: PaletteAction, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = false;
         match action {
-            PaletteAction::Open(id) => self.select_thread(id, cx),
-            PaletteAction::NewThread(project) => self.new_thread(project, window, cx),
+            PaletteAction::Open(env, id) => self.select_thread(env, id, cx),
+            PaletteAction::NewThread(env, project) => self.new_thread(env, project, window, cx),
             PaletteAction::ToggleDiff => self.toggle_diff(cx),
             PaletteAction::Disconnect => self.forget_session(cx),
             PaletteAction::Settings => self.toggle_settings(cx),
@@ -221,12 +224,13 @@ impl T3App {
 /// Thread rows: title matches first (local, instant), then server message matches not already
 /// listed, then "New thread in …" per matching project.
 pub(crate) fn palette_rows(
-    shell: &crate::model::Shell,
+    shells: &[&crate::model::Shell],
     matches: &[Value],
+    matches_env: &str,
     query: &str,
     title_of: impl Fn(&str) -> Option<String>,
 ) -> Vec<PaletteRow> {
-    let project_title = |id: &str| {
+    let project_title = |shell: &crate::model::Shell, id: &str| {
         shell
             .projects
             .iter()
@@ -234,41 +238,45 @@ pub(crate) fn palette_rows(
             .map(|p| p.title.clone())
             .unwrap_or_default()
     };
-    let mut rows: Vec<PaletteRow> = shell
-        .threads
+    let mut rows: Vec<PaletteRow> = shells
         .iter()
-        .chain(&shell.archived)
-        .filter(|t| query.is_empty() || t.title.to_lowercase().contains(query))
-        .map(|t| PaletteRow {
-            label: t.title.clone(),
-            detail: project_title(&t.project_id),
-            action: PaletteAction::Open(t.id.clone()),
+        .flat_map(|shell| {
+            shell
+                .threads
+                .iter()
+                .chain(&shell.archived)
+                .filter(|t| query.is_empty() || t.title.to_lowercase().contains(query))
+                .map(|t| PaletteRow {
+                    label: t.title.clone(),
+                    detail: project_title(shell, &t.project_id),
+                    action: PaletteAction::Open(t.env.clone(), t.id.clone()),
+                })
         })
         .collect();
     for m in matches {
         let Some(id) = m["threadId"].as_str() else {
             continue;
         };
-        if rows
-            .iter()
-            .any(|r| r.action == PaletteAction::Open(id.to_owned()))
-        {
+        let action = PaletteAction::Open(matches_env.to_owned(), id.to_owned());
+        if rows.iter().any(|r| r.action == action) {
             continue;
         }
         rows.push(PaletteRow {
             label: title_of(id).unwrap_or_else(|| "Thread".into()),
             detail: m["snippet"].as_str().unwrap_or("").replace('\n', " "),
-            action: PaletteAction::Open(id.to_owned()),
+            action,
         });
     }
-    for p in &shell.projects {
-        let label = format!("New thread in {}", p.title);
-        if query.is_empty() || label.to_lowercase().contains(query) {
-            rows.push(PaletteRow {
-                label,
-                detail: "Command".into(),
-                action: PaletteAction::NewThread(p.id.clone()),
-            });
+    for shell in shells {
+        for p in &shell.projects {
+            let label = format!("New thread in {}", p.title);
+            if query.is_empty() || label.to_lowercase().contains(query) {
+                rows.push(PaletteRow {
+                    label,
+                    detail: "Command".into(),
+                    action: PaletteAction::NewThread(shell.env.clone(), p.id.clone()),
+                });
+            }
         }
     }
     rows
@@ -281,7 +289,7 @@ mod tests {
 
     #[test]
     fn titles_then_message_matches_then_commands() {
-        let mut shell = crate::model::Shell::default();
+        let mut shell = crate::model::Shell::new("http://a");
         shell.apply(
             &json!({"kind": "snapshot", "snapshot": {"snapshotSequence": 1,
             "projects": [{"id": "p", "title": "Web"}],
@@ -289,26 +297,34 @@ mod tests {
                 {"id": "a", "projectId": "p", "title": "Fix login bug", "updatedAt": "1"},
                 {"id": "b", "projectId": "p", "title": "Refactor", "updatedAt": "2"}]}}),
         );
+        let mut other = crate::model::Shell::new("http://b");
+        other.apply(
+            &json!({"kind": "snapshot", "snapshot": {"snapshotSequence": 1, "projects": [],
+            "threads": [{"id": "a", "projectId": "q", "title": "Login on b", "updatedAt": "1"}]}}),
+        );
         let matches = vec![
             json!({"threadId": "b", "snippet": "the login\nform"}),
             json!({"threadId": "a", "snippet": "dup"}),
         ];
-        let rows = palette_rows(&shell, &matches, "login", |id| {
+        let open = |env: &str, id: &str| PaletteAction::Open(env.into(), id.into());
+        let rows = palette_rows(&[&shell, &other], &matches, "http://a", "login", |id| {
             (id == "b").then(|| "Refactor".into())
         });
         let actions: Vec<_> = rows.iter().map(|r| r.action.clone()).collect();
         assert_eq!(
             actions,
             [
-                PaletteAction::Open("a".into()),
-                PaletteAction::Open("b".into())
-            ]
+                open("http://a", "a"),
+                open("http://b", "a"),
+                open("http://a", "b")
+            ],
+            "same id, two servers"
         );
-        assert_eq!(rows[1].detail, "the login form");
-        let all = palette_rows(&shell, &[], "", |_| None);
+        assert_eq!(rows[2].detail, "the login form");
+        let all = palette_rows(&[&shell], &[], "http://a", "", |_| None);
         assert_eq!(
             all.last().unwrap().action,
-            PaletteAction::NewThread("p".into())
+            PaletteAction::NewThread("http://a".into(), "p".into())
         );
     }
 }

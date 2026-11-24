@@ -74,9 +74,9 @@ impl T3App {
         let thread = self
             .selected
             .as_ref()
-            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))?;
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))?;
         thread.worktree_path.clone().or_else(|| {
-            self.shell
+            self.shell()
                 .projects
                 .iter()
                 .find(|p| p.id == thread.project_id)
@@ -86,11 +86,11 @@ impl T3App {
 
     /// Lives as long as the thread selection; replaced on switch or reconnect.
     pub(crate) fn subscribe_git(&mut self, cx: &mut Context<Self>) {
-        if let (Some(client), Some(old)) = (&self.client, self.git_sub.take()) {
+        if let (Some(client), Some(old)) = (self.client(), self.git_sub.take()) {
             client.cancel(&old);
         }
         self.git = GitStatus::default();
-        let (Some(client), Some(cwd)) = (self.client.clone(), self.thread_cwd()) else {
+        let (Some(client), Some(cwd)) = (self.client(), self.thread_cwd()) else {
             return;
         };
         let (sub, mut rx) = client.request(
@@ -117,13 +117,13 @@ impl T3App {
     }
 
     pub(crate) fn run_git_action(&mut self, action: &'static str, cx: &mut Context<Self>) {
-        let (Some(client), Some(cwd)) = (self.client.clone(), self.thread_cwd()) else {
+        let (Some(client), Some(cwd)) = (self.client(), self.thread_cwd()) else {
             return;
         };
         let thread = self
             .selected
             .as_ref()
-            .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id));
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id));
         let mut payload =
             json!({ "actionId": uuid::Uuid::new_v4().to_string(), "cwd": cwd, "action": action });
         if let Some(thread) = thread {
@@ -176,7 +176,7 @@ impl T3App {
     }
 
     fn git_pull(&mut self, cx: &mut Context<Self>) {
-        let (Some(client), Some(cwd)) = (self.client.clone(), self.thread_cwd()) else {
+        let (Some(client), Some(cwd)) = (self.client(), self.thread_cwd()) else {
             return;
         };
         self.git_progress = Some("Pulling…".into());

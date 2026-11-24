@@ -26,7 +26,7 @@ impl T3App {
         self.diff_generation += 1;
         let generation = self.diff_generation;
         let (Some(client), Some(thread_id), Some(latest)) = (
-            self.client.clone(),
+            self.client(),
             self.selected.clone(),
             self.thread.latest_turn(),
         ) else {

@@ -20,6 +20,9 @@ pub struct Project {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadShell {
+    /// The environment (server URL) this thread lives in; set by `Shell`, not the wire.
+    #[serde(skip)]
+    pub env: String,
     pub id: String,
     pub project_id: String,
     pub title: String,
@@ -108,6 +111,8 @@ impl ThreadShell {
 
 #[derive(Default)]
 pub struct Shell {
+    /// Environment key stamped on every thread this shell decodes.
+    pub env: String,
     pub projects: Vec<Project>,
     pub threads: Vec<ThreadShell>,
     /// Loaded with `getArchivedShellSnapshot`; the stream reports archiving as a removal.
@@ -130,6 +135,7 @@ impl Shell {
                 self.sequence = snap["snapshotSequence"].as_u64().unwrap_or(0);
                 self.projects = decode_vec(&snap["projects"]);
                 self.threads = decode_vec(&snap["threads"]);
+                self.stamp();
             }
             Some("synchronized") => self.synced = true,
             Some("project.updated") => {
@@ -142,9 +148,10 @@ impl Shell {
                 self.projects.retain(|p| p.id != id);
             }
             Some("thread.updated") => {
-                let Some(t) = decode::<ThreadShell>(&item["thread"]) else {
+                let Some(mut t) = decode::<ThreadShell>(&item["thread"]) else {
                     return;
                 };
+                t.env = self.env.clone();
                 let (to, from) = if item["location"] == "active" {
                     (&mut self.threads, &mut self.archived)
                 } else {
@@ -169,8 +176,22 @@ impl Shell {
         }
     }
 
+    pub fn new(env: &str) -> Self {
+        Self {
+            env: env.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    fn stamp(&mut self) {
+        for t in self.threads.iter_mut().chain(self.archived.iter_mut()) {
+            t.env.clone_from(&self.env);
+        }
+    }
+
     pub fn set_archived(&mut self, snapshot: &Value) {
         self.archived = decode_vec(&snapshot["threads"]);
+        self.stamp();
         self.archived
             .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     }

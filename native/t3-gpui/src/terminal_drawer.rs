@@ -25,7 +25,7 @@ impl T3App {
 
     /// The server sizes the PTY to every attached viewer, so a hidden drawer detaches.
     pub(crate) fn close_terminal(&mut self, cx: &mut Context<Self>) {
-        if let (Some(client), Some(sub)) = (&self.client, self.term_sub.take()) {
+        if let (Some(client), Some(sub)) = (self.client(), self.term_sub.take()) {
             client.cancel(&sub);
         }
         self.term = None;
@@ -36,10 +36,10 @@ impl T3App {
     /// `resume` reattaches after a reconnect without starting a new shell.
     pub(crate) fn open_terminal(&mut self, resume: bool, cx: &mut Context<Self>) {
         let (Some(client), Some(thread)) = (
-            self.client.clone(),
+            self.client(),
             self.selected
                 .as_ref()
-                .and_then(|id| self.shell.threads.iter().find(|t| &t.id == id))
+                .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
                 .cloned(),
         ) else {
             return;
@@ -148,7 +148,7 @@ impl T3App {
     }
 
     fn terminal_write(&mut self, data: String, reply: bool, cx: &mut Context<Self>) {
-        let (Some(client), Some(thread_id)) = (self.client.clone(), self.selected.clone()) else {
+        let (Some(client), Some(thread_id)) = (self.client(), self.selected.clone()) else {
             return;
         };
         let mut payload = json!({ "threadId": thread_id, "terminalId": TERMINAL_ID, "data": data });
@@ -217,7 +217,7 @@ impl T3App {
                                 if let Some(id) = thread_id.clone() {
                                     let payload =
                                         json!({ "threadId": id, "terminalId": TERMINAL_ID });
-                                    if let Some(client) = this.client.clone() {
+                                    if let Some(client) = this.client() {
                                         on_tokio(async move {
                                             client.call("terminal.clear", payload).await
                                         });

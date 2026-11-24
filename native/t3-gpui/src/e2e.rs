@@ -266,14 +266,16 @@ async fn e2e_chat_diff_and_model() {
         .await
         .unwrap();
     let rows = crate::palette::palette_rows(
-        &env.shell.state.lock().unwrap(),
+        &[&env.shell.state.lock().unwrap()],
         found["matches"].as_array().unwrap(),
+        "",
         "what you can do",
         |_| None,
     );
     assert!(
         rows.iter()
-            .any(|r| r.action == crate::palette::PaletteAction::Open(thread_id.clone())),
+            .any(|r| r.action
+                == crate::palette::PaletteAction::Open(String::new(), thread_id.clone())),
         "palette finds the thread by message: {found}"
     );
 

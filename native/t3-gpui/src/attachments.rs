@@ -124,7 +124,9 @@ impl T3App {
             if !start {
                 continue;
             }
-            let (Some(client), Some(session)) = (self.client.clone(), self.session.clone()) else {
+            let (Some(client), Some(session)) =
+                (self.client(), self.env().map(|e| e.session.clone()))
+            else {
                 continue;
             };
             let request = json!({ "type": if image { "image" } else { "file" }, "name": name, "mimeType": mime, "sizeBytes": size });

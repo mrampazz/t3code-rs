@@ -56,7 +56,7 @@ impl T3App {
     }
 
     fn update_settings(&mut self, payload: Value, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
+        let Some(client) = self.client() else {
             return;
         };
         self.settings_status = Some("Saving…".into());
@@ -67,7 +67,9 @@ impl T3App {
             this.update(cx, |app, cx| {
                 app.settings_status = match result {
                     Ok(Ok(settings)) => {
-                        app.config.settings = settings;
+                        if let Some(env) = app.env_mut() {
+                            env.config.settings = settings;
+                        }
                         None
                     }
                     Ok(Err(e)) => Some(format!("Could not save: {e}").into()),
@@ -105,10 +107,10 @@ impl T3App {
                 .border_color(c.border)
                 .text_sm()
         };
-        let settings = self.config.settings.clone();
+        let settings = self.config().settings.clone();
 
         let mut providers = v_flex();
-        for p in &self.config.providers {
+        for p in &self.config().providers {
             let enabled = p.enabled;
             let (id, driver) = (p.instance_id.clone(), p.driver.clone());
             let detail = [
@@ -170,11 +172,7 @@ impl T3App {
         let presets =
             crate::sidebar::snooze_presets(&jiff::Zoned::now(), settings.get("snoozePresets"));
         let light = theme_mode(&self.prefs) == ThemeMode::Light;
-        let server = self
-            .session
-            .as_ref()
-            .map(|s| s.base_url.clone())
-            .unwrap_or_default();
+        let server = self.env().map(|e| e.key.clone()).unwrap_or_default();
 
         div().id("settings").flex_1().h_full().overflow_y_scroll().child(
             v_flex()
@@ -243,17 +241,50 @@ impl T3App {
                                 .on_click(cx.listener(|this, _, window, cx| this.set_theme(true, window, cx))),
                         ),
                 )
-                .child(section("Connection"))
-                .child(
+                .child(section("Servers"))
+                .children(self.envs.iter().enumerate().map(|(i, e)| {
+                    let active = e.key == server;
+                    let status = match (&e.error, &e.client) {
+                        (Some(error), _) => error.to_string(),
+                        (None, Some(_)) => "Connected".to_string(),
+                        (None, None) => "Connecting…".to_string(),
+                    };
+                    let (switch_key, remove_key) = (e.key.clone(), e.key.clone());
                     row()
-                        .child(v_flex().flex_1().child("Server").child(div().text_xs().text_color(c.muted_foreground).child(server)))
                         .child(
-                            Button::new("settings-disconnect")
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(e.label())
+                                .child(div().text_xs().text_color(c.muted_foreground).truncate().child(status)),
+                        )
+                        .child(
+                            Button::new(("server-switch", i))
+                                .small()
+                                .label(if active { "Active" } else { "Switch" })
+                                .when(active, |b| b.primary())
+                                .when(!active, |b| b.ghost())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.activate(&switch_key, cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new(("server-disconnect", i))
                                 .small()
                                 .outline()
                                 .label("Disconnect")
-                                .on_click(cx.listener(|this, _, _, cx| this.forget_session(cx))),
-                        ),
+                                .on_click(cx.listener(move |this, _, _, cx| this.remove_env(&remove_key, cx))),
+                        )
+                }))
+                .child(
+                    row().child(
+                        Button::new("settings-add-server")
+                            .small()
+                            .ghost()
+                            .label("+ Connect another server")
+                            .on_click(cx.listener(|this, _, _, cx| this.add_environment(cx))),
+                    ),
                 ),
         )
     }

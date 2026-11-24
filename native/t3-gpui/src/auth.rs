@@ -114,38 +114,69 @@ pub async fn socket_url(session: &Session) -> Result<String> {
     Ok(url.into())
 }
 
-fn session_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".config/t3-gpui/session.json"))
+fn config_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("HOME")?).join(".config/t3-gpui"))
 }
 
-pub fn load() -> Option<Session> {
+/// One session per environment, keyed by server URL.
+fn sessions_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("sessions.json"))
+}
+
+/// The single-session file this client wrote before it supported several environments.
+fn legacy_session_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("session.json"))
+}
+
+/// Saved sessions; `T3_SERVER` + `T3_TOKEN` replace them for development.
+pub fn load_all() -> Vec<Session> {
     if let (Ok(base_url), Ok(access_token)) =
         (std::env::var("T3_SERVER"), std::env::var("T3_TOKEN"))
     {
-        return Some(Session {
+        return vec![Session {
             base_url,
             access_token,
-        });
+        }];
     }
-    serde_json::from_slice(&std::fs::read(session_path()?).ok()?).ok()
+    let read = |p: Option<PathBuf>| std::fs::read(p?).ok();
+    if let Some(bytes) = read(sessions_path()) {
+        return serde_json::from_slice(&bytes).unwrap_or_default();
+    }
+    read(legacy_session_path())
+        .and_then(|b| serde_json::from_slice::<Session>(&b).ok())
+        .into_iter()
+        .collect()
 }
 
-pub fn save(session: &Session) {
-    let Some(path) = session_path() else { return };
+fn write_all(sessions: &[Session]) {
+    let Some(path) = sessions_path() else { return };
     let _ = std::fs::create_dir_all(path.parent().unwrap());
-    let _ = std::fs::write(&path, serde_json::to_vec(session).unwrap());
+    let _ = std::fs::write(&path, serde_json::to_vec(sessions).unwrap());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
+    if let Some(legacy) = legacy_session_path() {
+        let _ = std::fs::remove_file(legacy);
+    }
 }
 
-pub fn forget() {
-    if let Some(path) = session_path() {
-        let _ = std::fs::remove_file(path);
-    }
+pub fn upsert(sessions: &mut Vec<Session>, session: Session) {
+    sessions.retain(|s| s.base_url != session.base_url);
+    sessions.push(session);
+}
+
+pub fn save(session: &Session) {
+    let mut all = load_all();
+    upsert(&mut all, session.clone());
+    write_all(&all);
+}
+
+pub fn forget(base_url: &str) {
+    let mut all = load_all();
+    all.retain(|s| s.base_url != base_url);
+    write_all(&all);
 }
 
 #[cfg(test)]
@@ -157,5 +188,21 @@ mod tests {
         assert_eq!(base, "http://192.168.1.4:3773");
         assert_eq!(token, "abc+1");
         assert!(super::parse_pairing_url("http://x/pair").is_err());
+    }
+
+    #[test]
+    fn upsert_replaces_by_server() {
+        let s = |url: &str, token: &str| super::Session {
+            base_url: url.into(),
+            access_token: token.into(),
+        };
+        let mut all = vec![s("http://a", "1"), s("http://b", "2")];
+        super::upsert(&mut all, s("http://a", "3"));
+        assert_eq!(
+            all.iter()
+                .map(|s| (s.base_url.as_str(), s.access_token.as_str()))
+                .collect::<Vec<_>>(),
+            [("http://b", "2"), ("http://a", "3")]
+        );
     }
 }
