@@ -274,6 +274,8 @@ pub struct ServerConfig {
     pub snooze_presets: Option<Value>,
     /// The environment's `ServerSettings`.
     pub settings: Value,
+    /// `ResolvedKeybindingsConfig`; empty until the snapshot arrives.
+    pub keybindings: Vec<Value>,
 }
 
 /// Picker key for a model selection: provider instance and model slug.
@@ -295,8 +297,18 @@ impl ServerConfig {
                 self.thread_stop = config["environment"]["capabilities"]["threadStop"] == true;
                 self.snooze_presets = config["settings"].get("snoozePresets").cloned();
                 self.settings = config["settings"].clone();
+                self.keybindings = config["keybindings"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
             }
             Some("providerStatuses") => self.providers = decode_vec(&event["payload"]["providers"]),
+            Some("keybindingsUpdated") => {
+                self.keybindings = event["payload"]["keybindings"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+            }
             Some("settingsUpdated") => {
                 if event["payload"]["settings"].is_object() {
                     self.settings = event["payload"]["settings"].clone();

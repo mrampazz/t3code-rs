@@ -7,6 +7,7 @@ mod drag;
 mod env;
 mod git;
 mod history;
+mod keybindings;
 mod model;
 mod palette;
 mod rpc;
@@ -124,6 +125,7 @@ struct T3App {
     /// Drops search responses for an older query.
     palette_generation: u64,
     show_archived: bool,
+    sidebar_hidden: bool,
     /// A one-second re-render is scheduled for the working timer.
     working_tick: std::cell::Cell<bool>,
     /// The selected thread's open still has to be reported with `thread.visit`.
@@ -241,6 +243,7 @@ impl T3App {
             palette_matches: Vec::new(),
             palette_generation: 0,
             show_archived: false,
+            sidebar_hidden: false,
             working_tick: Default::default(),
             visit_open_pending: false,
             visit_sent_at: None,
@@ -731,6 +734,125 @@ impl T3App {
         self.visit_open_pending = false;
         self.visit_sent_at = Some(std::time::Instant::now());
         self.dispatch(command, cx);
+    }
+
+    /// Runs the command a key press is bound to (server keybindings, else the defaults).
+    fn run_shortcut(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let k = &e.keystroke;
+        let m = &k.modifiers;
+        let mods = keybindings::Mods {
+            meta: m.platform,
+            ctrl: m.control,
+            shift: m.shift,
+            alt: m.alt,
+        };
+        if !(mods.meta || mods.ctrl || mods.alt || k.key.starts_with('f')) {
+            return false;
+        }
+        let terminal_focus = self.term_focus.is_focused(window);
+        let composer_focus = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        let ctx = std::collections::HashMap::from([
+            ("terminalFocus", terminal_focus),
+            ("terminalOpen", self.term.is_some()),
+            ("composerFocus", composer_focus),
+            ("editableFocus", composer_focus || self.palette_open),
+            ("rightPanelOpen", self.diff_open),
+            ("draftThreadRoute", self.draft_project.is_some()),
+            ("isDesktop", true),
+        ]);
+        let rules = if self.config().keybindings.is_empty() {
+            keybindings::defaults()
+        } else {
+            self.config().keybindings.clone()
+        };
+        let Some(command) =
+            keybindings::resolve(&rules, &k.key, mods, cfg!(target_os = "macos"), &ctx)
+        else {
+            return false;
+        };
+        let thread = self.selected.clone();
+        match command.as_str() {
+            "commandPalette.toggle" => self.toggle_palette(window, cx),
+            "sidebar.toggle" => {
+                self.sidebar_hidden = !self.sidebar_hidden;
+                cx.notify();
+            }
+            "terminal.toggle" if thread.is_some() => self.toggle_terminal(window, cx),
+            "diff.toggle" if thread.is_some() => self.toggle_diff(cx),
+            "chat.new" => {
+                let env = self.env().map(|e| e.key.clone());
+                let project = self
+                    .draft_project
+                    .clone()
+                    .or_else(|| {
+                        thread
+                            .as_ref()
+                            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
+                            .map(|t| t.project_id.clone())
+                    })
+                    .or_else(|| self.shell().projects.first().map(|p| p.id.clone()));
+                let (Some(env), Some(project)) = (env, project) else {
+                    return false;
+                };
+                self.new_thread(env, project, window, cx);
+            }
+            "thread.next" | "thread.previous" => {
+                return self.step_thread(command == "thread.next", cx);
+            }
+            "thread.pin" | "thread.settle" => {
+                let Some(t) = thread
+                    .as_ref()
+                    .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
+                else {
+                    return false;
+                };
+                let kind = match (command.as_str(), t.pinned_at.is_some()) {
+                    ("thread.pin", true) => "thread.unpin",
+                    ("thread.pin", false) => "thread.pin",
+                    _ => "thread.settle",
+                };
+                let id = t.id.clone();
+                self.dispatch(json!({ "type": kind, "threadId": id }), cx);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Selects the next or previous thread in sidebar order.
+    fn step_thread(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
+        let threads: Vec<model::ThreadShell> = self
+            .envs
+            .iter()
+            .flat_map(|e| e.shell.threads.iter().cloned())
+            .collect();
+        let s = sidebar::sections(&threads, jiff::Timestamp::now().as_millisecond());
+        let order: Vec<(String, String)> = s
+            .pinned
+            .iter()
+            .chain(&s.active)
+            .chain(&s.snoozed)
+            .chain(&s.settled)
+            .map(|t| (t.env.clone(), t.id.clone()))
+            .collect();
+        if order.is_empty() {
+            return false;
+        }
+        let current = self.env().map(|e| e.key.clone()).zip(self.selected.clone());
+        let at = current.and_then(|c| order.iter().position(|o| *o == c));
+        let next = match (at, forward) {
+            (None, _) => 0,
+            (Some(i), true) => (i + 1) % order.len(),
+            (Some(i), false) => (i + order.len() - 1) % order.len(),
+        };
+        let (env, id) = order[next].clone();
+        self.select_thread(env, id, cx);
+        true
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
@@ -1490,14 +1612,16 @@ impl Render for T3App {
             .bg(theme.background)
             .text_color(theme.foreground)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &palette::TogglePalette, window, cx| {
-                if matches!(this.screen, Screen::Connected) {
-                    this.toggle_palette(window, cx)
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if matches!(this.screen, Screen::Connected) && this.run_shortcut(e, window, cx) {
+                    cx.stop_propagation();
                 }
             }));
         match self.screen {
             Screen::Connected => root
-                .child(self.render_sidebar(cx))
+                .when(!self.sidebar_hidden, |root| {
+                    root.child(self.render_sidebar(cx))
+                })
                 .when(self.settings_open, |root| {
                     root.child(self.render_settings(cx))
                 })

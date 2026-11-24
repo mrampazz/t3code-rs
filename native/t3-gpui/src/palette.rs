@@ -11,14 +11,10 @@ use serde_json::{Value, json};
 
 use crate::{T3App, on_tokio};
 
-actions!(t3, [TogglePalette, ClosePalette]);
+actions!(t3, [ClosePalette]);
 
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("cmd-k", TogglePalette, None),
-        KeyBinding::new("ctrl-k", TogglePalette, None),
-        KeyBinding::new("escape", ClosePalette, Some("Palette")),
-    ]);
+    cx.bind_keys([KeyBinding::new("escape", ClosePalette, Some("Palette"))]);
 }
 
 /// Server search waits for the typing to pause.
