@@ -162,6 +162,12 @@ pub fn defaults() -> Vec<Value> {
         rule("]", &["mod", "shift"], "thread.next", None),
         rule("s", &["mod", "shift"], "thread.settle", Some(&not_terminal)),
         rule("p", &["mod", "shift"], "thread.pin", Some(&not_terminal)),
+        rule(
+            "arrowup",
+            &["alt"],
+            "thread.editQueuedMessage",
+            Some(&json!({ "type": "identifier", "name": "composerFocus" })),
+        ),
     ]
 }
 
@@ -183,6 +189,21 @@ mod tests {
             rule_target(&json!({"command": "x", "shortcut": {"key": " "}}))
                 .get("when")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn edits_queued_only_from_the_composer() {
+        let alt = Mods {
+            alt: true,
+            ..Default::default()
+        };
+        let mut ctx = HashMap::new();
+        assert_eq!(resolve(&defaults(), "up", alt, true, &ctx), None);
+        ctx.insert("composerFocus", true);
+        assert_eq!(
+            resolve(&defaults(), "up", alt, true, &ctx).as_deref(),
+            Some("thread.editQueuedMessage")
         );
     }
 

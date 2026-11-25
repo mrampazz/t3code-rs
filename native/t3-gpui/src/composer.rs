@@ -176,7 +176,10 @@ impl T3App {
     pub(crate) fn save_drafts(&self, cx: &App) {
         let Some(path) = drafts_path() else { return };
         let mut drafts = self.drafts.clone();
-        let text = self.composer.read(cx).value().to_string();
+        let text = match &self.queued_edit {
+            Some(edit) => edit.draft.clone(),
+            None => self.composer.read(cx).value().to_string(),
+        };
         if let Some(owner) = &self.composer_owner
             && !text.trim().is_empty()
         {
@@ -200,7 +203,11 @@ impl T3App {
         if key == self.composer_owner {
             return;
         }
-        let text = self.composer.read(cx).value().to_string();
+        // Leaving a thread mid-edit keeps its draft, not the queued text.
+        let text = match self.queued_edit.take() {
+            Some(edit) => edit.draft,
+            None => self.composer.read(cx).value().to_string(),
+        };
         if let Some(old) = self.composer_owner.take() {
             if text.trim().is_empty() {
                 self.drafts.remove(&old);

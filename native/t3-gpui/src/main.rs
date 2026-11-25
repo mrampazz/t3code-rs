@@ -243,6 +243,7 @@ struct T3App {
     input_picks: std::collections::HashMap<String, Vec<String>>,
     /// The transcript list: one item per timeline row, then the working indicator.
     transcript: ListState,
+    queued_edit: Option<queue::QueuedEdit>,
     /// Signed URLs for host-file images by environment, thread and path; `None` while minting.
     asset_urls: std::cell::RefCell<std::collections::HashMap<String, Option<String>>>,
     /// The thread and row keys the list was last spliced to (`sync_transcript`).
@@ -438,6 +439,7 @@ impl T3App {
             input_picks: Default::default(),
             transcript: ListState::new(0, ListAlignment::Top, px(800.)),
             transcript_rows: Default::default(),
+            queued_edit: None,
             asset_urls: Default::default(),
             _subscriptions,
         };
@@ -672,6 +674,9 @@ impl T3App {
     }
 
     fn send(&mut self, alternate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.queued_edit.is_some() {
+            return self.save_queued_edit(window, cx);
+        }
         let text = self.composer.read(cx).value().trim().to_string();
         if text.is_empty() && self.attachments.is_empty() {
             return;
@@ -1146,6 +1151,9 @@ impl T3App {
                     return false;
                 };
                 cx.write_to_clipboard(ClipboardItem::new_string(format!("#{number}")));
+            }
+            "thread.editQueuedMessage" if self.composer.read(cx).cursor() == 0 => {
+                return self.edit_queued(None, window, cx);
             }
             "thread.pin" | "thread.settle" => {
                 let Some(t) = thread

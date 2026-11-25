@@ -1,10 +1,14 @@
 //! Messages queued behind the running turn (web: `QueuedRunsControl.tsx`): send one now
 //! (start it, or steer it into the active turn) or remove it from the queue.
+//! A queued message can also be edited in the composer (`useQueuedRunEdit`): its text replaces
+//! the draft, which comes back on save or cancel.
 //! shortcut: "Send now" is offered whenever a turn is active and the server decides whether the
-//! provider can steer (the web checks provider capabilities first); queued edits are not ported.
+//! provider can steer (the web checks provider capabilities first). Edits change the text only;
+//! attachments and context stay as queued.
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{Value, json};
 
@@ -20,7 +24,76 @@ pub fn send_now_command(thread_id: &str, run_id: &str, active_run: Option<&str>)
     }
 }
 
+/// A queued message open in the composer, and the draft it set aside.
+pub struct QueuedEdit {
+    pub thread_id: String,
+    pub run_id: String,
+    pub draft: String,
+}
+
 impl T3App {
+    /// Opens a queued message (the latest when `run_id` is `None`) in the composer.
+    pub(crate) fn edit_queued(
+        &mut self,
+        run_id: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(thread_id) = self.selected.clone() else {
+            return false;
+        };
+        let queued = self.thread.queued_runs();
+        let Some(run) = (match run_id {
+            Some(id) => queued.iter().find(|q| q.run_id == id),
+            None => queued.last(),
+        }) else {
+            return false;
+        };
+        let draft = match self.queued_edit.take() {
+            Some(edit) => edit.draft,
+            None => self.composer.read(cx).value().to_string(),
+        };
+        let text = run.text.clone();
+        self.queued_edit = Some(QueuedEdit {
+            thread_id,
+            run_id: run.run_id.clone(),
+            draft,
+        });
+        self.composer.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+        true
+    }
+
+    /// Puts the draft back; the queued message stays as it was.
+    pub(crate) fn cancel_queued_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(edit) = self.queued_edit.take() {
+            self.composer
+                .update(cx, |input, cx| input.set_value(edit.draft, window, cx));
+            cx.notify();
+        }
+    }
+
+    /// Saves the composer text into the queued message (`queued-run.edit`).
+    pub(crate) fn save_queued_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let Some(edit) = self.queued_edit.take() else {
+            return;
+        };
+        self.dispatch(
+            json!({ "type": "queued-run.edit", "threadId": edit.thread_id, "runId": edit.run_id, "text": text }),
+            cx,
+        );
+        self.composer
+            .update(cx, |input, cx| input.set_value(edit.draft, window, cx));
+        cx.notify();
+    }
+
     pub(crate) fn render_queue(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors;
         let queued = self.thread.queued_runs();
@@ -40,6 +113,11 @@ impl T3App {
             .children(queued.into_iter().enumerate().map(|(i, q)| {
                 let send = send_now_command(&thread_id, &q.run_id, active.as_deref());
                 let cancel = json!({ "type": "queued-run.cancel", "threadId": thread_id, "runId": q.run_id });
+                let editing = self
+                    .queued_edit
+                    .as_ref()
+                    .is_some_and(|e| e.run_id == q.run_id);
+                let run_id = q.run_id.clone();
                 h_flex()
                     .gap_2()
                     .px_2()
@@ -47,6 +125,36 @@ impl T3App {
                     .rounded_md()
                     .bg(c.secondary)
                     .child(div().flex_1().truncate().child(q.text.replace('\n', " ")))
+                    .when(editing, |row| {
+                        row.child(
+                            div()
+                                .text_xs()
+                                .text_color(c.muted_foreground)
+                                .child(t("Editing in the composer")),
+                        )
+                        .child(
+                            Button::new(("queue-cancel-edit", i))
+                                .xsmall()
+                                .ghost()
+                                .label(t("Cancel"))
+                                .tooltip(t("Cancel editing queued message"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.cancel_queued_edit(window, cx)
+                                })),
+                        )
+                    })
+                    .when(!editing, |row| {
+                        row.child(
+                            Button::new(("queue-edit", i))
+                                .xsmall()
+                                .ghost()
+                                .label("✎")
+                                .tooltip(t("Edit in the composer"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.edit_queued(Some(&run_id), window, cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new(("queue-send", i))
                             .xsmall()

@@ -1084,6 +1084,18 @@ async fn e2e_queued_runs() {
     assert_eq!(queued.text, "queued follow-up");
     dispatch(
         &env.client,
+        json!({ "type": "queued-run.edit", "threadId": thread_id, "runId": queued.run_id, "text": "edited follow-up" }),
+    )
+    .await;
+    view.until("queued edit", |v| {
+        v.queued_runs()
+            .into_iter()
+            .any(|q| q.text == "edited follow-up")
+            .then_some(())
+    })
+    .await;
+    dispatch(
+        &env.client,
         json!({ "type": "queued-run.cancel", "threadId": thread_id, "runId": queued.run_id }),
     )
     .await;
