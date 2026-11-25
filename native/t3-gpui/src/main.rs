@@ -101,6 +101,8 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    /// Project folders folded in boring mode, as "env\0project".
+    folded_projects: std::collections::HashSet<String>,
     notifier: notify::Notifier,
     /// Thread history for back/forward, as (environment, thread).
     nav_back: Vec<(String, String)>,
@@ -302,6 +304,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            folded_projects: Default::default(),
             notifier: Default::default(),
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
@@ -1546,7 +1549,9 @@ impl T3App {
         // The web's Working shelf (`sidebarWorkingShelfEnabled`, on by default): threads with a run
         // in progress leave Active for a shelf that stays folded to the open thread.
         // shortcut: no exit grace; a thread returns to Active as soon as its run ends.
-        let working: Vec<&model::ThreadShell> = if self.prefs["workingShelf"] != false {
+        // Boring mode (`boringSidebarEnabled`) folds Active into project folders, so no shelf.
+        let folders = self.prefs["projectFolders"] == true;
+        let working: Vec<&model::ThreadShell> = if !folders && self.prefs["workingShelf"] != false {
             let (working, rest) = sections.active.iter().partition(|t| {
                 matches!(
                     sidebar::status(t),
@@ -1603,6 +1608,68 @@ impl T3App {
             {
                 list = list.child(self.thread_row(thread, false, None, cx));
             }
+        }
+        let active_rows = std::mem::take(&mut sections.active);
+        if folders {
+            if !sections.pinned.is_empty() {
+                list = list.child(self.section_header(
+                    format!("{} ({})", i18n::t("Pinned"), sections.pinned.len()),
+                    drag::Section::Pinned,
+                    cx,
+                ));
+                for (index, thread) in sections.pinned.iter().enumerate() {
+                    list = list.child(self.thread_row(
+                        thread,
+                        false,
+                        Some((drag::Section::Pinned, index)),
+                        cx,
+                    ));
+                }
+                sections.pinned.clear();
+            }
+            for env in &self.envs {
+                for project in &env.shell.projects {
+                    let rows: Vec<&&model::ThreadShell> = active_rows
+                        .iter()
+                        .filter(|t| t.env == env.key && t.project_id == project.id)
+                        .collect();
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    let key = format!("{}\u{0}{}", env.key, project.id);
+                    let folded = self.folded_projects.contains(&key);
+                    list = list.child(
+                        div()
+                            .id(SharedString::from(format!("folder-{key}")))
+                            .px_2()
+                            .pt_3()
+                            .pb_1()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .cursor_pointer()
+                            .child(format!(
+                                "{} {} ({})",
+                                if folded { "▸" } else { "▾" },
+                                project.title,
+                                rows.len()
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !this.folded_projects.remove(&key) {
+                                    this.folded_projects.insert(key.clone());
+                                }
+                                cx.notify();
+                            })),
+                    );
+                    for thread in rows
+                        .into_iter()
+                        .filter(|t| !folded || self.selected.as_deref() == Some(t.id.as_str()))
+                    {
+                        list = list.child(self.thread_row(thread, false, None, cx));
+                    }
+                }
+            }
+        } else {
+            sections.active = active_rows;
         }
         for (label, rows, section) in [
             ("Pinned", &sections.pinned, drag::Section::Pinned),
