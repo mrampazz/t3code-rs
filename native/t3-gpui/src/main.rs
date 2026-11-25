@@ -10,6 +10,7 @@ mod editors;
 mod env;
 mod find;
 mod git;
+mod guest;
 mod history;
 mod i18n;
 mod keybindings;
@@ -1918,6 +1919,7 @@ impl T3App {
                             .child(self.config().label(&thread.model_selection)),
                     )
                     .child(div().flex_1())
+                    .child(self.render_guest_share(cx))
                     .child(self.render_pull_requests(cx))
                     .child(self.render_scripts(cx))
                     .child(self.render_open_in(cx))
@@ -2052,6 +2054,7 @@ impl T3App {
                     )
                     .children(self.render_provider_banner(cx))
                     .children(self.render_stop_banner(cx))
+                    .child(self.render_guest_messages(cx))
                     .child(self.render_queue(cx))
                     .child(self.render_attachments(cx))
                     .child(

@@ -1213,3 +1213,18 @@ async fn e2e_save_plan() {
         plan
     );
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_guest_share_refused_without_connect() {
+    let env = connect().await;
+    let (thread_id, _view) = launch(&env, "multi-turn", "guest").await;
+    let error = env
+        .client
+        .call("guestShare.create", json!({ "threadId": thread_id }))
+        .await
+        .expect_err("no Connect tunnel on a dev server")
+        .to_string();
+    println!("guest share: {error}");
+    assert!(error.contains("GuestShareCreateError"), "{error}");
+}

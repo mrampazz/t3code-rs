@@ -567,6 +567,8 @@ pub struct ThreadView {
     /// Older history the bounded snapshot left out (`threadHistoryPage` cursor).
     pub history_cursor: Option<String>,
     pub has_more_history: bool,
+    /// The projection's `thread` (`OrchestrationV2AppThread`), replaced by every `thread.*` event.
+    pub app_thread: Value,
 }
 
 fn projected_rows(rows: &Value) -> Vec<Row> {
@@ -795,6 +797,7 @@ impl ThreadView {
                     self.apply_checkpoint(checkpoint);
                 }
                 self.rows = projected_rows(&projection["visibleTurnItems"]);
+                self.app_thread = projection["thread"].clone();
                 self.history_cursor = item["historyCursor"].as_str().map(str::to_owned);
                 self.has_more_history = item["hasMoreHistory"] == true;
             }
@@ -809,6 +812,9 @@ impl ThreadView {
                     }
                     Some("run.created" | "run.updated") => self.apply_run(payload),
                     Some("message.updated") => self.apply_message(payload),
+                    Some(kind) if kind.starts_with("thread.") && payload["id"].is_string() => {
+                        self.app_thread = payload.clone();
+                    }
                     Some("run-attempt.created" | "run-attempt.updated") => {
                         self.apply_attempt(payload)
                     }
