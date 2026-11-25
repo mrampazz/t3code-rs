@@ -1,5 +1,5 @@
-// Lists upstream changes that may affect the Rust client: wire additions and removals in
-// packages/contracts, and changed web/client-runtime files grouped by area.
+// Lists upstream changes that may affect the Rust client: contract wire drift, changed
+// web/client-runtime files by area, and the epic (issue #1) items those files touch.
 // Usage: node native/t3-gpui/scripts/upstream-drift.ts [base] [head]
 // Defaults: base = merge-base of HEAD and upstream/main, head = upstream/main.
 import * as NodeChildProcess from "node:child_process";
@@ -103,4 +103,42 @@ for (const file of changed) {
 console.log("## Changed client files by area");
 for (const [area, files] of [...areas].sort((a, b) => b[1].length - a[1].length)) {
   console.log(`- ${area}: ${files.length}`);
+}
+
+// Epic items name their web sources in a trailing `(...)` group, e.g. (`Sidebar.tsx`, `files/`).
+let epic = "";
+try {
+  // The epic lives on origin; gh's default repo may be upstream.
+  const repo = git("remote", "get-url", "origin")
+    .trim()
+    .replace(/^.*github\.com[:/]|\.git$/g, "");
+  epic = NodeChildProcess.execFileSync("gh", ["api", `repos/${repo}/issues/1`, "--jq", ".body"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+} catch {
+  console.log("\n(gh unavailable: skipped mapping to epic items)");
+}
+const hits = (hint: string, file: string) =>
+  hint.includes("/")
+    ? file.includes(hint)
+    : file.slice(file.lastIndexOf("/") + 1).startsWith(hint.replace(/\*$/, ""));
+const mapped = new Set<string>();
+const items: string[] = [];
+for (const line of epic.split("\n")) {
+  const done = line.startsWith("- [x] ");
+  if (!done && !line.startsWith("- [ ] ")) continue;
+  const hints = [...line.matchAll(/\(([^()]*`[^()]*)\)/g)].flatMap((g) =>
+    [...g[1]!.matchAll(/`([^`]+)`/g)].map((m) => m[1]!),
+  );
+  const files = changed.filter((f) => hints.some((h) => hits(h, f)));
+  if (files.length === 0) continue;
+  for (const f of files) mapped.add(f);
+  const label = line.slice(6).replace(/~~/g, "").split(/:| \(/)[0]!.trim();
+  items.push(`- [${done ? "x" : " "}] ${label}: ${files.length}`);
+}
+if (epic) {
+  console.log("\n## Epic items touched");
+  for (const item of items) console.log(item);
+  console.log(`(${changed.length - mapped.size} of ${changed.length} files match no item hint)`);
 }
