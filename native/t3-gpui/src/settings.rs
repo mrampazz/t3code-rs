@@ -175,9 +175,11 @@ impl T3App {
         if self.settings_open {
             self.subscribe_access(cx);
             self.subscribe_scheduled(cx);
+            self.subscribe_storage(cx);
         } else {
             self.release_access();
             self.release_scheduled();
+            self.release_storage();
         }
         cx.notify();
     }
@@ -959,6 +961,8 @@ impl T3App {
                 }))
                 .child(section("Scheduled tasks"))
                 .child(self.render_scheduled(cx))
+                .child(section("Storage"))
+                .child(self.render_storage(cx))
                 .child(section("Sharing & access"))
                 .child(self.render_access(cx))
                 .child(section("Servers"))

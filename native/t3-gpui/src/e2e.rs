@@ -1629,3 +1629,25 @@ async fn e2e_keybinding_change() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_storage() {
+    let env = connect().await;
+    let db = Live::start(
+        &env.client,
+        "server.getDatabaseStorage",
+        json!({}),
+        |v: &mut serde_json::Value, e| *v = e.clone(),
+    );
+    let size = db
+        .until("database size", |v| v["databaseBytes"].as_f64())
+        .await;
+    println!("database {}", crate::storage::format_bytes(size));
+    let report = env
+        .client
+        .call("server.runStorageCleanup", json!({}))
+        .await
+        .unwrap();
+    assert!(report["finishedAt"].is_string(), "{report}");
+}

@@ -33,6 +33,7 @@ mod scripts;
 pub(crate) mod secrets;
 mod settings;
 mod sidebar;
+mod storage;
 mod terminal;
 mod terminal_drawer;
 mod timeline;
@@ -106,6 +107,7 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    storage: storage::StorageState,
     /// Latest npm release per environment, once checked in Settings.
     latest_releases: std::collections::HashMap<String, String>,
     files: files::FilesState,
@@ -325,6 +327,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            storage: Default::default(),
             latest_releases: Default::default(),
             files: Default::default(),
             scheduled: Vec::new(),
