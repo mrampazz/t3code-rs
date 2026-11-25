@@ -34,9 +34,7 @@ pub fn summary(found: &Value) -> Vec<(String, String)> {
                 ),
             );
         }
-        let version = opt(&item["version"])
-            .map(|v| format!("v{v}"))
-            .unwrap_or_default();
+        let version = opt(&item["version"]).map(str::to_owned).unwrap_or_default();
         let auth = &item["auth"];
         let who = match auth["status"].as_str() {
             Some("authenticated") => opt(&auth["account"])
