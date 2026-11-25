@@ -1258,3 +1258,31 @@ async fn e2e_server_toggle() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_snooze_presets() {
+    use crate::sidebar::parse_preset;
+    let env = connect().await;
+    let presets = json!([
+        parse_preset("45m").unwrap(),
+        parse_preset("friday 17:30").unwrap()
+    ]);
+    let saved = env
+        .client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "snoozePresets": presets } }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved["snoozePresets"], presets);
+    let defaults = json!(crate::sidebar::default_presets());
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "snoozePresets": defaults } }),
+        )
+        .await
+        .unwrap();
+}

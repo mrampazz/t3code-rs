@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Sizable, Theme, ThemeMode, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, Theme, ThemeMode, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -155,6 +155,45 @@ impl T3App {
             .ok();
         })
         .detach();
+    }
+
+    fn add_snooze_preset(
+        &mut self,
+        stored: Vec<Value>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::WindowExt;
+        use gpui_kit::component::dialog::DialogButtonProps;
+        use gpui_kit::component::input::{Input, InputState};
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("90m  ·  2h  ·  tomorrow 09:00  ·  friday 17:00")
+        });
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input, stored) = (app.clone(), input.clone(), stored.clone());
+            dialog
+                .title(t("Snooze options"))
+                .child(Input::new(&input))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t("Add"))
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx: &mut App| {
+                    let Some(preset) = crate::sidebar::parse_preset(&input.read(cx).value()) else {
+                        return false;
+                    };
+                    let mut next = stored.clone();
+                    next.push(preset);
+                    app.update(cx, |this, cx| {
+                        this.update_settings(json!({ "patch": { "snoozePresets": next } }), cx)
+                    })
+                    .ok();
+                    true
+                })
+        });
     }
 
     fn edit_title_instructions(
@@ -380,11 +419,35 @@ impl T3App {
                         ),
                     ),
                 )
-                .child(row().child(div().flex_1().child(t("Snooze presets"))).child(
-                    div().text_xs().text_color(c.muted_foreground).child(
-                        presets.iter().map(|p| p.label.split(" · ").next().unwrap_or("").to_string()).collect::<Vec<_>>().join(", "),
-                    ),
-                ))
+                .child({
+                    let stored: Vec<Value> = settings["snoozePresets"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_else(crate::sidebar::default_presets);
+                    let resolved = presets.iter().map(|p| p.label.split(" · ").next().unwrap_or("").to_string()).collect::<Vec<_>>().join(", ");
+                    let full = stored.len() >= 8;
+                    v_flex()
+                        .child(
+                            row()
+                                .child(v_flex().flex_1().child(t("Snooze options")).child(div().text_xs().text_color(c.muted_foreground).child(resolved)))
+                                .child({
+                                    let stored = stored.clone();
+                                    Button::new("snooze-add").small().outline().label(t("Add")).disabled(full).on_click(cx.listener(
+                                        move |this, _, window, cx| this.add_snooze_preset(stored.clone(), window, cx),
+                                    ))
+                                }),
+                        )
+                        .child(h_flex().flex_wrap().gap_1().py_1().children(stored.iter().enumerate().map(|(i, p)| {
+                            let remaining: Vec<Value> = stored.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, v)| v.clone()).collect();
+                            Button::new(("snooze-preset", i))
+                                .xsmall()
+                                .ghost()
+                                .label(format!("{} ✕", crate::sidebar::preset_text(p)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.update_settings(json!({ "patch": { "snoozePresets": remaining } }), cx)
+                                }))
+                        })))
+                })
                 .child(section("Appearance"))
                 .child(row().child(div().flex_1().child(t("Language"))).child({
                     let app = cx.entity().downgrade();

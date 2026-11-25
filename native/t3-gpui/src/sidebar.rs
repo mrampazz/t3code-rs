@@ -110,7 +110,7 @@ pub struct SnoozePreset {
 }
 
 /// `DEFAULT_SNOOZE_PRESETS` (packages/contracts/src/settings.ts).
-fn default_presets() -> Vec<Value> {
+pub fn default_presets() -> Vec<Value> {
     serde_json::from_str(
         r#"[{"kind":"after","minutes":60},{"kind":"after","minutes":180},
             {"kind":"at","day":"today","time":"18:00"},{"kind":"at","day":"tomorrow","time":"09:00"},
@@ -137,6 +137,44 @@ fn plural(n: i64, one: &str) -> String {
         format!("In 1 {one}")
     } else {
         format!("In {n} {one}s")
+    }
+}
+
+/// A `SnoozePresetSetting` from `90m` / `2h` / `3d`, or `<day> HH:MM` (today, tomorrow, a weekday).
+pub fn parse_preset(input: &str) -> Option<Value> {
+    let input = input.trim().to_lowercase();
+    if let Some((day, time)) = input.split_once(' ') {
+        let valid_day = matches!(day, "today" | "tomorrow") || weekday(day).is_some();
+        let (h, m) = time.trim().split_once(':')?;
+        let ok = h.len() == 2
+            && m.len() == 2
+            && h.parse::<u8>().ok()? < 24
+            && m.parse::<u8>().ok()? < 60;
+        return (valid_day && ok)
+            .then(|| serde_json::json!({ "kind": "at", "day": day, "time": time.trim() }));
+    }
+    let split = input.find(|c: char| !c.is_ascii_digit())?;
+    let amount: u64 = input[..split].parse().ok().filter(|n| *n > 0)?;
+    let minutes = match &input[split..] {
+        "m" => amount,
+        "h" => amount * 60,
+        "d" => amount * 24 * 60,
+        _ => return None,
+    };
+    (minutes <= 30 * 24 * 60).then(|| serde_json::json!({ "kind": "after", "minutes": minutes }))
+}
+
+/// How a preset setting reads in the editor.
+pub fn preset_text(p: &Value) -> String {
+    match (p["kind"].as_str(), p["minutes"].as_u64()) {
+        (Some("after"), Some(m)) if m % (24 * 60) == 0 => format!("{}d", m / (24 * 60)),
+        (Some("after"), Some(m)) if m % 60 == 0 => format!("{}h", m / 60),
+        (Some("after"), Some(m)) => format!("{m}m"),
+        _ => format!(
+            "{} {}",
+            p["day"].as_str().unwrap_or(""),
+            p["time"].as_str().unwrap_or("")
+        ),
     }
 }
 
@@ -492,6 +530,31 @@ mod tests {
         assert_eq!(ids, ["fork", "parent"]);
         assert_eq!(threads[1].parent_id(), Some("parent"));
         assert_eq!(threads[2].parent_id(), None, "a fork is listed on its own");
+    }
+
+    #[test]
+    fn parses_snooze_presets() {
+        assert_eq!(
+            parse_preset("90m"),
+            Some(json!({"kind": "after", "minutes": 90}))
+        );
+        assert_eq!(
+            parse_preset("2h"),
+            Some(json!({"kind": "after", "minutes": 120}))
+        );
+        assert_eq!(
+            parse_preset("Tomorrow 09:00"),
+            Some(json!({"kind": "at", "day": "tomorrow", "time": "09:00"}))
+        );
+        assert_eq!(parse_preset("friday 17:30").unwrap()["day"], "friday");
+        assert_eq!(parse_preset("someday 09:00"), None);
+        assert_eq!(parse_preset("today 9:00"), None, "the contract wants HH:MM");
+        assert_eq!(parse_preset("31d"), None, "past the 30-day cap");
+        assert_eq!(preset_text(&json!({"kind": "after", "minutes": 180})), "3h");
+        assert_eq!(
+            preset_text(&json!({"kind": "at", "day": "monday", "time": "09:00"})),
+            "monday 09:00"
+        );
     }
 
     #[test]
