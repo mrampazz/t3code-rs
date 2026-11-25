@@ -3,7 +3,7 @@
 use crate::i18n::t;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::{ActiveTheme, Sizable, ThemeColor, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, ThemeColor, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::Value;
@@ -281,6 +281,10 @@ impl T3App {
                 .text_color(if failed { c.danger } else { c.muted_foreground })
                 .hover(|r| r.text_color(c.foreground))
                 .child(if expanded { "▾" } else { "▸" })
+                .child(icon(
+                    group_icon(items),
+                    if failed { c.danger } else { c.muted_foreground },
+                ))
                 .child(summarize_group(items))
                 .when(running, |r| r.child(div().text_color(c.info).child("●")))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -434,11 +438,10 @@ impl T3App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (summary, detail) = tool_parts(item);
-        let (glyph, glyph_color) = match item.str("status") {
-            "running" | "pending" | "waiting" => ("●", c.info),
-            "failed" => ("✕", c.danger),
-            "cancelled" | "interrupted" => ("–", c.muted_foreground),
-            _ => ("✓", c.muted_foreground),
+        let glyph_color = match item.str("status") {
+            "running" | "pending" | "waiting" => c.info,
+            "failed" => c.danger,
+            _ => c.muted_foreground,
         };
         let id = item.id.clone();
         let has_detail = detail.is_some();
@@ -460,7 +463,7 @@ impl T3App {
                                 cx.notify();
                             }))
                     })
-                    .child(div().text_color(glyph_color).child(glyph))
+                    .child(icon(tool_icon(item), glyph_color))
                     .child(div().flex_1().truncate().child(summary)),
             )
             .when_some(detail.filter(|_| expanded), |col, detail| {
@@ -645,6 +648,47 @@ fn tail(s: &str) -> String {
         Some((i, _)) => format!("…{}", &s[i..]),
         None => s.to_string(),
     }
+}
+
+/// `workEntryIconName`: the lucide icon for one work row.
+/// shortcut: built-in icons only; the web also shows MCP favicons and provider logos.
+pub(crate) fn tool_icon(item: &TurnItem) -> &'static str {
+    match item.kind.as_str() {
+        "reasoning" => "brain",
+        "command_execution" => "terminal",
+        "file_change" => "square-pen",
+        "file_search" => "search",
+        "web_search" => "globe",
+        "dynamic_tool" => "hammer",
+        "subagent" => "bot",
+        "todo_list" => "list-todo",
+        "user_input_request" | "approval_request" => "message-circle",
+        "system_notice" if item.raw["level"] == "info" => "zap",
+        "system_notice" => "circle-alert",
+        "notification" if item.str("outcome") == "failed" => "circle-alert",
+        "notification" => "zap",
+        _ => "wrench",
+    }
+}
+
+/// `toolGroupSummaryIconName`: one action's icon, a hammer for mixed groups, a brain for thoughts.
+pub(crate) fn group_icon(items: &[&TurnItem]) -> &'static str {
+    let mut icons = items
+        .iter()
+        .filter(|i| i.kind != "reasoning")
+        .map(|i| tool_icon(i));
+    match icons.next() {
+        None => "brain",
+        Some(first) if icons.all(|i| i == first) => first,
+        Some(_) => "hammer",
+    }
+}
+
+fn icon(name: &str, color: Hsla) -> Icon {
+    Icon::empty()
+        .path(format!("icons/{name}.svg"))
+        .size_3p5()
+        .text_color(color)
 }
 
 /// Items the web folds into a work group: tool activity and reasoning.
@@ -928,6 +972,17 @@ mod tests {
 
     fn item(v: Value) -> TurnItem {
         TurnItem::from_value(&v).unwrap()
+    }
+
+    #[test]
+    fn work_rows_and_groups_get_the_web_icons() {
+        let cmd = item(json!({"id": "1", "ordinal": 1, "type": "command_execution"}));
+        let edit = item(json!({"id": "2", "ordinal": 2, "type": "file_change"}));
+        let think = item(json!({"id": "3", "ordinal": 3, "type": "reasoning"}));
+        assert_eq!(super::tool_icon(&cmd), "terminal");
+        assert_eq!(super::group_icon(&[&think, &cmd, &cmd]), "terminal");
+        assert_eq!(super::group_icon(&[&cmd, &edit]), "hammer");
+        assert_eq!(super::group_icon(&[&think]), "brain");
     }
 
     #[test]
