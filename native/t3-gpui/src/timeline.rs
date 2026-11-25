@@ -687,6 +687,96 @@ pub(crate) fn group_rows<'a>(items: impl Iterator<Item = &'a TurnItem>) -> Vec<R
     rows
 }
 
+impl Row<'_> {
+    fn key(&self) -> &str {
+        match self {
+            Row::Item(item) => &item.id,
+            Row::Group { id, .. } => id,
+        }
+    }
+}
+
+/// The list splice that turns rows `old` into `new`: the range between their common prefix and
+/// suffix, and how many rows replace it. Older history lands before the rows in view, so the
+/// list keeps its scroll anchor on them.
+pub(crate) fn row_splice(
+    old: &[String],
+    new: &[String],
+) -> Option<(std::ops::Range<usize>, usize)> {
+    if old == new {
+        return None;
+    }
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    Some((prefix..old.len() - suffix, new.len() - prefix - suffix))
+}
+
+impl T3App {
+    /// Tells the transcript list which rows changed. A new thread starts over, following the tail.
+    /// Heights of rows in view are measured every layout, so only row identity is tracked here.
+    pub(crate) fn sync_transcript(&mut self) {
+        let keys: Vec<String> = group_rows(self.thread.items())
+            .iter()
+            .map(|r| r.key().to_owned())
+            .collect();
+        let (owner, old) = &mut self.transcript_rows;
+        if *owner != self.selected {
+            *owner = self.selected.clone();
+            self.transcript.reset(keys.len() + 1);
+            self.transcript.set_follow_mode(FollowMode::Tail);
+        } else if let Some((range, count)) = row_splice(old, &keys) {
+            self.transcript.splice(range, count);
+        }
+        *old = keys;
+    }
+
+    /// One transcript list item: row `i`, or past the last row, the working indicator.
+    pub(crate) fn render_transcript_row(
+        &self,
+        i: usize,
+        revert_turns: &std::collections::HashMap<String, u64>,
+        matches: &[usize],
+        current: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().colors;
+        let frame = div().w_full().max_w(px(760.)).mx_auto().px_4().py_2();
+        let rows = group_rows(self.thread.items());
+        let Some(row) = rows.get(i) else {
+            let thread = self
+                .selected
+                .as_ref()
+                .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id));
+            return match thread.filter(|t| t.is_running()).and_then(|t| {
+                t.activity_run_started_at
+                    .clone()
+                    .or_else(|| t.latest_run_started_at.clone())
+            }) {
+                Some(started) => frame
+                    .child(self.render_working(&started, cx))
+                    .into_any_element(),
+                None => div().into_any_element(),
+            };
+        };
+        let element = match row {
+            Row::Item(item) => self.render_item(item, revert_turns.get(&item.id).copied(), cx),
+            Row::Group { id, items } => self.render_group(id.clone(), items, cx),
+        };
+        frame
+            .when(matches.contains(&i), |d| {
+                d.border_l_2().border_color(theme.warning)
+            })
+            .when(current == Some(i), |d| d.bg(theme.secondary))
+            .child(element)
+            .into_any_element()
+    }
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!(
         "{} {n} {}",
@@ -826,13 +916,31 @@ impl T3App {
 #[cfg(test)]
 mod tests {
     use super::{
-        OUTPUT_TAIL_CHARS, Row, TurnItem, approval_options, group_rows, summarize_group, tail,
-        tool_parts, working_timer,
+        OUTPUT_TAIL_CHARS, Row, TurnItem, approval_options, group_rows, row_splice,
+        summarize_group, tail, tool_parts, working_timer,
     };
     use serde_json::{Value, json};
 
     fn item(v: Value) -> TurnItem {
         TurnItem::from_value(&v).unwrap()
+    }
+
+    #[test]
+    fn splices_only_changed_rows() {
+        let k = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(row_splice(&k(&["a", "b"]), &k(&["a", "b"])), None);
+        assert_eq!(
+            row_splice(&k(&["c", "d"]), &k(&["a", "b", "c", "d"])),
+            Some((0..0, 2)),
+            "older history is inserted before the rows in view"
+        );
+        assert_eq!(row_splice(&k(&["a"]), &k(&["a", "b"])), Some((1..1, 1)));
+        assert_eq!(
+            row_splice(&k(&["a", "b", "c"]), &k(&["a", "x", "c"])),
+            Some((1..2, 1))
+        );
+        assert_eq!(row_splice(&k(&["a", "a"]), &k(&["a"])), Some((1..2, 0)));
+        assert_eq!(row_splice(&k(&["a"]), &k(&[])), Some((0..1, 0)));
     }
 
     #[test]

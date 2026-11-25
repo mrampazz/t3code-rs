@@ -240,7 +240,10 @@ struct T3App {
     diff_files_open: bool,
     /// Selected option values per `requestId:questionId`.
     input_picks: std::collections::HashMap<String, Vec<String>>,
-    transcript_scroll: ScrollHandle,
+    /// The transcript list: one item per timeline row, then the working indicator.
+    transcript: ListState,
+    /// The thread and row keys the list was last spliced to (`sync_transcript`).
+    transcript_rows: (Option<String>, Vec<String>),
     _subscriptions: Vec<Subscription>,
 }
 
@@ -430,7 +433,8 @@ impl T3App {
             diff_split: false,
             diff_files_open: true,
             input_picks: Default::default(),
-            transcript_scroll: ScrollHandle::new(),
+            transcript: ListState::new(0, ListAlignment::Top, px(800.)),
+            transcript_rows: Default::default(),
             _subscriptions,
         };
         for session in auth::load_all() {
@@ -617,12 +621,6 @@ impl T3App {
         self.maybe_visit(cx);
     }
 
-    /// Within a few lines of the end of the transcript (gpui offsets run negative).
-    fn transcript_at_bottom(&self) -> bool {
-        let s = &self.transcript_scroll;
-        s.max_offset().y + s.offset().y < px(48.)
-    }
-
     /// (Re)subscribes the selected thread, resuming from its cursor when it already has data.
     fn subscribe_thread(&mut self, cx: &mut Context<Self>) {
         let (Some(client), Some(id)) = (self.client(), self.selected.clone()) else {
@@ -644,9 +642,6 @@ impl T3App {
                     if app.thread_sub.as_deref() != Some(sub.as_str()) {
                         return false;
                     }
-                    // Follow like `useTimelineFollow`: stay pinned only when already at the bottom,
-                    // so reading earlier messages is not interrupted; the first snapshot lands there.
-                    let follow = app.thread.sequence == 0 || app.transcript_at_bottom();
                     match item {
                         Ok(item) => {
                             let before = app.thread.latest_turn();
@@ -659,9 +654,6 @@ impl T3App {
                             }
                         }
                         Err(e) => app.error = Some(e.to_string().into()),
-                    }
-                    if follow {
-                        app.transcript_scroll.scroll_to_bottom();
                     }
                     cx.notify();
                     true
@@ -698,7 +690,7 @@ impl T3App {
         };
         self.composer
             .update(cx, |input, cx| input.set_value("", window, cx));
-        self.transcript_scroll.scroll_to_bottom();
+        self.transcript.set_follow_mode(FollowMode::Tail);
         let context =
             composer_menu::message_context(&text, &std::mem::take(&mut self.composer_contexts));
         let command_id = uuid::Uuid::new_v4().to_string();
@@ -2028,32 +2020,11 @@ impl T3App {
         let current = matches
             .get(self.find_index.min(matches.len().saturating_sub(1)))
             .copied();
-        // Rows are direct children of the scroll area so find can scroll to one by index.
-        let items: Vec<AnyElement> = rows
-            .into_iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let element = match row {
-                    timeline::Row::Item(item) => {
-                        self.render_item(item, revert_turns.get(&item.id).copied(), cx)
-                    }
-                    timeline::Row::Group { id, items } => self.render_group(id, &items, cx),
-                };
-                div()
-                    .w_full()
-                    .max_w(px(760.))
-                    .mx_auto()
-                    .px_4()
-                    .py_2()
-                    .when(matches.contains(&i), |d| {
-                        d.border_l_2().border_color(theme.warning)
-                    })
-                    .when(current == Some(i), |d| d.bg(theme.secondary))
-                    .child(element)
-                    .into_any_element()
-            })
-            .collect();
         let match_count = matches.len();
+        // The list lays out only the rows in view; it asks for each by index.
+        let render_row = cx.processor(move |this, i: usize, _, cx| {
+            this.render_transcript_row(i, &revert_turns, &matches, current, cx)
+        });
         v_flex()
             .flex_1()
             .h_full()
@@ -2139,53 +2110,46 @@ impl T3App {
             .when(self.find_open, |col| {
                 col.child(self.render_find_bar(match_count, cx))
             })
-            .child(
-                v_flex()
-                    .id("transcript")
-                    .flex_1()
+            .children(self.render_worktree_setup(cx).map(|card| {
+                div()
+                    .w_full()
+                    .max_w(px(760.))
+                    .mx_auto()
+                    .px_4()
                     .py_2()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.transcript_scroll)
-                    .when(self.thread.has_more_history, |list| {
-                        list.child(
-                            div().w_full().flex().justify_center().py_2().child(
-                                Button::new("load-history")
-                                    .small()
-                                    .ghost()
-                                    .label(if self.history_loading {
-                                        t("Loading…")
-                                    } else {
-                                        t("Load earlier messages")
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| this.load_history(cx))),
-                            ),
-                        )
-                    })
-                    .children(self.render_worktree_setup(cx).map(|card| {
-                        div()
-                            .w_full()
-                            .max_w(px(760.))
-                            .mx_auto()
-                            .px_4()
-                            .py_2()
-                            .child(card)
-                    }))
-                    .children(items)
-                    .children(
-                        thread
-                            .activity_run_started_at
-                            .clone()
-                            .or_else(|| thread.latest_run_started_at.clone())
-                            .filter(|_| thread.is_running())
-                            .map(|started| {
+                    .child(card)
+            }))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .child(list(self.transcript.clone(), render_row).size_full().py_2())
+                    .when(
+                        self.thread.has_more_history
+                            && self.transcript.logical_scroll_top().item_ix == 0,
+                        |area| {
+                            area.child(
                                 div()
+                                    .absolute()
+                                    .top_2()
                                     .w_full()
-                                    .max_w(px(760.))
-                                    .mx_auto()
-                                    .px_4()
-                                    .py_2()
-                                    .child(self.render_working(&started, cx))
-                            }),
+                                    .flex()
+                                    .justify_center()
+                                    .child(
+                                        Button::new("load-history")
+                                            .small()
+                                            .outline()
+                                            .label(if self.history_loading {
+                                                t("Loading…")
+                                            } else {
+                                                t("Load earlier messages")
+                                            })
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| this.load_history(cx)),
+                                            ),
+                                    ),
+                            )
+                        },
                     ),
             )
             .children(
@@ -2264,6 +2228,7 @@ impl Render for T3App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_picker(window, cx);
         self.sync_composer_draft(window, cx);
+        self.sync_transcript();
         self.flush_toasts(window, cx);
         let theme = cx.theme().colors;
         let root = h_flex()
