@@ -1136,3 +1136,24 @@ async fn e2e_sidebar_status() {
     )
     .await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_open_file_shape() {
+    let env = connect().await;
+    // An editor that is not installed, so nothing launches; the error proves the payload decoded.
+    let error = env
+        .client
+        .call(
+            "shell.openInEditor",
+            json!({ "cwd": "/tmp/x.rs", "editor": "dataspell", "position": { "line": 3, "column": 2 }, "projectRoot": "/tmp" }),
+        )
+        .await
+        .expect_err("dataspell is not installed")
+        .to_string();
+    println!("open error: {error}");
+    assert!(
+        error.contains("CommandNotFound") || error.contains("Unsupported"),
+        "{error}"
+    );
+}

@@ -11,6 +11,10 @@ use serde_json::Value;
 use crate::T3App;
 use crate::model::TurnItem;
 
+fn open_link(url: &SharedString, _: &ClickEvent, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(Box::new(crate::editors::OpenLink { url: url.clone() }), cx);
+}
+
 /// Long tool output is cut to its tail; the full text stays on the server.
 const OUTPUT_TAIL_CHARS: usize = 8_000;
 
@@ -55,9 +59,9 @@ impl T3App {
                         .child(text),
                 )
                 .into_any_element(),
-            "assistant_message" => {
-                TextView::markdown(SharedString::from(item.id.clone()), text).into_any_element()
-            }
+            "assistant_message" => TextView::markdown(SharedString::from(item.id.clone()), text)
+                .on_link_click(open_link)
+                .into_any_element(),
             "proposed_plan" => v_flex()
                 .gap_2()
                 .p_3()
@@ -70,10 +74,13 @@ impl T3App {
                         .text_color(c.muted_foreground)
                         .child(t("Proposed plan")),
                 )
-                .child(TextView::markdown(
-                    SharedString::from(item.id.clone()),
-                    item.str("markdown").to_string(),
-                ))
+                .child(
+                    TextView::markdown(
+                        SharedString::from(item.id.clone()),
+                        item.str("markdown").to_string(),
+                    )
+                    .on_link_click(open_link),
+                )
                 .into_any_element(),
             "todo_list" => v_flex()
                 .gap_1()

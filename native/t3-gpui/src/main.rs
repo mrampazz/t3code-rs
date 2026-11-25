@@ -1899,6 +1899,9 @@ impl Render for T3App {
             .bg(theme.background)
             .text_color(theme.foreground)
             .track_focus(&self.focus)
+            .on_action(
+                cx.listener(|this, link: &editors::OpenLink, _, cx| this.open_link(&link.url, cx)),
+            )
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 if matches!(this.screen, Screen::Connected) && this.run_shortcut(e, window, cx) {
                     cx.stop_propagation();

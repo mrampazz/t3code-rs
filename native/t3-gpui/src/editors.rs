@@ -123,6 +123,106 @@ fn encode_component(s: &str) -> String {
         .collect()
 }
 
+/// A link clicked in chat markdown, dispatched from the `TextView` link handler (which must be
+/// `Send`, so it cannot reach the app directly).
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = t3, no_json)]
+pub struct OpenLink {
+    pub url: SharedString,
+}
+
+/// Where a chat link points: a web page, or a file on the server with an optional position.
+#[derive(Debug, PartialEq)]
+pub enum LinkTarget {
+    Url(String),
+    File {
+        path: String,
+        line: Option<u64>,
+        column: Option<u64>,
+    },
+}
+
+/// `splitFilePathPosition`: `path:12`, `path:12:3`, `path:12-20`, or a `#L12`, `#L12C3`, `#L12-L20` hash.
+fn split_position(path: &str, hash: &str) -> (String, Option<u64>, Option<u64>) {
+    let num = |s: &str| s.parse::<u64>().ok().filter(|n| *n > 0);
+    let parts: Vec<&str> = path.rsplitn(3, ':').collect();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    match parts.as_slice() {
+        [col, line, rest] if digits(col) && digits(line) => {
+            return (rest.to_string(), num(line), num(col));
+        }
+        [last, rest @ ..] if !rest.is_empty() => {
+            let line = last.split_once('-').map_or(*last, |(l, _)| l);
+            if digits(line) && last.split_once('-').is_none_or(|(_, e)| digits(e)) {
+                let base = path[..path.len() - last.len() - 1].to_owned();
+                return (base, num(line), None);
+            }
+        }
+        _ => {}
+    }
+    let Some(spec) = hash.strip_prefix("#L").or_else(|| hash.strip_prefix("#l")) else {
+        return (path.to_owned(), None, None);
+    };
+    let line_end = spec
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(spec.len());
+    let column = spec[line_end..].strip_prefix(['C', 'c']).and_then(num);
+    (path.to_owned(), num(&spec[..line_end]), column)
+}
+
+/// The home folder a server path lives under (`inferHomeFromCwd`), for `~/` links.
+fn home_of(cwd: &str) -> Option<String> {
+    let parts: Vec<&str> = cwd.split('/').collect();
+    match parts.as_slice() {
+        ["", root @ ("Users" | "home"), user, ..] if !user.is_empty() => {
+            Some(format!("/{root}/{user}"))
+        }
+        _ => None,
+    }
+}
+
+/// Classifies a markdown link like the web's `resolveMarkdownFileLink`: `file:` URLs and bare
+/// paths are files (relative ones resolve against the thread's folder); other schemes are URLs.
+pub fn link_target(href: &str, cwd: Option<&str>) -> LinkTarget {
+    let href = href.trim();
+    if href.len() >= 5 && href[..5].eq_ignore_ascii_case("file:") {
+        if let Ok(url) = url::Url::parse(href)
+            && let Ok(path) = url.to_file_path()
+        {
+            let hash = url.fragment().map(|f| format!("#{f}")).unwrap_or_default();
+            let (path, line, column) = split_position(&path.to_string_lossy(), &hash);
+            return LinkTarget::File { path, line, column };
+        }
+        return LinkTarget::Url(href.to_owned());
+    }
+    // A scheme of two or more letters; one letter is a Windows drive (`C:\…`).
+    let scheme = href.find(':').filter(|&i| {
+        i > 1
+            && href[..i]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+    });
+    if scheme.is_some() || href.starts_with('#') {
+        return LinkTarget::Url(href.to_owned());
+    }
+    let (raw, hash) = href.split_at(href.find('#').unwrap_or(href.len()));
+    let (path, line, column) = split_position(raw, hash);
+    let path = match (cwd, path.strip_prefix("~/")) {
+        (Some(cwd), Some(rest)) => {
+            home_of(cwd).map_or(path.clone(), |home| format!("{home}/{rest}"))
+        }
+        (Some(cwd), None) if !path.starts_with('/') && !path.contains(":\\") => {
+            format!(
+                "{}/{}",
+                cwd.trim_end_matches('/'),
+                path.trim_start_matches("./")
+            )
+        }
+        _ => path,
+    };
+    LinkTarget::File { path, line, column }
+}
+
 /// Contract `buildRemoteOpenUrl` for VS Code-style (`goto`) editors opening a folder.
 pub fn remote_folder_url(scheme: &str, host: &str, username: Option<&str>, path: &str) -> String {
     let posix = path.replace('\\', "/");
@@ -156,6 +256,11 @@ pub fn remote_folder_url(scheme: &str, host: &str, username: Option<&str>, path:
         "{scheme}://vscode-remote/ssh-remote+{}{encoded_path}?windowId=_blank",
         encode_component(&destination)
     )
+}
+
+/// The same link for a file: a trailing position makes VS Code open it instead of a folder.
+pub fn remote_file_url(scheme: &str, host: &str, username: Option<&str>, path: &str) -> String {
+    remote_folder_url(scheme, host, username, path).replace("?windowId=_blank", ":1:1")
 }
 
 impl T3App {
@@ -233,6 +338,57 @@ impl T3App {
         }
     }
 
+    /// Opens a chat link: web pages in the browser, files in the preferred editor at their line.
+    pub(crate) fn open_link(&mut self, href: &str, cx: &mut Context<Self>) {
+        let cwd = self.thread_cwd();
+        let (path, line, column) = match link_target(href, cwd.as_deref()) {
+            LinkTarget::Url(url) => return cx.open_url(&url),
+            LinkTarget::File { path, line, column } => (path, line, column),
+        };
+        let mode = self.open_mode();
+        let Some(editor) = self.preferred_editor(&self.offered_editors(&mode)) else {
+            self.error = Some(t("No installed editors found").into());
+            return cx.notify();
+        };
+        match mode {
+            OpenMode::Unavailable => {
+                self.error = Some(t("No SSH route to this machine").into());
+                cx.notify();
+            }
+            OpenMode::Remote { host, username } => {
+                cx.open_url(&remote_file_url(&editor, &host, username.as_deref(), &path))
+            }
+            OpenMode::Local => {
+                let Some(client) = self.client() else { return };
+                let mut position = json!({});
+                if let Some(line) = line {
+                    position["line"] = json!(line);
+                }
+                if let Some(column) = column {
+                    position["column"] = json!(column);
+                }
+                let payload = json!({ "cwd": path, "editor": editor, "position": position, "projectRoot": cwd });
+                cx.spawn(async move |this, cx| {
+                    let result =
+                        on_tokio(async move { client.call("shell.openInEditor", payload).await })
+                            .await;
+                    if let Some(e) = match result {
+                        Ok(Ok(_)) => None,
+                        Ok(Err(e)) => Some(e.to_string()),
+                        Err(e) => Some(e.to_string()),
+                    } {
+                        this.update(cx, |app, cx| {
+                            app.error = Some(format!("Open in editor failed: {e}").into());
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+            }
+        }
+    }
+
     pub(crate) fn render_open_in(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.open_mode();
         let offered = self.offered_editors(&mode);
@@ -287,7 +443,7 @@ impl T3App {
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenMode, open_mode, preferred, remote_folder_url};
+    use super::{LinkTarget, OpenMode, link_target, open_mode, preferred, remote_folder_url};
     use serde_json::json;
 
     #[test]
@@ -320,6 +476,52 @@ mod tests {
             Some("vscode")
         );
         assert_eq!(preferred(None, &[]), None);
+    }
+
+    #[test]
+    fn classifies_chat_links() {
+        let file = |path: &str, line: Option<u64>, column: Option<u64>| LinkTarget::File {
+            path: path.into(),
+            line,
+            column,
+        };
+        let cwd = Some("/Users/me/repo");
+        assert_eq!(
+            link_target("https://x.dev/a", cwd),
+            LinkTarget::Url("https://x.dev/a".into())
+        );
+        assert_eq!(
+            link_target("src/main.rs:12:4", cwd),
+            file("/Users/me/repo/src/main.rs", Some(12), Some(4))
+        );
+        assert_eq!(
+            link_target("./src/a.ts#L42", cwd),
+            file("/Users/me/repo/src/a.ts", Some(42), None)
+        );
+        assert_eq!(
+            link_target("src/a.ts#L42C7", cwd),
+            file("/Users/me/repo/src/a.ts", Some(42), Some(7))
+        );
+        assert_eq!(
+            link_target("/etc/hosts:3-9", cwd),
+            file("/etc/hosts", Some(3), None)
+        );
+        assert_eq!(
+            link_target("~/notes.md", cwd),
+            file("/Users/me/notes.md", None, None)
+        );
+        assert_eq!(
+            link_target("file:///tmp/my%20file.rs#L5", cwd),
+            file("/tmp/my file.rs", Some(5), None)
+        );
+        assert_eq!(
+            link_target("README.md", cwd),
+            file("/Users/me/repo/README.md", None, None)
+        );
+        assert_eq!(
+            link_target("mailto:a@b.c", cwd),
+            LinkTarget::Url("mailto:a@b.c".into())
+        );
     }
 
     #[test]
