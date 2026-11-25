@@ -17,6 +17,7 @@ mod limits;
 mod model;
 mod palette;
 mod projects;
+mod provider_banner;
 mod pull_requests;
 mod queue;
 mod rpc;
@@ -97,6 +98,8 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    /// Provider banners dismissed this session (`provider_banner::banner_key`, per environment).
+    dismissed_banners: std::collections::HashSet<String>,
     drafts: std::collections::HashMap<String, String>,
     model_picker: Entity<ModelPicker>,
     /// What the picker was last synced to: config revision and selected key.
@@ -287,6 +290,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            dismissed_banners: Default::default(),
             drafts: Default::default(),
             model_picker,
             picker_synced: (u64::MAX, String::new()),
@@ -653,7 +657,7 @@ impl T3App {
     }
 
     /// The selection the picker shows: the draft's choice or default, else the open thread's.
-    fn current_model(&self) -> Option<serde_json::Value> {
+    pub(crate) fn current_model(&self) -> Option<serde_json::Value> {
         if let Some(project_id) = &self.draft_project {
             let project = self.shell().projects.iter().find(|p| &p.id == project_id);
             return self
@@ -1900,6 +1904,7 @@ impl T3App {
                         self.menu_trigger.is_some() && !self.menu_items.is_empty(),
                         |col| col.child(self.render_composer_menu(cx)),
                     )
+                    .children(self.render_provider_banner(cx))
                     .children(self.render_stop_banner(cx))
                     .child(self.render_queue(cx))
                     .child(self.render_attachments(cx))

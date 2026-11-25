@@ -255,6 +255,8 @@ pub struct Provider {
     pub show_interaction_mode_toggle: Option<bool>,
     #[serde(default)]
     pub slash_commands: Vec<Value>,
+    #[serde(default)]
+    pub compatibility_advisory: Value,
     /// `ServerProviderUsageLimits`: rate-limit windows, when the provider reports them.
     #[serde(default)]
     pub usage_limits: Value,
