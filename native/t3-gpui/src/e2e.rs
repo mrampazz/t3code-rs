@@ -1727,3 +1727,45 @@ async fn e2e_peer_links() {
         .unwrap();
     assert!(error.contains("did not answer"), "{error}");
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_workflows() {
+    let env = connect().await;
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "workflowsEnabled": true } }),
+        )
+        .await
+        .unwrap();
+    let snap = Live::start(
+        &env.client,
+        "workflows.subscribe",
+        json!({}),
+        |v: &mut serde_json::Value, e| *v = e.clone(),
+    );
+    let runs = snap
+        .until("workflow snapshot", |v| {
+            v["runs"].as_array().map(|r| r.len())
+        })
+        .await;
+    println!(
+        "{runs} runs, active {}",
+        crate::workflows::active_runs(&snap.state.lock().unwrap()).len()
+    );
+    let error = env
+        .client
+        .call("workflows.cancel", json!({ "runId": "missing" }))
+        .await
+        .err()
+        .map(|e| e.to_string());
+    println!("cancel missing: {error:?}");
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "workflowsEnabled": false } }),
+        )
+        .await
+        .unwrap();
+}

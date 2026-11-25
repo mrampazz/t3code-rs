@@ -178,10 +178,12 @@ impl T3App {
             self.subscribe_storage(cx);
             self.discover_source_control(cx);
             self.load_peer_links(cx);
+            self.subscribe_workflows(cx);
         } else {
             self.release_access();
             self.release_scheduled();
             self.release_storage();
+            self.release_workflows();
         }
         cx.notify();
     }
@@ -967,6 +969,9 @@ impl T3App {
                 .child(self.render_source_control(cx))
                 .child(section("Storage"))
                 .child(self.render_storage(cx))
+                .when(settings["workflowsEnabled"] == true, |col| {
+                    col.child(section("Workflows")).child(self.render_workflows(cx))
+                })
                 .when(settings["linkedEnvironmentsEnabled"] == true, |col| {
                     col.child(section("Linked environments")).child(self.render_peer_links(cx))
                 })

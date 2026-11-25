@@ -39,6 +39,7 @@ mod storage;
 mod terminal;
 mod terminal_drawer;
 mod timeline;
+mod workflows;
 mod workspace;
 
 use crate::i18n::t;
@@ -109,6 +110,7 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    workflows: workflows::WorkflowsState,
     /// `PeerLinkSummary`s, read when Settings opens.
     peer_links: Vec<serde_json::Value>,
     /// (tool or host, status) from `server.discoverSourceControl`, read when Settings opens.
@@ -339,6 +341,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            workflows: Default::default(),
             peer_links: Vec::new(),
             source_control: Vec::new(),
             storage: Default::default(),
