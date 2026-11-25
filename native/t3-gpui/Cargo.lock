@@ -6866,6 +6866,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "jiff 0.2.46",
+ "markdown",
  "p256",
  "rand_core 0.6.4",
  "reqwest",

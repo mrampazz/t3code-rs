@@ -18,6 +18,7 @@ mod issues;
 mod keybindings;
 mod limits;
 mod linked;
+mod media;
 mod menus;
 mod model;
 mod notify;
@@ -242,6 +243,8 @@ struct T3App {
     input_picks: std::collections::HashMap<String, Vec<String>>,
     /// The transcript list: one item per timeline row, then the working indicator.
     transcript: ListState,
+    /// Signed URLs for host-file images by environment, thread and path; `None` while minting.
+    asset_urls: std::cell::RefCell<std::collections::HashMap<String, Option<String>>>,
     /// The thread and row keys the list was last spliced to (`sync_transcript`).
     transcript_rows: (Option<String>, Vec<String>),
     _subscriptions: Vec<Subscription>,
@@ -435,6 +438,7 @@ impl T3App {
             input_picks: Default::default(),
             transcript: ListState::new(0, ListAlignment::Top, px(800.)),
             transcript_rows: Default::default(),
+            asset_urls: Default::default(),
             _subscriptions,
         };
         for session in auth::load_all() {
@@ -2283,31 +2287,32 @@ fn main() {
     RUNTIME
         .set(tokio::runtime::Runtime::new().expect("tokio runtime"))
         .ok();
-    gpui_kit::application().run(|cx| {
-        gpui_kit::init(cx);
-        palette::bind_keys(cx);
-        let prefs = settings::load_prefs();
-        i18n::set_locale(
-            prefs["locale"]
-                .as_str()
-                .map_or_else(i18n::system_locale, str::to_owned)
-                .as_str(),
-        );
-        gpui_kit::component::Theme::change(settings::theme_mode(&prefs), None, cx);
-        menus::install(cx);
-        let options = WindowOptions {
-            window_bounds: Some(
-                menus::bounds_from_json(&prefs["window"])
-                    .unwrap_or_else(|| WindowBounds::centered(None, size(px(1200.), px(800.)), cx)),
-            ),
-            ..Default::default()
-        };
-        gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| T3App::new(window, cx))
-        })
-        .expect("failed to open window");
-        cx.activate(true);
-    });
+    gpui_kit::application()
+        .with_http_client(media::ImageHttp::new())
+        .run(|cx| {
+            gpui_kit::init(cx);
+            palette::bind_keys(cx);
+            let prefs = settings::load_prefs();
+            i18n::set_locale(
+                prefs["locale"]
+                    .as_str()
+                    .map_or_else(i18n::system_locale, str::to_owned)
+                    .as_str(),
+            );
+            gpui_kit::component::Theme::change(settings::theme_mode(&prefs), None, cx);
+            menus::install(cx);
+            let options = WindowOptions {
+                window_bounds: Some(menus::bounds_from_json(&prefs["window"]).unwrap_or_else(
+                    || WindowBounds::centered(None, size(px(1200.), px(800.)), cx),
+                )),
+                ..Default::default()
+            };
+            gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| T3App::new(window, cx))
+            })
+            .expect("failed to open window");
+            cx.activate(true);
+        });
 }
 
 fn rename_item(

@@ -59,9 +59,12 @@ impl T3App {
                         .child(text),
                 )
                 .into_any_element(),
-            "assistant_message" => TextView::markdown(SharedString::from(item.id.clone()), text)
-                .on_link_click(open_link)
-                .into_any_element(),
+            "assistant_message" => TextView::markdown(
+                SharedString::from(item.id.clone()),
+                self.resolve_images(&text, cx).into_owned(),
+            )
+            .on_link_click(open_link)
+            .into_any_element(),
             "proposed_plan" => {
                 let markdown = item.str("markdown").to_string();
                 let (copy, save) = (markdown.clone(), markdown.clone());
@@ -115,7 +118,8 @@ impl T3App {
                     .child(
                         TextView::markdown(
                             SharedString::from(item.id.clone()),
-                            crate::plans::body(&markdown),
+                            self.resolve_images(&crate::plans::body(&markdown), cx)
+                                .into_owned(),
                         )
                         .on_link_click(open_link),
                     )

@@ -109,6 +109,7 @@ async fn dispatch(client: &RpcClient, mut command: Value) -> Value {
 }
 
 struct Env {
+    base_url: String,
     client: RpcClient,
     shell: Live<Shell>,
     config: Live<ServerConfig>,
@@ -153,6 +154,7 @@ async fn connect() -> Env {
         })
         .await;
     Env {
+        base_url: session.base_url.clone(),
         client,
         shell,
         config,
@@ -1768,4 +1770,55 @@ async fn e2e_workflows() {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_markdown_host_image() {
+    use futures::AsyncReadExt;
+    use gpui_kit::http_client::{AsyncBody, HttpClient};
+
+    let env = connect().await;
+    let (thread_id, _view) = launch(&env, "showcase", "Show me what you can do").await;
+    let root = env
+        .shell
+        .state
+        .lock()
+        .unwrap()
+        .projects
+        .iter()
+        .find(|p| p.id == env.project_id)
+        .unwrap()
+        .workspace_root
+        .clone();
+    // A 1x1 PNG.
+    let png = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    )
+    .unwrap();
+    std::fs::write(format!("{root}/e2e.png"), &png).unwrap();
+    let (path, relative) = crate::media::host_image_path("e2e.png", Some(&root)).unwrap();
+    assert!(relative);
+    let minted = env
+        .client
+        .call(
+            "assets.createUrl",
+            json!({ "resource": { "_tag": "media-file", "threadId": thread_id, "path": path, "hostOnly": true } }),
+        )
+        .await
+        .unwrap();
+    let url = format!(
+        "{}{}",
+        env.base_url.trim_end_matches('/'),
+        minted["relativeUrl"].as_str().unwrap()
+    );
+    let response = crate::media::ImageHttp::new()
+        .get(&url, AsyncBody::default(), true)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{url}");
+    let mut body = Vec::new();
+    response.into_body().read_to_end(&mut body).await.unwrap();
+    assert_eq!(body, png);
 }

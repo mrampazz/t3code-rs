@@ -181,6 +181,32 @@ fn home_of(cwd: &str) -> Option<String> {
     }
 }
 
+/// The thread a `t3-thread://v1/<id>`, `t3-thread://v2/<env>/<id>` or hosted
+/// `https://app.t3.codes/threads/<env>/<id>` link names (`parseThreadLinkHref`), as candidates:
+/// the id as written, then percent-decoded. The environment id is not used; the thread is
+/// looked up across connected environments.
+pub fn thread_link_ids(href: &str) -> Vec<String> {
+    let id = if let Some(id) = href.strip_prefix("t3-thread://v1/") {
+        Some(id)
+    } else if let Some(rest) = href.strip_prefix("t3-thread://v2/") {
+        rest.split_once('/').map(|(_, id)| id)
+    } else if let Some(rest) = href.strip_prefix("https://app.t3.codes/threads/") {
+        rest.split_once('/')
+            .filter(|(_, id)| !id.contains('/'))
+            .map(|(_, id)| id)
+    } else {
+        None
+    };
+    let Some(id) = id.filter(|id| !id.is_empty()) else {
+        return Vec::new();
+    };
+    let decoded = url::form_urlencoded::parse(format!("x={}", id.replace('+', "%2B")).as_bytes())
+        .next()
+        .map(|(_, v)| v.into_owned())
+        .filter(|d| d != id);
+    std::iter::once(id.to_owned()).chain(decoded).collect()
+}
+
 /// Classifies a markdown link like the web's `resolveMarkdownFileLink`: `file:` URLs and bare
 /// paths are files (relative ones resolve against the thread's folder); other schemes are URLs.
 pub fn link_target(href: &str, cwd: Option<&str>) -> LinkTarget {
@@ -340,6 +366,24 @@ impl T3App {
 
     /// Opens a chat link: web pages in the browser, files in the preferred editor at their line.
     pub(crate) fn open_link(&mut self, href: &str, cx: &mut Context<Self>) {
+        let ids = thread_link_ids(href);
+        if !ids.is_empty() {
+            let active = self.env().map(|e| e.key.clone());
+            let mut envs: Vec<&crate::env::Env> = self.envs.iter().collect();
+            envs.sort_by_key(|e| Some(&e.key) != active.as_ref());
+            let found = ids.iter().find_map(|id| {
+                envs.iter()
+                    .find(|e| e.shell.threads.iter().any(|t| &t.id == id))
+                    .map(|e| (e.key.clone(), id.clone()))
+            });
+            return match found {
+                Some((env, id)) => self.select_thread(env, id, cx),
+                None => {
+                    self.error = Some(t("The thread's environment is not available.").into());
+                    cx.notify()
+                }
+            };
+        }
         let cwd = self.thread_cwd();
         let (path, line, column) = match link_target(href, cwd.as_deref()) {
             LinkTarget::Url(url) => return cx.open_url(&url),
@@ -445,6 +489,19 @@ impl T3App {
 mod tests {
     use super::{LinkTarget, OpenMode, link_target, open_mode, preferred, remote_folder_url};
     use serde_json::json;
+
+    #[test]
+    fn parses_thread_links() {
+        use super::thread_link_ids;
+        assert_eq!(thread_link_ids("t3-thread://v1/t1"), vec!["t1"]);
+        assert_eq!(thread_link_ids("t3-thread://v2/env/t:1"), vec!["t:1"]);
+        assert_eq!(
+            thread_link_ids("https://app.t3.codes/threads/e/thread%3Aa"),
+            vec!["thread%3Aa", "thread:a"]
+        );
+        assert!(thread_link_ids("https://app.t3.codes/threads/e").is_empty());
+        assert!(thread_link_ids("https://x.dev/threads/e/t").is_empty());
+    }
 
     #[test]
     fn picks_the_open_mode_from_the_server_url() {
