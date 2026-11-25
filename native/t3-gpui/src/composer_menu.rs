@@ -101,6 +101,24 @@ pub fn context_id(kind: &str, producer: &str) -> String {
     )
 }
 
+/// `clampContextText`: cuts at `max` UTF-16 units, as the contract counts, with the web's marker.
+pub fn clamp_context_text(value: &str, max: usize) -> String {
+    const MARKER: &str = "\n… truncated …";
+    if value.encode_utf16().count() <= max {
+        return value.to_owned();
+    }
+    let budget = max - MARKER.encode_utf16().count();
+    let mut used = 0;
+    let end = value
+        .char_indices()
+        .find(|(_, c)| {
+            used += c.len_utf16();
+            used > budget
+        })
+        .map_or(value.len(), |(i, _)| i);
+    format!("{}{MARKER}", &value[..end])
+}
+
 /// `sanitizeComposerContextLabel`.
 pub fn context_label(label: &str, kind: &str) -> String {
     let cleaned: String = label
@@ -542,9 +560,17 @@ impl T3App {
 #[cfg(test)]
 mod tests {
     use super::{
-        TriggerKind, command_items, context_id, detect_trigger, file_link, mention_items,
-        message_context, path_items,
+        TriggerKind, clamp_context_text, command_items, context_id, detect_trigger, file_link,
+        mention_items, message_context, path_items,
     };
+
+    #[test]
+    fn clamps_context_text_like_the_web() {
+        assert_eq!(clamp_context_text("short", 100), "short");
+        let clamped = clamp_context_text(&"é".repeat(50), 20);
+        assert_eq!(clamped.encode_utf16().count(), 20);
+        assert!(clamped.ends_with("… truncated …"));
+    }
 
     #[test]
     fn mentions_threads_and_models() {

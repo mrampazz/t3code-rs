@@ -1364,7 +1364,13 @@ async fn e2e_review_comment() {
         record["label"].as_str().unwrap(),
         record["contextId"].as_str().unwrap()
     );
-    let context = message_context(&text, &[record]).unwrap();
+    let term = crate::terminal::context_record("term-1", "zsh", (1, 2), "$ ls\nfile", "e2e");
+    let text = format!(
+        "{text}[{}](t3-context://v1/terminal/{}) ",
+        term["label"].as_str().unwrap(),
+        term["contextId"].as_str().unwrap()
+    );
+    let context = message_context(&text, &[record, term]).unwrap();
     let id = uuid::Uuid::new_v4().to_string();
     dispatch(
         &env.client,

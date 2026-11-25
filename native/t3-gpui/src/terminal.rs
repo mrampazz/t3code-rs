@@ -96,6 +96,13 @@ impl TermView {
             .scroll_display(alacritty_terminal::grid::Scroll::Delta(lines));
     }
 
+    /// The 1-based scrollback line number of the top visible row.
+    pub fn first_line(&self) -> usize {
+        use alacritty_terminal::grid::Dimensions;
+        let grid = self.term.grid();
+        grid.history_size() - grid.display_offset() + 1
+    }
+
     pub fn scroll_to_bottom(&mut self) {
         self.term
             .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
@@ -173,6 +180,35 @@ impl TermView {
         }
         lines
     }
+}
+
+/// `terminalContextRecord`: lines `start..=end` (1-based) of a terminal, sent with a message.
+pub fn context_record(
+    terminal_id: &str,
+    terminal_label: &str,
+    (start, end): (usize, usize),
+    text: &str,
+    id: &str,
+) -> serde_json::Value {
+    let range = if start == end {
+        format!("line {start}")
+    } else {
+        format!("lines {start}-{end}")
+    };
+    let label =
+        crate::composer_menu::context_label(&format!("{terminal_label} {range}"), "terminal");
+    let text = text.replace("\r\n", "\n");
+    serde_json::json!({
+        "version": 1,
+        "kind": "terminal",
+        "contextId": crate::composer_menu::context_id("terminal", id),
+        "label": label,
+        "terminalId": terminal_id,
+        "terminalLabel": terminal_label,
+        "lineStart": start,
+        "lineEnd": end,
+        "text": crate::composer_menu::clamp_context_text(text.trim_matches('\n'), 64_000),
+    })
 }
 
 /// xterm palette: 16 ANSI colors, the 6×6×6 cube, and the grayscale ramp.
@@ -365,6 +401,18 @@ mod tests {
         assert_eq!(lines[1].text, "next ");
         assert_eq!(lines[1].runs.last().unwrap().bg, Some(FOREGROUND));
         assert_eq!(lines[2].text, "");
+    }
+
+    #[test]
+    fn terminal_context_records_lines() {
+        let record = super::context_record("term-1", "npm", (3, 5), "\na\r\nb\n", "x");
+        assert_eq!(record["label"], "npm lines 3-5");
+        assert_eq!(record["text"], "a\nb");
+        assert_eq!(record["contextId"], "terminal_x");
+        assert_eq!(
+            super::context_record("t", "zsh", (2, 2), "a", "y")["label"],
+            "zsh line 2"
+        );
     }
 
     #[test]

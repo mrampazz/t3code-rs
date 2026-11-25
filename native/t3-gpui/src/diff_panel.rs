@@ -429,7 +429,12 @@ impl T3App {
     }
 
     /// Appends a context link for `record` to the composer and keeps the record for sending.
-    fn add_composer_context(&mut self, record: Value, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn add_composer_context(
+        &mut self,
+        record: Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (kind, id, label) = (
             record["kind"].as_str().unwrap_or(""),
             record["contextId"].as_str().unwrap_or(""),
@@ -628,8 +633,8 @@ pub(crate) fn review_record(
         "startIndex": start,
         "endIndex": end,
         "rangeLabel": range_label,
-        "text": text.trim(),
-        "diff": diff.join("\n"),
+        "text": crate::composer_menu::clamp_context_text(text.trim(), 16_000),
+        "diff": crate::composer_menu::clamp_context_text(&diff.join("\n"), 32_000),
         "fenceLanguage": "diff",
     }))
 }

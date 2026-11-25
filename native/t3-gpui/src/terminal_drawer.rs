@@ -286,11 +286,44 @@ impl T3App {
         }
     }
 
+    /// Adds the selected lines to the composer as a `terminal` context link (web: terminal
+    /// "Add to chat"). shortcut: whole visible lines, at least two (a click is focus); lines
+    /// scrolled out of view are dropped.
+    fn add_terminal_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some((a, b)), Some(term)) = (self.term_selection.take(), self.term.as_ref()) else {
+            return;
+        };
+        let (start, end) = (a.min(b), a.max(b));
+        let first = term.first_line();
+        let text = term
+            .lines()
+            .into_iter()
+            .enumerate()
+            .filter(|(row, _)| (start..=end).contains(&(first + row)))
+            .map(|(_, line)| line.text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.trim().is_empty() {
+            return cx.notify();
+        }
+        let label = self
+            .selected
+            .iter()
+            .flat_map(|thread| self.terminal_tabs(thread))
+            .find(|(id, _, _)| *id == self.term_id)
+            .map_or_else(|| self.term_id.clone(), |(_, label, _)| label);
+        let id = uuid::Uuid::new_v4().to_string();
+        let record =
+            crate::terminal::context_record(&self.term_id, &label, (start, end), &text, &id);
+        self.add_composer_context(record, window, cx);
+    }
+
     pub(crate) fn render_terminal(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors;
         let mono = cx.theme().mono_font_family.clone();
         let mono_family = mono.clone();
         let lines = self.term.as_ref().map(TermView::lines).unwrap_or_default();
+        let first_line = self.term.as_ref().map_or(1, TermView::first_line);
         let thread_id = self.selected.clone();
         let rgb = |c: alacritty_terminal::vte::ansi::Rgb| -> Hsla {
             gpui_kit::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32).into()
@@ -348,6 +381,20 @@ impl T3App {
                     )
                     .children(self.term_status.clone())
                     .child(div().flex_1())
+                    .when(
+                        self.term_selection.is_some() && !self.term_selecting,
+                        |row| {
+                            row.child(
+                                Button::new("term-add-to-chat")
+                                    .xsmall()
+                                    .outline()
+                                    .label(t("Add to chat"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.add_terminal_selection(window, cx)
+                                    })),
+                            )
+                        },
+                    )
                     .child(
                         Button::new("term-clear")
                             .xsmall()
@@ -438,7 +485,22 @@ impl T3App {
                         .absolute()
                         .size_full()
                     })
-                    .children(lines.into_iter().map(|line| {
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.term_selecting = false;
+                            // A click without a drag only focuses the terminal.
+                            if this.term_selection.is_some_and(|(a, b)| a == b) {
+                                this.term_selection = None;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .children(lines.into_iter().enumerate().map(|(row, line)| {
+                        let number = first_line + row;
+                        let selected = self
+                            .term_selection
+                            .is_some_and(|(a, b)| (a.min(b)..=a.max(b)).contains(&number));
                         let highlights: Vec<_> = line
                             .runs
                             .into_iter()
@@ -456,6 +518,28 @@ impl T3App {
                             .collect();
                         div()
                             .h(px(16.))
+                            .when(selected, |d| d.bg(c.selection))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.term_selection = Some((number, number));
+                                    this.term_selecting = true;
+                                    cx.notify();
+                                }),
+                            )
+                            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
+                                if !this.term_selecting
+                                    || e.pressed_button != Some(MouseButton::Left)
+                                {
+                                    return;
+                                }
+                                if let Some((_, end)) = this.term_selection.as_mut()
+                                    && *end != number
+                                {
+                                    *end = number;
+                                    cx.notify();
+                                }
+                            }))
                             .child(StyledText::new(line.text).with_highlights(highlights))
                     })),
             )

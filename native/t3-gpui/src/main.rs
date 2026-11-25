@@ -194,6 +194,10 @@ struct T3App {
     term_status: Option<SharedString>,
     /// The attached terminal's id (`term-N`, client-chosen).
     term_id: String,
+    /// Terminal lines picked for "Add to chat" as 1-based scrollback lines (anchor, end), and
+    /// whether the mouse is still dragging.
+    term_selection: Option<(usize, usize)>,
+    term_selecting: bool,
     /// The grid size last sent with `terminal.resize`.
     term_requested: Option<(usize, usize)>,
     /// A script waiting for its new terminal's shell before its command is typed.
@@ -423,6 +427,8 @@ impl T3App {
             term_sub: None,
             term_status: None,
             term_id: "term-1".into(),
+            term_selection: None,
+            term_selecting: false,
             term_requested: None,
             script_launch: None,
             last_script: Default::default(),
