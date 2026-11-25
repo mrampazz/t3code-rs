@@ -204,6 +204,8 @@ pub struct Shell {
     /// Bumped per `thread.removed`, which is when the archive list goes stale.
     pub removals: u64,
     pub synced: bool,
+    /// A full snapshot has arrived; later identity-only snapshots merge into it.
+    has_snapshot: bool,
     /// Resume cursor for `afterSequence`; 0 until the first snapshot.
     pub sequence: u64,
     /// Subscribed with `omitIdleSubagents`: snapshots leave idle subagent children out.
@@ -245,7 +247,13 @@ impl Shell {
             self.sequence = self.sequence.max(seq);
         }
         match item["kind"].as_str() {
+            Some("snapshot")
+                if self.has_snapshot && item.get("resolvedRepositoryIdentityRoots").is_some() =>
+            {
+                self.merge_repository_identities(item);
+            }
             Some("snapshot") => {
+                self.has_snapshot = true;
                 let snap = &item["snapshot"];
                 self.sequence = snap["snapshotSequence"].as_u64().unwrap_or(0);
                 self.projects = snap["projects"]
@@ -315,6 +323,39 @@ impl Shell {
                 .older
                 .as_ref()
                 .is_some_and(|o| t.is_older_settled(o.before_ms))
+    }
+
+    /// `mergeShellSnapshotProjects` enrichment: a snapshot naming `resolvedRepositoryIdentityRoots`
+    /// only refreshes project repository identities. Its thread list is empty, so applying it as a
+    /// full snapshot would wipe the sidebar.
+    fn merge_repository_identities(&mut self, item: &Value) {
+        let roots: Vec<&str> = item["resolvedRepositoryIdentityRoots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let candidates = item["snapshot"]["projects"]
+            .as_array()
+            .into_iter()
+            .flatten();
+        for candidate in candidates.filter_map(Project::from_value) {
+            let Some(project) = self
+                .projects
+                .iter_mut()
+                .find(|p| p.id == candidate.id && p.workspace_root == candidate.workspace_root)
+            else {
+                continue;
+            };
+            let listed = roots.contains(&project.workspace_root.as_str());
+            if listed
+                || (project.repository_identity.is_null()
+                    && !candidate.repository_identity.is_null())
+            {
+                project.raw["repositoryIdentity"] = candidate.repository_identity.clone();
+                project.repository_identity = candidate.repository_identity;
+            }
+        }
     }
 
     /// Older settled threads the server counts that are not loaded yet.
@@ -1225,6 +1266,25 @@ mod tests {
             .map(|m| m.slug.as_str())
             .collect();
         assert_eq!(slugs, ["c", "b", "x"]);
+    }
+
+    #[test]
+    fn identity_refresh_snapshots_keep_threads() {
+        let mut shell = Shell::default();
+        let project = |identity: Value| json!({"id": "p", "title": "P", "workspaceRoot": "/r", "repositoryIdentity": identity});
+        shell.apply(&json!({"kind": "snapshot", "snapshot": {
+            "snapshotSequence": 4, "projects": [project(Value::Null)], "threads": [thread("a", "1")],
+        }}));
+        shell.apply(&json!({"kind": "snapshot", "resolvedRepositoryIdentityRoots": ["/r"], "snapshot": {
+            "snapshotSequence": 4, "projects": [project(json!({"canonicalKey": "k"}))], "threads": [],
+        }}));
+        assert_eq!(
+            shell.threads.len(),
+            1,
+            "an identity refresh must not wipe threads"
+        );
+        assert_eq!(shell.projects[0].repository_identity["canonicalKey"], "k");
+        assert_eq!(shell.sequence, 4);
     }
 
     #[test]
