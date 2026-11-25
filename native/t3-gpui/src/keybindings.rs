@@ -68,6 +68,57 @@ pub fn resolve(
     })
 }
 
+/// A resolved rule's shortcut as a keybinding value (`mod+shift+k`), like the web writes it.
+pub fn value_of(rule: &Value) -> String {
+    let s = &rule["shortcut"];
+    let mut parts: Vec<&str> = [
+        ("modKey", "mod"),
+        ("ctrlKey", "ctrl"),
+        ("metaKey", "meta"),
+        ("altKey", "alt"),
+        ("shiftKey", "shift"),
+    ]
+    .into_iter()
+    .filter(|(flag, _)| s[*flag] == true)
+    .map(|(_, token)| token)
+    .collect();
+    let key = match s["key"].as_str().unwrap_or("") {
+        " " => "space",
+        "escape" => "esc",
+        k => k,
+    };
+    parts.push(key);
+    parts.join("+")
+}
+
+/// A `whenAst` written back as the `when` string it came from, for replacing or removing a rule.
+pub fn when_of(node: &Value) -> Option<String> {
+    let wrap = |n: &Value| {
+        let s = when_of(n)?;
+        Some(if matches!(n["type"].as_str(), Some("and" | "or")) {
+            format!("({s})")
+        } else {
+            s
+        })
+    };
+    Some(match node["type"].as_str()? {
+        "identifier" => node["name"].as_str()?.to_owned(),
+        "not" => format!("!{}", wrap(&node["node"])?),
+        "and" => format!("{} && {}", wrap(&node["left"])?, wrap(&node["right"])?),
+        "or" => format!("{} || {}", wrap(&node["left"])?, wrap(&node["right"])?),
+        _ => return None,
+    })
+}
+
+/// The `when` field for a rule, omitted when the rule has none.
+pub fn rule_target(rule: &Value) -> Value {
+    let mut target = json!({ "key": value_of(rule), "command": rule["command"] });
+    if let Some(when) = when_of(&rule["whenAst"]) {
+        target["when"] = json!(when);
+    }
+    target
+}
+
 /// The `DEFAULT_KEYBINDINGS` this client acts on, used until the server's list arrives.
 pub fn defaults() -> Vec<Value> {
     let not_terminal =
@@ -117,6 +168,23 @@ pub fn defaults() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_rules_back_as_values() {
+        let rule = json!({"command": "chat.find", "shortcut": {"key": "f", "modKey": true, "shiftKey": true},
+            "whenAst": {"type": "and", "left": {"type": "not", "node": {"type": "identifier", "name": "terminalFocus"}},
+                "right": {"type": "or", "left": {"type": "identifier", "name": "a"}, "right": {"type": "identifier", "name": "b"}}}});
+        assert_eq!(value_of(&rule), "mod+shift+f");
+        assert_eq!(
+            rule_target(&rule),
+            json!({"key": "mod+shift+f", "command": "chat.find", "when": "!terminalFocus && (a || b)"})
+        );
+        assert!(
+            rule_target(&json!({"command": "x", "shortcut": {"key": " "}}))
+                .get("when")
+                .is_none()
+        );
+    }
 
     #[test]
     fn resolves_like_the_web() {

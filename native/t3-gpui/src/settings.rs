@@ -378,6 +378,68 @@ impl T3App {
         .detach();
     }
 
+    fn keybinding_call(&mut self, method: &'static str, payload: Value, cx: &mut Context<Self>) {
+        let Some(client) = self.client() else { return };
+        cx.spawn(async move |this, cx| {
+            let result = on_tokio(async move { client.call(method, payload).await }).await;
+            this.update(cx, |app, cx| {
+                match result {
+                    // The reply carries the new list; the config stream confirms it too.
+                    Ok(Ok(reply)) => {
+                        if let (Some(env), Some(rules)) =
+                            (app.env_mut(), reply["keybindings"].as_array())
+                        {
+                            env.config.keybindings = rules.clone();
+                        }
+                        app.settings_status = None;
+                    }
+                    Ok(Err(e)) => app.settings_status = Some(e.to_string().into()),
+                    Err(e) => app.settings_status = Some(e.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Replaces a rule's shortcut with a typed value such as `mod+shift+k`.
+    fn change_keybinding(&mut self, target: Value, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt;
+        use gpui_kit::component::dialog::DialogButtonProps;
+        use gpui_kit::component::input::{Input, InputState};
+        let current = target["key"].as_str().unwrap_or("").to_owned();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(current));
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input, target) = (app.clone(), input.clone(), target.clone());
+            dialog
+                .title(target["command"].as_str().unwrap_or("").to_owned())
+                .child(Input::new(&input))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t("Save"))
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx: &mut App| {
+                    let key = input.read(cx).value().trim().to_lowercase();
+                    if key.is_empty() {
+                        return false;
+                    }
+                    let mut upsert =
+                        json!({ "key": key, "command": target["command"], "replace": target });
+                    if let Some(when) = target.get("when") {
+                        upsert["when"] = when.clone();
+                    }
+                    app.update(cx, |this, cx| {
+                        this.keybinding_call("server.upsertKeybinding", upsert, cx)
+                    })
+                    .ok();
+                    true
+                })
+        });
+    }
+
     fn edit_title_instructions(
         &mut self,
         current: String,
@@ -872,6 +934,29 @@ impl T3App {
                 })
                 .child(section("Projects"))
                 .child(self.render_project_settings(cx))
+                .child(section("Keyboard shortcuts"))
+                .children(self.config().keybindings.iter().enumerate().map(|(i, rule)| {
+                    let target = crate::keybindings::rule_target(rule);
+                    let (change, remove) = (target.clone(), target.clone());
+                    row()
+                        .child(div().flex_1().truncate().child(rule["command"].as_str().unwrap_or("").to_owned()))
+                        .child(div().text_xs().text_color(c.muted_foreground).child(target["key"].as_str().unwrap_or("").to_owned()))
+                        .child(
+                            Button::new(("kb-change", i))
+                                .xsmall()
+                                .ghost()
+                                .label(t("Change"))
+                                .on_click(cx.listener(move |this, _, window, cx| this.change_keybinding(change.clone(), window, cx))),
+                        )
+                        .child(
+                            Button::new(("kb-remove", i))
+                                .xsmall()
+                                .ghost()
+                                .label("✕")
+                                .tooltip(t("Remove"))
+                                .on_click(cx.listener(move |this, _, _, cx| this.keybinding_call("server.removeKeybinding", remove.clone(), cx))),
+                        )
+                }))
                 .child(section("Scheduled tasks"))
                 .child(self.render_scheduled(cx))
                 .child(section("Sharing & access"))

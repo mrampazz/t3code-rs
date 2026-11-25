@@ -1593,3 +1593,39 @@ async fn e2e_server_release_check() {
         Err(e) => assert!(e.to_string().contains("ServerNpmReleaseError"), "{e}"),
     }
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_keybinding_change() {
+    use crate::keybindings::rule_target;
+    let env = connect().await;
+    let rule = env
+        .config
+        .until("find rule", |c| {
+            c.keybindings
+                .iter()
+                .find(|r| r["command"] == "chat.find" && !r["whenAst"].is_null())
+                .cloned()
+        })
+        .await;
+    let target = rule_target(&rule);
+    let mut upsert = json!({ "key": "mod+alt+f", "command": "chat.find", "when": target["when"], "replace": target });
+    let reply = env
+        .client
+        .call("server.upsertKeybinding", upsert.clone())
+        .await
+        .unwrap();
+    let changed = reply["keybindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["command"] == "chat.find")
+        .unwrap()
+        .clone();
+    assert_eq!(crate::keybindings::value_of(&changed), "mod+alt+f");
+    upsert = json!({ "key": target["key"], "command": "chat.find", "when": target["when"], "replace": rule_target(&changed) });
+    env.client
+        .call("server.upsertKeybinding", upsert)
+        .await
+        .unwrap();
+}
