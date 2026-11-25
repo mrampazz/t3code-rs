@@ -2260,9 +2260,12 @@ impl Render for T3App {
             .bg(theme.background)
             .text_color(theme.foreground)
             .track_focus(&self.focus)
-            .on_action(
-                cx.listener(|this, link: &editors::OpenLink, _, cx| this.open_link(&link.url, cx)),
-            )
+            .on_action(cx.listener(|this, link: &editors::OpenLink, window, cx| {
+                match media::expand_source(&link.url) {
+                    Some(source) => media::open_expanded(source, window, cx),
+                    None => this.open_link(&link.url, cx),
+                }
+            }))
             .on_action(cx.listener(|this, run: &menus::RunCommand, window, cx| {
                 this.run_command(&run.command, window, cx);
             }))

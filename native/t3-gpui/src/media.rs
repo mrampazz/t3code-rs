@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use gpui_kit::component::WindowExt;
 use gpui_kit::http_client::{self, AsyncBody, HttpClient, Response, Url, http::HeaderValue};
 use gpui_kit::*;
 use serde_json::json;
@@ -76,7 +77,11 @@ pub fn host_image_path(dest: &str, cwd: Option<&str>) -> Option<(String, bool)> 
     }
 }
 
-/// `text` with each image's destination replaced by `resolve(dest)` where that gives one.
+/// Link scheme that opens an image full size; markdown images are wrapped in it.
+pub const EXPAND: &str = "t3-expand:";
+
+/// `text` with each image's destination replaced by `resolve(dest)` where that gives one, and
+/// each image that is not already a link wrapped in an [`EXPAND`] link to itself.
 pub fn rewrite_images<'a>(
     text: &'a str,
     mut resolve: impl FnMut(&str) -> Option<String>,
@@ -88,26 +93,43 @@ pub fn rewrite_images<'a>(
         return Cow::Borrowed(text);
     };
     let mut images = Vec::new();
-    let mut stack = vec![&tree];
-    while let Some(node) = stack.pop() {
+    let mut stack = vec![(&tree, false)];
+    while let Some((node, in_link)) = stack.pop() {
         if let markdown::mdast::Node::Image(image) = node
             && let Some(position) = &image.position
-            && let Some(url) = resolve(&image.url)
         {
-            let escaped: String = image
-                .alt
-                .chars()
-                .flat_map(|c| match c {
-                    '[' | ']' | '\\' => vec!['\\', c],
-                    c => vec![c],
-                })
-                .collect();
-            images.push((
-                position.start.offset..position.end.offset,
-                format!("![{escaped}](<{url}>)"),
-            ));
+            let resolved = resolve(&image.url);
+            let url = resolved.clone().unwrap_or_else(|| image.url.clone());
+            let bracketable = !url.contains(['<', '>', '\n']);
+            if bracketable && (resolved.is_some() || !in_link) {
+                let escaped: String = image
+                    .alt
+                    .chars()
+                    .flat_map(|c| match c {
+                        '[' | ']' | '\\' => vec!['\\', c],
+                        c => vec![c],
+                    })
+                    .collect();
+                let markdown = format!("![{escaped}](<{url}>)");
+                let markdown = if in_link {
+                    markdown
+                } else {
+                    format!("[{markdown}](<{EXPAND}{url}>)")
+                };
+                images.push((position.start.offset..position.end.offset, markdown));
+            }
         }
-        stack.extend(node.children().into_iter().flatten());
+        let in_link = in_link
+            || matches!(
+                node,
+                markdown::mdast::Node::Link(_) | markdown::mdast::Node::LinkReference(_)
+            );
+        stack.extend(
+            node.children()
+                .into_iter()
+                .flatten()
+                .map(|child| (child, in_link)),
+        );
     }
     if images.is_empty() {
         return Cow::Borrowed(text);
@@ -122,6 +144,21 @@ pub fn rewrite_images<'a>(
     }
     out.push_str(&text[at..]);
     Cow::Owned(out)
+}
+
+/// The image an [`EXPAND`] link opens: decoded when it is a `data:` URL, else fetched by URL.
+pub fn expand_source(href: &str) -> Option<ImageSource> {
+    let url = href.strip_prefix(EXPAND)?;
+    let Some(data) = url.strip_prefix("data:") else {
+        return Some(SharedString::from(url.to_owned()).into());
+    };
+    let (meta, payload) = data.split_once(',')?;
+    let mime = meta.split(';').next()?;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, payload).ok()?;
+    let format = ImageFormat::from_mime_type(mime)?;
+    Some(ImageSource::Image(Arc::new(Image::from_bytes(
+        format, bytes,
+    ))))
 }
 
 impl T3App {
@@ -173,6 +210,21 @@ impl T3App {
     }
 }
 
+/// Shows an image full size in a dialog (web: `ExpandedImageDialog`).
+pub fn open_expanded(source: ImageSource, window: &mut Window, cx: &mut App) {
+    let size = window.viewport_size();
+    window.open_dialog(cx, move |dialog, _, _| {
+        dialog.w(size.width * 0.9).child(
+            div().flex().justify_center().child(
+                img(source.clone())
+                    .max_w_full()
+                    .max_h(size.height * 0.8)
+                    .object_fit(ObjectFit::Contain),
+            ),
+        )
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::{host_image_path, rewrite_images};
@@ -200,15 +252,18 @@ mod tests {
 
     #[test]
     fn rewrites_only_resolved_images() {
-        let text = "see ![a [b]](x.png) and ![c](https://y/c.png)\n\n`![d](x.png)`";
+        let text = "see ![a [b]](x.png) and [![c](https://y/c.png)](https://y)\n\n`![d](x.png)`";
         let out = rewrite_images(text, |dest| (dest == "x.png").then(|| "http://h/1".into()));
         assert_eq!(
             out,
-            "see ![a \\[b\\]](<http://h/1>) and ![c](https://y/c.png)\n\n`![d](x.png)`"
+            "see [![a \\[b\\]](<http://h/1>)](<t3-expand:http://h/1>) and [![c](https://y/c.png)](https://y)\n\n`![d](x.png)`",
+            "loose images open full size; linked ones keep their link"
         );
         assert!(matches!(
             rewrite_images("plain", |_| None),
             std::borrow::Cow::Borrowed(_)
         ));
+        assert!(super::expand_source("t3-expand:data:image/png;base64,iVBORw0KGgo=").is_some());
+        assert!(super::expand_source("https://x").is_none());
     }
 }
