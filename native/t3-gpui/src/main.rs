@@ -16,6 +16,7 @@ mod keybindings;
 mod limits;
 mod model;
 mod palette;
+mod plans;
 mod projects;
 mod provider_banner;
 mod pull_requests;

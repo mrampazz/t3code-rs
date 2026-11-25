@@ -1183,3 +1183,33 @@ async fn e2e_force_stop() {
     println!("force stop: {result}");
     wait_idle(&env, &thread_id).await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_save_plan() {
+    let env = connect().await;
+    let cwd = env
+        .shell
+        .state
+        .lock()
+        .unwrap()
+        .projects
+        .iter()
+        .find(|p| p.id == env.project_id)
+        .unwrap()
+        .workspace_root
+        .clone();
+    let plan = "# E2E plan\n\n- one";
+    let name = crate::plans::filename(plan);
+    env.client
+        .call(
+            "projects.writeFile",
+            json!({ "cwd": cwd, "relativePath": name, "contents": plan }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(std::path::Path::new(&cwd).join("e2e-plan.md")).unwrap(),
+        plan
+    );
+}

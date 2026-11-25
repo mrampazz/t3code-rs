@@ -62,26 +62,65 @@ impl T3App {
             "assistant_message" => TextView::markdown(SharedString::from(item.id.clone()), text)
                 .on_link_click(open_link)
                 .into_any_element(),
-            "proposed_plan" => v_flex()
-                .gap_2()
-                .p_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(c.border)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(c.muted_foreground)
-                        .child(t("Proposed plan")),
-                )
-                .child(
-                    TextView::markdown(
-                        SharedString::from(item.id.clone()),
-                        item.str("markdown").to_string(),
+            "proposed_plan" => {
+                let markdown = item.str("markdown").to_string();
+                let (copy, save) = (markdown.clone(), markdown.clone());
+                v_flex()
+                    .gap_2()
+                    .p_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(c.border)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(c.muted_foreground)
+                                    .child(crate::i18n::tc("Plan", "badge, noun")),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .truncate()
+                                    .child(
+                                        crate::plans::title(&markdown)
+                                            .unwrap_or_else(|| t("Proposed plan")),
+                                    ),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("plan-copy-{}", item.id)))
+                                    .xsmall()
+                                    .ghost()
+                                    .label(t("Copy to clipboard"))
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(format!(
+                                            "{}\n",
+                                            copy.trim_end()
+                                        )))
+                                    }),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("plan-save-{}", item.id)))
+                                    .xsmall()
+                                    .ghost()
+                                    .label(t("Save to workspace"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_save_plan(save.clone(), window, cx)
+                                    })),
+                            ),
                     )
-                    .on_link_click(open_link),
-                )
-                .into_any_element(),
+                    .child(
+                        TextView::markdown(
+                            SharedString::from(item.id.clone()),
+                            crate::plans::body(&markdown),
+                        )
+                        .on_link_click(open_link),
+                    )
+                    .into_any_element()
+            }
             "todo_list" => v_flex()
                 .gap_1()
                 .text_sm()
