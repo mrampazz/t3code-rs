@@ -157,6 +157,41 @@ impl T3App {
         .detach();
     }
 
+    fn edit_title_instructions(
+        &mut self,
+        current: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::WindowExt;
+        use gpui_kit::component::dialog::DialogButtonProps;
+        use gpui_kit::component::input::{Input, InputState};
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(current));
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input) = (app.clone(), input.clone());
+            dialog
+                .title(t("Thread title instructions"))
+                .child(Input::new(&input))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t("Save"))
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx: &mut App| {
+                    let text = input.read(cx).value().trim().to_string();
+                    app.update(cx, |this, cx| {
+                        this.update_settings(
+                            json!({ "patch": { "threadTitleInstructions": text } }),
+                            cx,
+                        )
+                    })
+                    .ok();
+                    true
+                })
+        });
+    }
+
     fn set_language(&mut self, code: &str, cx: &mut Context<Self>) {
         self.prefs["locale"] = json!(code);
         save_prefs(&self.prefs);
@@ -414,6 +449,58 @@ impl T3App {
                                 cx.notify();
                             })),
                     )
+                })
+                .child(section("Thread defaults"))
+                .child({
+                    let days = settings["sidebarAutoSettleAfterDays"].as_u64();
+                    let label = days.map_or_else(|| t("Never"), |d| format!("{d} d"));
+                    let app = cx.entity().downgrade();
+                    row().child(div().flex_1().child(t("Auto-settle inactive threads"))).child(
+                        Button::new("auto-settle-days").small().outline().label(label).dropdown_menu(move |mut menu, _, _| {
+                            for option in [None, Some(1u64), Some(3), Some(7), Some(14), Some(30)] {
+                                let app = app.clone();
+                                let text = option.map_or_else(|| t("Never"), |d| format!("{d} d"));
+                                menu = menu.item(PopupMenuItem::new(text).checked(option == days).on_click(move |_, _, cx| {
+                                    app.update(cx, |this, cx| this.update_settings(json!({ "patch": { "sidebarAutoSettleAfterDays": option } }), cx)).ok();
+                                }));
+                            }
+                            menu
+                        }),
+                    )
+                })
+                .child({
+                    let mode = settings["defaultThreadEnvMode"].as_str().unwrap_or("local").to_owned();
+                    let label = |m: &str| if m == "worktree" { t("New worktree") } else { t("Local") };
+                    let app = cx.entity().downgrade();
+                    row().child(div().flex_1().child(t("New thread mode"))).child(
+                        Button::new("default-env-mode").small().outline().label(label(&mode)).dropdown_menu(move |mut menu, _, _| {
+                            for option in ["local", "worktree"] {
+                                let app = app.clone();
+                                menu = menu.item(PopupMenuItem::new(label(option)).checked(option == mode).on_click(move |_, _, cx| {
+                                    app.update(cx, |this, cx| this.update_settings(json!({ "patch": { "defaultThreadEnvMode": option } }), cx)).ok();
+                                }));
+                            }
+                            menu
+                        }),
+                    )
+                })
+                .child({
+                    let current = settings["threadTitleInstructions"].as_str().unwrap_or("").to_owned();
+                    row()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(t("Thread title instructions"))
+                                .child(div().text_xs().text_color(c.muted_foreground).truncate().child(current.clone())),
+                        )
+                        .child(
+                            Button::new("title-instructions")
+                                .small()
+                                .outline()
+                                .label(t("Edit"))
+                                .on_click(cx.listener(move |this, _, window, cx| this.edit_title_instructions(current.clone(), window, cx))),
+                        )
                 })
                 .children(SERVER_TOGGLES.iter().map(|(title, rows)| {
                     v_flex().child(section(title)).children(rows.iter().map(|(key, label)| {
