@@ -101,6 +101,8 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    /// Context records of `@` thread mentions in the composer, sent with the message.
+    composer_contexts: Vec<serde_json::Value>,
     /// Project folders folded in boring mode, as "env\0project".
     folded_projects: std::collections::HashSet<String>,
     notifier: notify::Notifier,
@@ -304,6 +306,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            composer_contexts: Vec::new(),
             folded_projects: Default::default(),
             notifier: Default::default(),
             nav_back: Vec::new(),
@@ -474,7 +477,9 @@ impl T3App {
         let title: String = text.lines().next().unwrap_or("").chars().take(60).collect();
         let command_id = uuid::Uuid::new_v4().to_string();
         let workspace_strategy = self.draft_strategy();
-        let input = json!({
+        let context =
+            composer_menu::message_context(&text, &std::mem::take(&mut self.composer_contexts));
+        let mut input = json!({
             "commandId": command_id,
             "creationSource": "web",
             "projectId": project_id,
@@ -486,6 +491,9 @@ impl T3App {
             "workspaceStrategy": workspace_strategy,
             "initialMessage": { "messageId": command_id, "text": text, "attachments": attachments },
         });
+        if let Some(context) = context {
+            input["initialMessage"]["context"] = context;
+        }
         let env_key = self.env().map(|e| e.key.clone()).unwrap_or_default();
         cx.spawn(async move |this, cx| {
             let result =
@@ -647,9 +655,10 @@ impl T3App {
         self.composer
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.transcript_scroll.scroll_to_bottom();
+        let context =
+            composer_menu::message_context(&text, &std::mem::take(&mut self.composer_contexts));
         let command_id = uuid::Uuid::new_v4().to_string();
-        self.dispatch(
-            json!({
+        let mut command = json!({
                 "type": "message.dispatch",
                 "commandId": command_id,
                 "messageId": command_id,
@@ -659,9 +668,11 @@ impl T3App {
                 "dispatchMode": { "type": "queue_after_active" },
                 "createdBy": "user",
                 "creationSource": "web",
-            }),
-            cx,
-        );
+        });
+        if let Some(context) = context {
+            command["context"] = context;
+        }
+        self.dispatch(command, cx);
     }
 
     /// Sends an `OrchestrationV2Command`, filling in `commandId`. Failures show in the error line.

@@ -63,6 +63,115 @@ pub struct MenuItem {
     /// Text that replaces the trigger token; empty for actions.
     pub insert: String,
     pub action: Option<&'static str>,
+    /// A context record (`ThreadContextRecord`) the message carries when the insert stays in it.
+    pub context: Option<Value>,
+}
+
+/// `fnv1a64` from `shared/composerContextReferences.ts`, over UTF-16 code units like JS.
+fn fnv1a64(value: &str) -> String {
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let (mut forward, mut reverse) = (0x811c9dc5u32, 0x9dc5811cu32);
+    for i in 0..units.len() {
+        forward = (forward ^ u32::from(units[i])).wrapping_mul(0x01000193);
+        reverse = (reverse ^ u32::from(units[units.len() - 1 - i])).wrapping_mul(0x01000193);
+    }
+    format!("{forward:08x}{reverse:08x}")
+}
+
+/// `toKindScopedComposerContextId`.
+pub fn context_id(kind: &str, producer: &str) -> String {
+    let raw = format!("{kind}_{producer}");
+    let valid = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    if (1..=128).contains(&raw.len()) && raw.chars().all(valid) {
+        return raw;
+    }
+    let mut slug = String::new();
+    for c in raw.chars() {
+        if valid(c) {
+            slug.push(c);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug: String = slug.trim_matches('-').chars().take(48).collect();
+    format!(
+        "{}-{}",
+        if slug.is_empty() { "ctx" } else { &slug },
+        fnv1a64(&raw)
+    )
+}
+
+/// `sanitizeComposerContextLabel`.
+fn context_label(label: &str, kind: &str) -> String {
+    let cleaned: String = label
+        .replace(['[', ']', '\\', '\r', '\n'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect();
+    if cleaned.is_empty() {
+        kind.to_owned()
+    } else {
+        cleaned
+    }
+}
+
+/// Threads and models an `@` mention can name (web: `matchComposerThreadItems`,
+/// `matchComposerModelItems`). A thread inserts a context link and carries its record; a model
+/// inserts `model:<instance>/<slug>`.
+/// shortcut: substring matching; the web ranks by recency and fuzzy score.
+pub fn mention_items(
+    query: &str,
+    threads: &[(String, String, String)],
+    models: &[(String, String, String)],
+) -> Vec<MenuItem> {
+    let q = query.to_lowercase();
+    let hit = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
+    let threads = threads
+        .iter()
+        .filter(|(_, _, title)| hit(title))
+        .take(5)
+        .map(|(env, id, title)| {
+            let context_id = context_id("thread", id);
+            let label = context_label(title, "thread");
+            MenuItem {
+                label: title.clone(),
+                detail: "Thread".into(),
+                insert: format!("[{label}](t3-context://v1/thread/{context_id}) "),
+                action: None,
+                context: Some(
+                    serde_json::json!({ "version": 1, "kind": "thread", "contextId": context_id,
+                "label": label, "environmentId": env, "threadId": id, "title": label }),
+                ),
+            }
+        });
+    let models = models
+        .iter()
+        .filter(|(label, _, slug)| hit(label) || hit(slug))
+        .take(5)
+        .map(|(label, instance, slug)| MenuItem {
+            label: label.clone(),
+            detail: "Model".into(),
+            insert: format!("model:{instance}/{slug} "),
+            action: None,
+            context: None,
+        });
+    threads.chain(models).collect()
+}
+
+/// The message context for the records whose links survived editing, or `None`.
+pub fn message_context(text: &str, records: &[Value]) -> Option<Value> {
+    let kept: Vec<&Value> = records
+        .iter()
+        .filter(|r| {
+            r["contextId"]
+                .as_str()
+                .is_some_and(|id| text.contains(&format!("/{id})")))
+        })
+        .collect();
+    (!kept.is_empty()).then(|| serde_json::json!({ "version": 1, "records": kept }))
 }
 
 /// Built-in commands the web composer handles itself.
@@ -83,6 +192,7 @@ pub fn command_items(trigger: &Trigger, commands: &[Value], skills: &[Value]) ->
                 detail: detail.into(),
                 insert: String::new(),
                 action: Some(name),
+                context: None,
             });
         }
         for c in commands {
@@ -94,6 +204,7 @@ pub fn command_items(trigger: &Trigger, commands: &[Value], skills: &[Value]) ->
                 detail: c["description"].as_str().unwrap_or("").into(),
                 insert: format!("/{name} "),
                 action: None,
+                context: None,
             });
         }
     }
@@ -114,6 +225,7 @@ pub fn command_items(trigger: &Trigger, commands: &[Value], skills: &[Value]) ->
             detail: detail.into(),
             insert: format!("${name} "),
             action: None,
+            context: None,
         });
     }
     items.sort_by_key(|i| !i.label[1..].to_lowercase().starts_with(&q));
@@ -170,6 +282,7 @@ pub fn path_items(entries: &[Value]) -> Vec<MenuItem> {
                 detail: if dir { "Folder".into() } else { String::new() },
                 insert: format!("{} ", file_link(path)),
                 action: None,
+                context: None,
             })
         })
         .collect()
@@ -190,8 +303,9 @@ impl T3App {
         self.menu_items = match &trigger {
             None => Vec::new(),
             Some(t) if t.kind == TriggerKind::Path => {
-                self.search_paths(t.query.clone(), cx);
-                self.menu_items.clone()
+                let mentions = self.mention_items(&t.query);
+                self.search_paths(t.query.clone(), mentions.clone(), cx);
+                mentions
             }
             Some(t) => {
                 let (commands, skills) = self.provider_commands(cx);
@@ -275,7 +389,32 @@ impl T3App {
         .detach();
     }
 
-    fn search_paths(&mut self, query: String, cx: &mut Context<Self>) {
+    /// Other threads in this environment and the picker's models, for an `@` mention.
+    fn mention_items(&self, query: &str) -> Vec<MenuItem> {
+        let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
+        let threads: Vec<(String, String, String)> = self
+            .shell()
+            .threads
+            .iter()
+            .filter(|t| t.is_listed() && self.selected.as_deref() != Some(t.id.as_str()))
+            .map(|t| (env.clone(), t.id.clone(), t.title.clone()))
+            .collect();
+        let models: Vec<(String, String, String)> = self
+            .config()
+            .model_options()
+            .into_iter()
+            .filter_map(|(label, sel)| {
+                Some((
+                    label,
+                    sel["instanceId"].as_str()?.to_owned(),
+                    sel["model"].as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        mention_items(query, &threads, &models)
+    }
+
+    fn search_paths(&mut self, query: String, mentions: Vec<MenuItem>, cx: &mut Context<Self>) {
         let (Some(client), Some(cwd)) = (self.client(), self.thread_cwd()) else {
             return;
         };
@@ -294,12 +433,15 @@ impl T3App {
             if let Ok(Ok(result)) = result {
                 this.update(cx, |app, cx| {
                     if app.menu_generation == generation {
-                        app.menu_items = path_items(
-                            result["entries"]
-                                .as_array()
-                                .map(Vec::as_slice)
-                                .unwrap_or(&[]),
-                        );
+                        app.menu_items = mentions
+                            .into_iter()
+                            .chain(path_items(
+                                result["entries"]
+                                    .as_array()
+                                    .map(Vec::as_slice)
+                                    .unwrap_or(&[]),
+                            ))
+                            .collect();
                         cx.notify();
                     }
                 })
@@ -347,6 +489,7 @@ impl T3App {
             input.set_selected_range(range, cx);
             input.replace(item.insert.clone(), window, cx);
         });
+        self.composer_contexts.extend(item.context);
         match item.action {
             Some("plan") => self.set_interaction_mode("plan", cx),
             Some("default") => self.set_interaction_mode("default", cx),
@@ -398,7 +541,36 @@ impl T3App {
 
 #[cfg(test)]
 mod tests {
-    use super::{TriggerKind, command_items, detect_trigger, file_link, path_items};
+    use super::{
+        TriggerKind, command_items, context_id, detect_trigger, file_link, mention_items,
+        message_context, path_items,
+    };
+
+    #[test]
+    fn mentions_threads_and_models() {
+        let threads = [(
+            "e".to_owned(),
+            "thread:abc".to_owned(),
+            "Fix [login]".to_owned(),
+        )];
+        let models = [("Opus".to_owned(), "claude".to_owned(), "opus".to_owned())];
+        let items = mention_items("", &threads, &models);
+        let id = context_id("thread", "thread:abc");
+        assert_eq!(
+            id, "thread_thread-abc-56f5bc74ea7a077f",
+            "matches the web's toComposerContextId"
+        );
+        assert_eq!(
+            items[0].insert,
+            format!("[Fix login](t3-context://v1/thread/{id}) ")
+        );
+        assert_eq!(items[1].insert, "model:claude/opus ");
+        assert_eq!(mention_items("opu", &threads, &models).len(), 1);
+        let record = items[0].context.clone().unwrap();
+        assert!(message_context(&items[0].insert, std::slice::from_ref(&record)).is_some());
+        assert!(message_context("edited away", &[record]).is_none());
+        assert_eq!(context_id("thread", "abc"), "thread_abc");
+    }
     use serde_json::json;
 
     #[test]

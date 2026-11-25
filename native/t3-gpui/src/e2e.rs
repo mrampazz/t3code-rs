@@ -1286,3 +1286,25 @@ async fn e2e_snooze_presets() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_thread_mention() {
+    use crate::composer_menu::{mention_items, message_context};
+    let env = connect().await;
+    let (first, _) = launch(&env, "multi-turn", "first thread").await;
+    wait_idle(&env, &first).await;
+    let (second, _) = launch(&env, "multi-turn", "second thread").await;
+    wait_idle(&env, &second).await;
+    let server = "e2e".to_owned();
+    let items = mention_items("", &[(server, first.clone(), "first thread".into())], &[]);
+    let text = format!("see {}", items[0].insert);
+    let context = message_context(&text, &[items[0].context.clone().unwrap()]).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    dispatch(
+        &env.client,
+        json!({ "type": "message.dispatch", "messageId": id, "threadId": second, "text": text, "attachments": [],
+            "context": context, "dispatchMode": { "type": "queue_after_active" }, "createdBy": "user", "creationSource": "web" }),
+    )
+    .await;
+}
