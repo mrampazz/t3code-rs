@@ -3,6 +3,7 @@
 //! streams follow the active environment (the one owning the open thread or draft).
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use gpui_kit::*;
 use serde_json::json;
@@ -25,6 +26,8 @@ pub struct Env {
     /// Cuts a reconnect backoff short (window focus, "Retry now").
     pub wake: std::sync::Arc<tokio::sync::Notify>,
     pub error: Option<SharedString>,
+    /// A token renewal is in flight (`renew_session`).
+    pub renewing: bool,
 }
 
 impl Env {
@@ -113,6 +116,7 @@ impl T3App {
                     generation: 1,
                     wake: Default::default(),
                     error: None,
+                    renewing: false,
                 });
                 1
             }
@@ -129,6 +133,12 @@ impl T3App {
             let alive = |app: &T3App| app.env_by(&key).is_some_and(|e| e.generation == generation);
             let mut attempt = 0u32;
             loop {
+                // A renewal while connected replaced the token; reconnect with that one.
+                if let Ok(Some(current)) =
+                    this.update(cx, |app, _| app.env_by(&key).map(|e| e.session.clone()))
+                {
+                    session = current;
+                }
                 let s = session.clone();
                 let result = on_tokio(async move {
                     // A renewable DPoP session renews itself just before its token expires.
@@ -174,6 +184,7 @@ impl T3App {
                             env.shell.omit_subagents = caps["shellThreadFamilies"] == true;
                             let after = env.shell.sequence;
                             app.subscribe_config(&key, &client, cx);
+                            app.renew_session(&key, cx);
                             app.subscribe_terminal_list(&key, &client, cx);
                             app.screen = Screen::Connected;
                             if active && app.selected.is_some() {
@@ -281,6 +292,32 @@ impl T3App {
             }
         })
         .detach();
+    }
+
+    /// Coming back to the app (web: supervisor wakeups): disconnected environments retry now, and
+    /// each live socket must answer `server.probe` in time or it is replaced. A socket that sat
+    /// through a long absence (sleep, a network change) gets little time, since it is often dead.
+    pub(crate) fn wake(&mut self, inactive: Option<Duration>, cx: &mut Context<Self>) {
+        self.wake_disconnected();
+        let keys: Vec<String> = self.envs.iter().map(|e| e.key.clone()).collect();
+        for key in keys {
+            self.renew_session(&key, cx);
+        }
+        let timeout = probe_timeout(inactive);
+        for client in self.envs.iter().filter_map(|e| e.client.clone()) {
+            cx.spawn(async move |_, _| {
+                let probe = client.clone();
+                let answered = on_tokio(async move {
+                    tokio::time::timeout(timeout, probe.call("server.probe", json!({}))).await
+                })
+                .await;
+                if !matches!(answered, Ok(Ok(Ok(_)))) {
+                    // Closing ends the shell stream, and the connect loop reconnects at once.
+                    client.close();
+                }
+            })
+            .detach();
+        }
     }
 
     /// Retries every disconnected environment now instead of after its backoff.
@@ -392,6 +429,78 @@ impl T3App {
     }
 }
 
+/// How long before expiry a connected DPoP session renews its token.
+const RENEW_BEFORE: Duration = Duration::from_secs(60);
+
+impl T3App {
+    /// Keeps a connected DPoP session's token fresh so HTTP calls keep working past its expiry:
+    /// renews when due, else sleeps until it is. Also runs on wakeup, in case sleep outlasted
+    /// the timer. A rejected renewal is left to the connect loop, which asks to pair again.
+    pub(crate) fn renew_session(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(env) = self.env_by_mut(key) else {
+            return;
+        };
+        let Some(expires_at) = env.session.expires_at.filter(|_| env.session.is_dpop()) else {
+            return;
+        };
+        if env.renewing {
+            return;
+        }
+        env.renewing = true;
+        let (key, session, generation) = (key.to_owned(), env.session.clone(), env.generation);
+        let now = jiff::Timestamp::now().as_millisecond();
+        let due = Duration::from_millis(
+            (expires_at - now - RENEW_BEFORE.as_millis() as i64).max(0) as u64,
+        );
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(due).await;
+            // A reconnect may have renewed meanwhile; only the token still in use is renewed.
+            let current = this
+                .update(cx, |app, _| {
+                    app.env_by(&key)
+                        .filter(|e| e.generation == generation)
+                        .is_some_and(|e| e.session.access_token == session.access_token)
+                })
+                .unwrap_or(false);
+            let renewed = if current {
+                Some(on_tokio(async move { auth::renew(&session).await }).await)
+            } else {
+                None
+            };
+            this.update(cx, |app, cx| {
+                let Some(env) = app.env_by_mut(&key) else {
+                    return;
+                };
+                env.renewing = false;
+                match renewed {
+                    Some(Ok(Ok(session))) if env.generation == generation => {
+                        env.session = session;
+                        app.renew_session(&key, cx);
+                    }
+                    // A failed renewal is the connect loop's to report; a stale timer re-arms.
+                    Some(_) => {}
+                    None => app.renew_session(&key, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// Inactive this long, a socket is presumed dead unless it answers at once.
+const LONG_INACTIVE: Duration = Duration::from_secs(600);
+
+/// How long a woken live socket has to answer its probe (`CONNECTION_PROBE_TIMEOUT`,
+/// `LONG_RESUME_PROBE_TIMEOUT`).
+pub fn probe_timeout(inactive: Option<Duration>) -> Duration {
+    if inactive.is_some_and(|d| d >= LONG_INACTIVE) {
+        Duration::from_millis(1500)
+    } else {
+        Duration::from_secs(15)
+    }
+}
+
 /// Rows per page of older settled threads (web: one "Show more" step).
 const OLDER_SETTLED_PAGE: usize = 25;
 
@@ -476,5 +585,24 @@ impl T3App {
             }
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::probe_timeout;
+    use std::time::Duration;
+
+    #[test]
+    fn long_absences_get_a_quick_probe() {
+        assert_eq!(probe_timeout(None), Duration::from_secs(15));
+        assert_eq!(
+            probe_timeout(Some(Duration::from_secs(30))),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            probe_timeout(Some(Duration::from_secs(3600))),
+            Duration::from_millis(1500)
+        );
     }
 }

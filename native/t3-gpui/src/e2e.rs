@@ -1880,3 +1880,15 @@ async fn e2e_slim_shell() {
         "{family}"
     );
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_probe() {
+    let env = connect().await;
+    let answered = tokio::time::timeout(
+        crate::env::probe_timeout(None),
+        env.client.call("server.probe", json!({})),
+    )
+    .await;
+    assert!(matches!(answered, Ok(Ok(_))), "{answered:?}");
+}

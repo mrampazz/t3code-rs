@@ -247,6 +247,8 @@ struct T3App {
     /// The transcript list: one item per timeline row, then the working indicator.
     transcript: ListState,
     queued_edit: Option<queue::QueuedEdit>,
+    /// When the window last lost focus, for wakeup probes.
+    inactive_since: Option<std::time::Instant>,
     /// Stashed prompts, newest first, and whether their list is open.
     stash: Vec<stash::Entry>,
     stash_open: bool,
@@ -287,9 +289,12 @@ impl T3App {
         let _subscriptions = vec![
             cx.observe_window_bounds(window, |this, window, _| this.remember_bounds(window)),
             // Coming back to the app is a good moment to retry (web: supervisor wakeups).
-            cx.observe_window_activation(window, |this, window, _| {
+            cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
-                    this.wake_disconnected();
+                    let inactive = this.inactive_since.take().map(|at| at.elapsed());
+                    this.wake(inactive, cx);
+                } else {
+                    this.inactive_since = Some(std::time::Instant::now());
                 }
             }),
             cx.on_app_quit(|this, cx| {
@@ -446,6 +451,7 @@ impl T3App {
             transcript: ListState::new(0, ListAlignment::Top, px(800.)),
             transcript_rows: Default::default(),
             queued_edit: None,
+            inactive_since: None,
             stash: stash::load(),
             stash_open: false,
             asset_urls: Default::default(),
