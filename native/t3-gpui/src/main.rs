@@ -311,6 +311,7 @@ impl T3App {
             // Coming back to the app is a good moment to retry (web: supervisor wakeups).
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
+                    this.clear_os_notifications(cx);
                     let inactive = this.inactive_since.take().map(|at| at.elapsed());
                     this.wake(inactive, cx);
                 } else {
@@ -479,6 +480,7 @@ impl T3App {
             asset_urls: Default::default(),
             _subscriptions,
         };
+        app.listen_for_notification_clicks(cx);
         for session in auth::load_all() {
             app.connect(session, cx);
         }

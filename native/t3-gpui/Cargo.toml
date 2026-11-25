@@ -24,3 +24,17 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+
+# Dock badge and notification sounds (gpui has system notifications but neither of these).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+  "NSApplication",
+  "NSDockTile",
+  "NSResponder",
+  "NSSound",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+  "NSData",
+  "NSString",
+] }

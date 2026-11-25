@@ -14,6 +14,14 @@ use serde_json::{Value, json};
 use crate::composer::RUNTIME_MODES;
 use crate::{T3App, on_tokio};
 
+/// `NotificationMode` values and the web's labels for them.
+const NOTIFICATION_MODES: [(&str, &str); 4] = [
+    ("off", "Off"),
+    ("notifications", "Notifications only"),
+    ("sound", "Sound only"),
+    ("notifications-and-sound", "Notifications with sound"),
+];
+
 fn prefs_path() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("HOME")?).join(".config/t3-gpui/prefs.json"))
 }
@@ -849,6 +857,27 @@ impl T3App {
                                 save_prefs(&this.prefs);
                                 cx.notify();
                             })),
+                    )
+                })
+                .child({
+                    let mode = self.prefs["notificationMode"].as_str().unwrap_or("off").to_owned();
+                    let label = NOTIFICATION_MODES.iter().find(|(m, _)| *m == mode).map_or("Off", |(_, l)| l);
+                    let app = cx.entity().downgrade();
+                    row().child(div().flex_1().child(t("Background notifications"))).child(
+                        Button::new("notification-mode").small().outline().label(t(label)).dropdown_menu(move |mut menu, _, _| {
+                            for (value, label) in NOTIFICATION_MODES {
+                                let app = app.clone();
+                                menu = menu.item(PopupMenuItem::new(t(label)).checked(value == mode).on_click(move |_, _, cx| {
+                                    app.update(cx, |this, cx| {
+                                        this.prefs["notificationMode"] = json!(value);
+                                        save_prefs(&this.prefs);
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                }));
+                            }
+                            menu
+                        }),
                     )
                 })
                 .child(section("Thread defaults"))
