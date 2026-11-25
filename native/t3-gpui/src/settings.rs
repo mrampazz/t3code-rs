@@ -114,7 +114,7 @@ impl T3App {
         cx.notify();
     }
 
-    fn set_theme(&mut self, light: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn set_theme(&mut self, light: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.prefs["theme"] = json!(if light { "light" } else { "dark" });
         save_prefs(&self.prefs);
         Theme::change(theme_mode(&self.prefs), Some(window), cx);

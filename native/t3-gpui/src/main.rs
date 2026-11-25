@@ -99,6 +99,9 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    /// Thread history for back/forward, as (environment, thread).
+    nav_back: Vec<(String, String)>,
+    nav_forward: Vec<(String, String)>,
     /// The sidebar's Working shelf is unfolded.
     working_open: bool,
     /// Provider banners dismissed this session (`provider_banner::banner_key`, per environment).
@@ -296,6 +299,8 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
             working_open: false,
             dismissed_banners: Default::default(),
             drafts: Default::default(),
@@ -495,6 +500,34 @@ impl T3App {
     }
 
     pub(crate) fn select_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
+        // Back/forward history (`navigation.back` / `navigation.forward`).
+        let current = self.env().map(|e| e.key.clone()).zip(self.selected.clone());
+        if current.as_ref() != Some(&(env.clone(), id.clone())) {
+            if let Some(current) = current {
+                self.nav_back.push(current);
+            }
+            self.nav_forward.clear();
+        }
+        self.open_thread(env, id, cx);
+    }
+
+    /// Steps through thread history without recording the step itself.
+    fn navigate(&mut self, back: bool, cx: &mut Context<Self>) -> bool {
+        let current = self.env().map(|e| e.key.clone()).zip(self.selected.clone());
+        let (from, to) = if back {
+            (&mut self.nav_back, &mut self.nav_forward)
+        } else {
+            (&mut self.nav_forward, &mut self.nav_back)
+        };
+        let Some((env, id)) = from.pop() else {
+            return false;
+        };
+        to.extend(current);
+        self.open_thread(env, id, cx);
+        true
+    }
+
+    fn open_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
         self.adding_project = false;
         let same_env = self.env().is_some_and(|e| e.key == env);
         self.activate(&env, cx);
@@ -976,6 +1009,49 @@ impl T3App {
             }
             "thread.next" | "thread.previous" => {
                 return self.step_thread(command == "thread.next", cx);
+            }
+            "navigation.back" | "navigation.forward" => {
+                return self.navigate(command == "navigation.back", cx);
+            }
+            "rightPanel.toggle" if thread.is_some() => self.toggle_diff(cx),
+            "rightPanel.close" if self.diff_open => self.toggle_diff(cx),
+            "appearance.cycle" => {
+                let light =
+                    settings::theme_mode(&self.prefs) != gpui_kit::component::ThemeMode::Light;
+                self.set_theme(light, window, cx);
+            }
+            "composer.mode" if thread.is_some() || self.draft_project.is_some() => {
+                let (_, mode) = self.current_modes();
+                self.set_interaction_mode(if mode == "plan" { "default" } else { "plan" }, cx);
+            }
+            "chat.newLocal" => {
+                let env = self.env().map(|e| e.key.clone());
+                let project = thread
+                    .as_ref()
+                    .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
+                    .map(|t| t.project_id.clone())
+                    .or_else(|| self.draft_project.clone())
+                    .or_else(|| self.shell().projects.first().map(|p| p.id.clone()));
+                let (Some(env), Some(project)) = (env, project) else {
+                    return false;
+                };
+                self.new_thread(env, project, window, cx);
+                self.draft_env_mode = "local".into();
+            }
+            "pullRequest.copyNumber" => {
+                let Some(number) = thread
+                    .as_ref()
+                    .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
+                    .and_then(|t| {
+                        t.pull_requests
+                            .iter()
+                            .find(|l| l["source"] != "stack-dismissed")
+                    })
+                    .and_then(|l| l["number"].as_u64())
+                else {
+                    return false;
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(format!("#{number}")));
             }
             "thread.pin" | "thread.settle" => {
                 let Some(t) = thread
