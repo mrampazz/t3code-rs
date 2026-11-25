@@ -283,6 +283,33 @@ impl T3App {
         });
     }
 
+    fn edit_branch_prefix(&mut self, current: String, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::WindowExt;
+        use gpui_kit::component::dialog::DialogButtonProps;
+        use gpui_kit::component::input::{Input, InputState};
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(current));
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input) = (app.clone(), input.clone());
+            dialog
+                .title(t("Branch prefix"))
+                .child(Input::new(&input))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t("Save"))
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx: &mut App| {
+                    let prefix = input.read(cx).value().trim().to_string();
+                    app.update(cx, |this, cx| {
+                        this.update_settings(json!({ "patch": { "branchNamePrefix": prefix } }), cx)
+                    })
+                    .ok();
+                    true
+                })
+        });
+    }
+
     fn edit_title_instructions(
         &mut self,
         current: String,
@@ -742,6 +769,39 @@ impl T3App {
                         }))
                     }))
                 }))
+                .child({
+                    let mode = settings["branchNamingMode"].as_str().unwrap_or("static").to_owned();
+                    let label = |m: &str| match m {
+                        "semantic" => t("Semantic prefix"),
+                        "custom" => t("Custom instructions"),
+                        _ => t("Static prefix"),
+                    };
+                    let app = cx.entity().downgrade();
+                    row().child(div().flex_1().child(t("Worktree branch naming"))).child(
+                        Button::new("branch-naming").small().outline().label(label(&mode)).dropdown_menu(move |mut menu, _, _| {
+                            for option in ["static", "semantic", "custom"] {
+                                let app = app.clone();
+                                menu = menu.item(PopupMenuItem::new(label(option)).checked(option == mode).on_click(move |_, _, cx| {
+                                    app.update(cx, |this, cx| this.update_settings(json!({ "patch": { "branchNamingMode": option } }), cx)).ok();
+                                }));
+                            }
+                            menu
+                        }),
+                    )
+                })
+                .child({
+                    let prefix = settings["branchNamePrefix"].as_str().unwrap_or("t3").to_owned();
+                    row()
+                        .child(div().flex_1().child(t("Branch prefix")))
+                        .child(div().text_xs().text_color(c.muted_foreground).child(if prefix.is_empty() { t("No prefix") } else { prefix.clone() }))
+                        .child(
+                            Button::new("branch-prefix")
+                                .small()
+                                .outline()
+                                .label(t("Edit"))
+                                .on_click(cx.listener(move |this, _, window, cx| this.edit_branch_prefix(prefix.clone(), window, cx))),
+                        )
+                })
                 .child(section("Projects"))
                 .child(self.render_project_settings(cx))
                 .child(section("Scheduled tasks"))
