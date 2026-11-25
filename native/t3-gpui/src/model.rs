@@ -348,6 +348,10 @@ pub struct ServerConfig {
     pub available_editors: Vec<String>,
     /// `RemoteOpenTarget`s: SSH hosts this server is reachable at.
     pub remote_open_targets: Vec<Value>,
+    /// `environment.serverVersion`.
+    pub server_version: String,
+    /// `capabilities.serverSelfUpdate`: how the host can update itself, if at all.
+    pub self_update: Option<String>,
     /// `orchestration.forceStopThread` is available.
     pub thread_force_stop: bool,
     /// Scripts save to `projectSettingsOverrides`; older servers use `projectScriptOverrides`.
@@ -371,6 +375,13 @@ impl ServerConfig {
                 let config = &event["config"];
                 self.providers = decode_vec(&config["providers"]);
                 self.thread_stop = config["environment"]["capabilities"]["threadStop"] == true;
+                self.server_version = config["environment"]["serverVersion"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
+                self.self_update = config["environment"]["capabilities"]["serverSelfUpdate"]
+                    .as_str()
+                    .map(str::to_owned);
                 self.thread_force_stop =
                     config["environment"]["capabilities"]["threadForceStop"] == true;
                 self.project_settings_overrides =

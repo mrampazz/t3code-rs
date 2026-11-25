@@ -1572,3 +1572,24 @@ async fn e2e_project_settings() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_server_release_check() {
+    let env = connect().await;
+    let version = env
+        .config
+        .until("server version", |c| {
+            (!c.server_version.is_empty()).then(|| c.server_version.clone())
+        })
+        .await;
+    // Offline machines get ServerNpmReleaseError; either way the request shape is accepted.
+    match env
+        .client
+        .call("server.getNpmRelease", json!({ "spec": "latest" }))
+        .await
+    {
+        Ok(release) => println!("server v{version}, latest {release}"),
+        Err(e) => assert!(e.to_string().contains("ServerNpmReleaseError"), "{e}"),
+    }
+}

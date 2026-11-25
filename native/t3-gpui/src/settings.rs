@@ -127,6 +127,19 @@ pub fn new_instance_id(driver: &str, name: &str, taken: &[String]) -> String {
         .unwrap()
 }
 
+/// Whether release `latest` is newer than `current` (dotted numbers; a pre-release sorts first).
+pub fn is_newer(latest: &str, current: &str) -> bool {
+    let parse = |v: &str| {
+        let (core, pre) = v
+            .trim_start_matches('v')
+            .split_once('-')
+            .map_or((v.trim_start_matches('v'), None), |(c, p)| (c, Some(p)));
+        let nums: Vec<u64> = core.split('.').map(|n| n.parse().unwrap_or(0)).collect();
+        (nums, pre.is_none())
+    };
+    parse(latest) > parse(current)
+}
+
 /// A provider's usage windows as (label, percent used, reset time), most used first.
 pub fn usage_windows(usage: &Value) -> Vec<(String, f64, Option<jiff::Timestamp>)> {
     let mut windows: Vec<_> = usage["windows"]
@@ -308,6 +321,61 @@ impl T3App {
                     true
                 })
         });
+    }
+
+    fn check_server_release(&mut self, env: String, cx: &mut Context<Self>) {
+        let Some(client) = self.env_by(&env).and_then(|e| e.client.clone()) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = on_tokio(async move {
+                client
+                    .call("server.getNpmRelease", json!({ "spec": "latest" }))
+                    .await
+            })
+            .await;
+            this.update(cx, |app, cx| {
+                match result {
+                    Ok(Ok(release)) => {
+                        if let Some(v) = release["version"].as_str() {
+                            app.latest_releases.insert(env, v.to_owned());
+                        }
+                    }
+                    Ok(Err(e)) => app.settings_status = Some(e.to_string().into()),
+                    Err(e) => app.settings_status = Some(e.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Asks the host to update itself; it restarts and the connection resumes on its own.
+    fn update_server(&mut self, env: String, target: String, cx: &mut Context<Self>) {
+        let Some(client) = self.env_by(&env).and_then(|e| e.client.clone()) else {
+            return;
+        };
+        self.settings_status = Some(t("Updating…").into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = on_tokio(async move {
+                client
+                    .call("server.updateServer", json!({ "targetVersion": target }))
+                    .await
+            })
+            .await;
+            this.update(cx, |app, cx| {
+                app.settings_status = match result {
+                    Ok(Ok(_)) => Some(t("The server is restarting with the update.").into()),
+                    Ok(Err(e)) => Some(e.to_string().into()),
+                    Err(e) => Some(e.to_string().into()),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn edit_title_instructions(
@@ -817,6 +885,12 @@ impl T3App {
                         (None, None) => "Connecting…".to_string(),
                     };
                     let (switch_key, remove_key) = (e.key.clone(), e.key.clone());
+                    let version = e.config.server_version.clone();
+                    let latest = self.latest_releases.get(&e.key).cloned();
+                    let newer = latest.clone().filter(|l| is_newer(l, &version));
+                    let can_update = matches!(e.config.self_update.as_deref(), Some("boot-service" | "respawn"));
+                    let (check_key, update_key) = (e.key.clone(), e.key.clone());
+                    let status = if version.is_empty() { status } else { format!("{status} · v{version}") };
                     row()
                         .child(
                             v_flex()
@@ -825,6 +899,28 @@ impl T3App {
                                 .child(e.label())
                                 .child(div().text_xs().text_color(c.muted_foreground).truncate().child(status)),
                         )
+                        .child(match (&newer, can_update) {
+                            (Some(target), true) => {
+                                let target = target.clone();
+                                Button::new(("server-update", i))
+                                    .small()
+                                    .primary()
+                                    .label(format!("{} v{target}", t("Update to")))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.update_server(update_key.clone(), target.clone(), cx)))
+                                    .into_any_element()
+                            }
+                            (Some(target), false) => div()
+                                .text_xs()
+                                .text_color(c.warning)
+                                .child(format!("v{target} {}", t("available")))
+                                .into_any_element(),
+                            (None, _) => Button::new(("server-check", i))
+                                .small()
+                                .ghost()
+                                .label(if latest.is_some() { t("Up to date") } else { t("Check for updates") })
+                                .on_click(cx.listener(move |this, _, _, cx| this.check_server_release(check_key.clone(), cx)))
+                                .into_any_element(),
+                        })
                         .child(
                             Button::new(("server-switch", i))
                                 .small()
@@ -862,7 +958,19 @@ impl T3App {
 
 #[cfg(test)]
 mod tests {
-    use super::{new_instance_id, theme_mode, toggle_instance, usage_windows};
+    use super::{is_newer, new_instance_id, theme_mode, toggle_instance, usage_windows};
+
+    #[test]
+    fn compares_release_versions() {
+        assert!(is_newer("0.9.2", "0.9.1"));
+        assert!(is_newer("1.0.0", "0.10.9"));
+        assert!(!is_newer("0.9.1", "0.9.1"));
+        assert!(
+            is_newer("0.9.1", "0.9.1-nightly.3"),
+            "a release beats its pre-release"
+        );
+        assert!(!is_newer("0.9.0", "0.10.0"));
+    }
 
     #[test]
     fn derives_free_instance_ids() {

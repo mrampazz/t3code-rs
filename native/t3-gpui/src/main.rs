@@ -106,6 +106,8 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    /// Latest npm release per environment, once checked in Settings.
+    latest_releases: std::collections::HashMap<String, String>,
     files: files::FilesState,
     /// Scheduled tasks, streamed while Settings is open.
     scheduled: Vec<serde_json::Value>,
@@ -323,6 +325,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            latest_releases: Default::default(),
             files: Default::default(),
             scheduled: Vec::new(),
             scheduled_sub: None,
