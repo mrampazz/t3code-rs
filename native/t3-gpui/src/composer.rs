@@ -129,3 +129,64 @@ impl T3App {
             })
     }
 }
+
+/// The composer draft's owner: the open thread, or a new thread in a project.
+pub fn draft_key(env: &str, thread: Option<&str>, draft_project: Option<&str>) -> Option<String> {
+    match (thread, draft_project) {
+        (_, Some(project)) => Some(format!("{env}\u{0}new:{project}")),
+        (Some(thread), None) => Some(format!("{env}\u{0}{thread}")),
+        (None, None) => None,
+    }
+}
+
+impl T3App {
+    /// Keeps unsent text per thread: on a switch, the old owner's text is stashed and the new
+    /// owner's is restored. Runs in render, which has the window `set_value` needs.
+    /// shortcut: drafts live in memory (lost on quit) and attachments are not kept per thread.
+    pub(crate) fn sync_composer_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
+        let key = draft_key(
+            &env,
+            self.selected.as_deref(),
+            self.draft_project.as_deref(),
+        );
+        if key == self.composer_owner {
+            return;
+        }
+        let text = self.composer.read(cx).value().to_string();
+        if let Some(old) = self.composer_owner.take() {
+            if text.trim().is_empty() {
+                self.drafts.remove(&old);
+            } else {
+                self.drafts.insert(old, text);
+            }
+        }
+        let restored = key
+            .as_ref()
+            .and_then(|k| self.drafts.remove(k))
+            .unwrap_or_default();
+        self.composer
+            .update(cx, |input, cx| input.set_value(restored, window, cx));
+        self.composer_owner = key;
+    }
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::draft_key;
+
+    #[test]
+    fn keys_drafts_by_owner() {
+        assert_eq!(draft_key("e", Some("t"), None).as_deref(), Some("e\u{0}t"));
+        assert_eq!(
+            draft_key("e", Some("t"), Some("p")).as_deref(),
+            Some("e\u{0}new:p"),
+            "a new-thread draft wins"
+        );
+        assert_ne!(
+            draft_key("a", Some("t"), None),
+            draft_key("b", Some("t"), None)
+        );
+        assert_eq!(draft_key("e", None, None), None);
+    }
+}

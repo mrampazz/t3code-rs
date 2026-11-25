@@ -94,6 +94,9 @@ struct T3App {
     active: Option<String>,
     pair_input: Entity<InputState>,
     composer: Entity<TextareaState>,
+    /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
+    composer_owner: Option<String>,
+    drafts: std::collections::HashMap<String, String>,
     model_picker: Entity<ModelPicker>,
     /// What the picker was last synced to: config revision and selected key.
     picker_synced: (u64, String),
@@ -282,6 +285,8 @@ impl T3App {
             active: None,
             pair_input,
             composer,
+            composer_owner: None,
+            drafts: Default::default(),
             model_picker,
             picker_synced: (u64::MAX, String::new()),
             draft_model: None,
@@ -1892,6 +1897,7 @@ impl T3App {
 impl Render for T3App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_picker(window, cx);
+        self.sync_composer_draft(window, cx);
         let theme = cx.theme().colors;
         let root = h_flex()
             .relative()
