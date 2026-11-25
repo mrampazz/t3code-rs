@@ -1900,6 +1900,7 @@ impl T3App {
                         self.menu_trigger.is_some() && !self.menu_items.is_empty(),
                         |col| col.child(self.render_composer_menu(cx)),
                     )
+                    .children(self.render_stop_banner(cx))
                     .child(self.render_queue(cx))
                     .child(self.render_attachments(cx))
                     .child(

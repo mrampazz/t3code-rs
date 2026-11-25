@@ -60,6 +60,70 @@ pub fn recovery(t: &ThreadShell, now: Timestamp) -> Option<Recovery> {
 }
 
 impl T3App {
+    /// A Stop still in progress; once the agent stops answering, offer Force stop (web:
+    /// `runStopNowItem`).
+    pub(crate) fn render_stop_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (run_id, unresponsive) = self.thread.run_stop()?;
+        let thread_id = self.selected.clone()?;
+        let c = cx.theme().colors;
+        let can_force = unresponsive && self.config().thread_force_stop;
+        Some(
+            h_flex()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .border_1()
+                .border_color(if unresponsive { c.warning } else { c.border })
+                .text_sm()
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .child(if unresponsive {
+                            t("Agent not responding to Stop")
+                        } else {
+                            crate::i18n::tc("Stopping", "run status")
+                        })
+                        .when(unresponsive, |col| {
+                            col.child(div().text_xs().text_color(c.muted_foreground).child(t(
+                                "It may be short on memory. Force stop kills its processes.",
+                            )))
+                        }),
+                )
+                .when(can_force, |row| {
+                    row.child(
+                        Button::new("force-stop")
+                            .xsmall()
+                            .outline()
+                            .label(t("Force stop"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.force_stop(thread_id.clone(), run_id.clone(), cx)
+                            })),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    fn force_stop(&mut self, thread_id: String, run_id: String, cx: &mut Context<Self>) {
+        let Some(client) = self.client() else { return };
+        let payload = json!({ "threadId": thread_id, "runId": run_id });
+        cx.spawn(async move |this, cx| {
+            let result = crate::on_tokio(async move {
+                client.call("orchestration.forceStopThread", payload).await
+            })
+            .await;
+            if !matches!(result, Ok(Ok(_))) {
+                this.update(cx, |app, cx| {
+                    app.error = Some(t("Could not force stop the agent").into());
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn render_limit_banner(
         &self,
         thread: &ThreadShell,

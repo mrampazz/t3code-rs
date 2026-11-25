@@ -309,6 +309,8 @@ pub struct ServerConfig {
     pub available_editors: Vec<String>,
     /// `RemoteOpenTarget`s: SSH hosts this server is reachable at.
     pub remote_open_targets: Vec<Value>,
+    /// `orchestration.forceStopThread` is available.
+    pub thread_force_stop: bool,
     /// Scripts save to `projectSettingsOverrides`; older servers use `projectScriptOverrides`.
     pub project_settings_overrides: bool,
 }
@@ -330,6 +332,8 @@ impl ServerConfig {
                 let config = &event["config"];
                 self.providers = decode_vec(&config["providers"]);
                 self.thread_stop = config["environment"]["capabilities"]["threadStop"] == true;
+                self.thread_force_stop =
+                    config["environment"]["capabilities"]["threadForceStop"] == true;
                 self.project_settings_overrides =
                     config["environment"]["capabilities"]["projectSettingsOverrides"] == true;
                 self.snooze_presets = config["settings"].get("snoozePresets").cloned();
@@ -693,6 +697,34 @@ impl ThreadView {
                 })
             })
             .collect()
+    }
+
+    /// `presentRunStop`: a Stop the provider has not finished, as (run id, unresponsive).
+    pub fn run_stop(&self) -> Option<(String, bool)> {
+        let newest = |keep: &dyn Fn(&Run) -> bool| {
+            self.runs
+                .iter()
+                .filter(|(_, r)| keep(r))
+                .max_by_key(|(_, r)| r.ordinal)
+                .map(|(id, _)| id.clone())
+        };
+        let active = newest(&|r| matches!(r.status.as_str(), "preparing" | "starting" | "running"));
+        let run = active
+            .clone()
+            .or_else(|| newest(&|r| r.status != "queued"))?;
+        let mut request = None;
+        for row in &self.rows {
+            if row.item.run_id.as_deref() != Some(run.as_str()) {
+                continue;
+            }
+            match row.item.kind.as_str() {
+                "run_interrupt_result" => return None,
+                "run_interrupt_request" => request = Some(&row.item),
+                _ => {}
+            }
+        }
+        let unresponsive = !request?.raw["unresponsiveAt"].is_null();
+        (active.is_some() || unresponsive).then_some((run, unresponsive))
     }
 
     /// The newest preparing, starting, running or waiting run (`resolveActiveThreadRun`).
@@ -1119,6 +1151,42 @@ mod tests {
             2,
             "automatic completions stay out of the queue"
         );
+    }
+
+    #[test]
+    fn presents_a_pending_stop() {
+        let mut view = ThreadView::default();
+        let item = |id: &str, kind: &str, extra: serde_json::Value| {
+            let mut v = json!({"visibility": "local", "item": {"id": id, "ordinal": 1, "type": kind, "runId": "r", "nodeId": null}});
+            v["item"]
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            v
+        };
+        let snapshot = |items: serde_json::Value| {
+            json!({"kind": "snapshot", "snapshotSequence": 1, "projection": {
+            "runs": [{"id": "r", "status": "running", "ordinal": 1, "startedAt": "t"}], "attempts": [], "visibleTurnItems": items}})
+        };
+        view.apply(&snapshot(json!([])));
+        assert_eq!(view.run_stop(), None);
+        view.apply(&snapshot(json!([item(
+            "q",
+            "run_interrupt_request",
+            json!({})
+        )])));
+        assert_eq!(view.run_stop(), Some(("r".into(), false)));
+        view.apply(&snapshot(json!([item(
+            "q",
+            "run_interrupt_request",
+            json!({"unresponsiveAt": "t"})
+        )])));
+        assert_eq!(view.run_stop(), Some(("r".into(), true)));
+        view.apply(&snapshot(json!([
+            item("q", "run_interrupt_request", json!({})),
+            item("s", "run_interrupt_result", json!({}))
+        ])));
+        assert_eq!(view.run_stop(), None);
     }
 
     #[test]

@@ -1157,3 +1157,29 @@ async fn e2e_open_file_shape() {
         "{error}"
     );
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_force_stop() {
+    let env = connect().await;
+    let (thread_id, view) = launch_in(&env, "approval", "write a file", "approval-required").await;
+    view.until("approval request", |v| {
+        v.items()
+            .any(|i| i.kind == "approval_request")
+            .then_some(())
+    })
+    .await;
+    let run_id = view
+        .until("active run", |v| v.active_run().map(str::to_owned))
+        .await;
+    let result = env
+        .client
+        .call(
+            "orchestration.forceStopThread",
+            json!({ "threadId": thread_id, "runId": run_id }),
+        )
+        .await
+        .unwrap();
+    println!("force stop: {result}");
+    wait_idle(&env, &thread_id).await;
+}
