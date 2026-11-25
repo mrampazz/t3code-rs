@@ -248,6 +248,9 @@ pub struct Provider {
     pub show_interaction_mode_toggle: Option<bool>,
     #[serde(default)]
     pub slash_commands: Vec<Value>,
+    /// `ServerProviderUsageLimits`: rate-limit windows, when the provider reports them.
+    #[serde(default)]
+    pub usage_limits: Value,
     #[serde(default)]
     pub skills: Vec<Value>,
     /// Per-folder slash commands and skills (`ServerProviderWorkspaceSnapshot`).

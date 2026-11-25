@@ -1,7 +1,7 @@
 //! Settings view (web: `apps/web/src/components/settings/`). Server settings come from the
 //! config stream and change through `server.updateSettings`; appearance is a client preference.
 
-use crate::i18n::t;
+use crate::i18n::{t, tv};
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -38,6 +38,24 @@ pub fn theme_mode(prefs: &Value) -> ThemeMode {
     } else {
         ThemeMode::Dark
     }
+}
+
+/// A provider's usage windows as (label, percent used, reset time), most used first.
+pub fn usage_windows(usage: &Value) -> Vec<(String, f64, Option<jiff::Timestamp>)> {
+    let mut windows: Vec<_> = usage["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|w| {
+            Some((
+                w["label"].as_str()?.to_owned(),
+                w["usedPercent"].as_f64()?.clamp(0., 100.),
+                w["resetsAt"].as_str().and_then(|r| r.parse().ok()),
+            ))
+        })
+        .collect();
+    windows.sort_by(|a, b| b.1.total_cmp(&a.1));
+    windows
 }
 
 /// The `providerInstanceMutation` that flips one instance's `enabled`, keeping its other config.
@@ -139,6 +157,52 @@ impl T3App {
             .collect::<Vec<_>>()
             .join(" · ");
             let settings = settings.clone();
+            let usage = usage_windows(&p.usage_limits);
+            let unavailable = p.usage_limits["unavailable"]["message"]
+                .as_str()
+                .map(str::to_owned);
+            let usage_rows = v_flex()
+                .gap_1()
+                .pb_2()
+                .children(usage.into_iter().map(|(label, used, resets)| {
+                    let color = if used >= 90. {
+                        c.danger
+                    } else if used >= 70. {
+                        c.warning
+                    } else {
+                        c.primary
+                    };
+                    let resets = resets.map(|r| {
+                        let local = r.to_zoned(jiff::tz::TimeZone::system());
+                        tv(
+                            "Resets {resetsAt}",
+                            &[("resetsAt", &local.strftime("%b %-d, %H:%M").to_string())],
+                        )
+                    });
+                    h_flex()
+                        .gap_2()
+                        .text_xs()
+                        .child(div().w(px(140.)).truncate().child(label))
+                        .child(
+                            div()
+                                .w(px(160.))
+                                .h(px(6.))
+                                .rounded_full()
+                                .bg(c.secondary)
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .rounded_full()
+                                        .bg(color)
+                                        .w(relative(used as f32 / 100.)),
+                                ),
+                        )
+                        .child(format!("{used:.0}%"))
+                        .children(resets.map(|r| div().text_color(c.muted_foreground).child(r)))
+                }))
+                .children(
+                    unavailable.map(|m| div().text_xs().text_color(c.muted_foreground).child(m)),
+                );
             providers = providers.child(
                 row()
                     .child(
@@ -173,6 +237,7 @@ impl T3App {
                             })),
                     ),
             );
+            providers = providers.child(usage_rows);
         }
 
         let runtime = settings["defaultRuntimeMode"]
@@ -326,9 +391,22 @@ impl T3App {
 
 #[cfg(test)]
 mod tests {
-    use super::{theme_mode, toggle_instance};
+    use super::{theme_mode, toggle_instance, usage_windows};
     use gpui_kit::component::ThemeMode;
     use serde_json::json;
+
+    #[test]
+    fn orders_usage_windows_by_use() {
+        let usage = json!({"windows": [
+            {"id": "s", "label": "5-hour", "usedPercent": 12.5},
+            {"id": "w", "label": "Weekly", "usedPercent": 140, "resetsAt": "2026-12-01T09:00:00Z"},
+            {"id": "x", "usedPercent": 3}]});
+        let windows = usage_windows(&usage);
+        assert_eq!(windows.len(), 2, "a window without a label is skipped");
+        assert_eq!((windows[0].0.as_str(), windows[0].1), ("Weekly", 100.));
+        assert!(windows[0].2.is_some());
+        assert!(usage_windows(&json!(null)).is_empty());
+    }
 
     #[test]
     fn toggling_keeps_instance_config() {
