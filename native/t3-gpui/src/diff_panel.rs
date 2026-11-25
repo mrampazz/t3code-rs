@@ -1,8 +1,9 @@
 //! Checkpoint diff panel (web: `apps/web/src/components/DiffPanel.tsx`).
 
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::diff::{Diff, DiffFile, DiffState};
+use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
 use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{Value, json};
 
@@ -58,7 +59,13 @@ impl T3App {
                 let result = result.map_err(anyhow::Error::from).and_then(|r| r);
                 match result.map(|value| parse_turn_diff(&value)) {
                     Ok(Ok((files, truncated))) if !files.is_empty() => {
-                        app.diff_state = Some(cx.new(|cx| DiffState::new(files, cx)));
+                        let mode = if app.diff_split {
+                            DiffMode::Split
+                        } else {
+                            DiffMode::Unified
+                        };
+                        app.diff_state =
+                            Some(cx.new(|cx| DiffState::new(files, cx).with_mode(mode)));
                         app.diff_note = truncated.then(|| "The server truncated this diff.".into());
                     }
                     Ok(Ok(_)) => {
@@ -142,8 +149,123 @@ impl T3App {
             .children(
                 self.diff_state
                     .as_ref()
-                    .map(|state| div().flex_1().min_h_0().child(Diff::new(state))),
+                    .map(|state| self.render_diff_files(state, cx)),
             )
+            .children(self.diff_state.as_ref().map(|state| {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(Diff::new(state).render_header_suffix(|file, _, _| {
+                        let path = file.path().clone();
+                        Button::new(SharedString::from(format!("diff-open-{path}")))
+                            .xsmall()
+                            .ghost()
+                            .label(t("Open"))
+                            .tooltip(t("Open in editor"))
+                            .on_click(move |_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(crate::editors::OpenLink { url: path.clone() }),
+                                    cx,
+                                )
+                            })
+                    }))
+            }))
+    }
+
+    /// The changed files (web: `DiffFileTree`); a click scrolls the diff to that file.
+    /// shortcut: a flat list rather than a folder tree.
+    fn render_diff_files(
+        &self,
+        state: &Entity<DiffState>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let c = cx.theme().colors;
+        let files: Vec<(SharedString, usize, usize)> = state
+            .read(cx)
+            .files()
+            .iter()
+            .map(|f| (f.path().clone(), f.additions(), f.deletions()))
+            .collect();
+        let split = self.diff_split;
+        v_flex()
+            .border_b_1()
+            .border_color(c.border)
+            .child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .gap_1()
+                    .child(
+                        Button::new("diff-files-toggle")
+                            .xsmall()
+                            .ghost()
+                            .label(if self.diff_files_open {
+                                t("Hide file tree")
+                            } else {
+                                format!("{} ({})", t("Changes"), files.len())
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.diff_files_open = !this.diff_files_open;
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("diff-layout")
+                            .xsmall()
+                            .ghost()
+                            .label(if split { "Unified" } else { "Split" })
+                            .tooltip(t("Diff layout"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.diff_split = !this.diff_split;
+                                let mode = if this.diff_split {
+                                    DiffMode::Split
+                                } else {
+                                    DiffMode::Unified
+                                };
+                                if let Some(state) = &this.diff_state {
+                                    state.update(cx, |s, cx| s.set_mode(mode, cx));
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(self.diff_files_open, |col| {
+                col.child(
+                    v_flex()
+                        .id("diff-files")
+                        .max_h(px(180.))
+                        .overflow_y_scroll()
+                        .pb_1()
+                        .children(
+                            files
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, (path, adds, dels))| {
+                                    let target = path.clone();
+                                    h_flex()
+                                        .id(("diff-file", i))
+                                        .px_3()
+                                        .gap_2()
+                                        .text_xs()
+                                        .cursor_pointer()
+                                        .hover(|r| r.bg(c.list_hover))
+                                        .child(div().flex_1().truncate().child(path))
+                                        .child(
+                                            div().text_color(c.success).child(format!("+{adds}")),
+                                        )
+                                        .child(div().text_color(c.danger).child(format!("−{dels}")))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(state) = &this.diff_state {
+                                                state.update(cx, |s, cx| {
+                                                    s.scroll_to_file(&target, cx)
+                                                });
+                                            }
+                                        }))
+                                }),
+                        ),
+                )
+            })
     }
 
     fn turn_button(

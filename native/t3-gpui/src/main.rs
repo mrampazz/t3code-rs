@@ -204,6 +204,9 @@ struct T3App {
     diff_generation: u64,
     /// Hide-whitespace toggled this session; `None` follows the setting.
     diff_whitespace: Option<bool>,
+    /// Diff panel: split layout, and the changed-files list unfolded.
+    diff_split: bool,
+    diff_files_open: bool,
     /// Selected option values per `requestId:questionId`.
     input_picks: std::collections::HashMap<String, Vec<String>>,
     transcript_scroll: ScrollHandle,
@@ -365,6 +368,8 @@ impl T3App {
             diff_note: None,
             diff_generation: 0,
             diff_whitespace: None,
+            diff_split: false,
+            diff_files_open: true,
             input_picks: Default::default(),
             transcript_scroll: ScrollHandle::new(),
             _subscriptions,
