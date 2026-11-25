@@ -1974,13 +1974,66 @@ async fn e2e_markdown_host_image() {
     assert_eq!(body, png);
 }
 
+/// More than 25 settled threads, read through a fresh shell subscribed the way the app does:
+/// the newest 25 are rows, the rest a count the sidebar offers to load.
+#[tokio::test]
+#[ignore]
+async fn e2e_settled_shelf() {
+    let env = connect().await;
+    let caps = auth::descriptor(&env.base_url).await["capabilities"].clone();
+    let mut ids = Vec::new();
+    for i in 0..30 {
+        let (id, _) = launch(&env, "multi-turn", &format!("settled {i}")).await;
+        wait_idle(&env, &id).await;
+        dispatch(
+            &env.client,
+            json!({ "type": "thread.settle", "threadId": id }),
+        )
+        .await;
+        ids.push(id);
+    }
+    let mut payload = json!({ "requestCompletionMarker": true });
+    if caps["shellThreadFamilies"] == true {
+        payload["omitIdleSubagents"] = json!(true);
+    }
+    if caps["shellOlderSettled"] == true {
+        payload["omitOlderSettled"] = json!(true);
+    }
+    let fresh = Live::start(
+        &env.client,
+        "orchestration.subscribeShell",
+        payload,
+        Shell::apply,
+    );
+    let (listed, hidden) = fresh
+        .until("snapshot with our threads", |s| {
+            s.synced.then(|| {
+                let now = jiff::Timestamp::now().as_millisecond();
+                let sections = crate::sidebar::sections(&s.threads, now);
+                let listed = sections
+                    .settled
+                    .iter()
+                    .filter(|t| ids.contains(&t.id))
+                    .count();
+                (listed, s.older_remaining())
+            })
+        })
+        .await;
+    println!("caps={caps} listed={listed} hidden={hidden}");
+    assert!(listed > 0, "the newest settled threads must be listed");
+    assert!(
+        listed as u64 + hidden >= 30,
+        "every settled thread is listed or counted"
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn e2e_slim_shell() {
     let env = connect().await;
     let (thread_id, _view) = launch(&env, "showcase", "Show me what you can do").await;
     wait_idle(&env, &thread_id).await;
-    let caps = auth::capabilities(&env.base_url).await;
+    let caps = auth::descriptor(&env.base_url).await["capabilities"].clone();
     assert_eq!(caps["shellOlderSettled"], true);
     let slim = Live::start(
         &env.client,

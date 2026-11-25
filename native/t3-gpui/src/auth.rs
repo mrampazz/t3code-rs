@@ -114,7 +114,8 @@ async fn exchange(
 }
 
 /// The environment descriptor's `capabilities`, or null when it cannot be read.
-pub async fn capabilities(base_url: &str) -> serde_json::Value {
+/// The server's `ExecutionEnvironmentDescriptor` (`environmentId`, `capabilities`, …), or null.
+pub async fn descriptor(base_url: &str) -> serde_json::Value {
     let read = async {
         reqwest::Client::new()
             .get(format!("{base_url}/.well-known/t3/environment"))
@@ -123,9 +124,7 @@ pub async fn capabilities(base_url: &str) -> serde_json::Value {
             .json::<serde_json::Value>()
             .await
     };
-    read.await
-        .map(|d| d["capabilities"].clone())
-        .unwrap_or_default()
+    read.await.unwrap_or_default()
 }
 
 /// Pairs with a DPoP key when the server can renew such sessions (`accessTokenRenewal`),

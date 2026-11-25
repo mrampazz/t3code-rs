@@ -28,6 +28,8 @@ pub struct Env {
     pub error: Option<SharedString>,
     /// A token renewal is in flight (`renew_session`).
     pub renewing: bool,
+    /// The server's `environmentId`: one server reached by two addresses is one environment.
+    pub environment_id: Option<String>,
 }
 
 impl Env {
@@ -117,6 +119,7 @@ impl T3App {
                     wake: Default::default(),
                     error: None,
                     renewing: false,
+                    environment_id: None,
                 });
                 1
             }
@@ -151,8 +154,8 @@ impl T3App {
                     let url = auth::socket_url(&s).await?;
                     let client = RpcClient::connect(&url).await?;
                     // Which shell omissions the server supports (`shellOlderSettled`, ...).
-                    let caps = auth::capabilities(&s.base_url).await;
-                    anyhow::Ok((s, client, caps))
+                    let descriptor = auth::descriptor(&s.base_url).await;
+                    anyhow::Ok((s, client, descriptor))
                 })
                 .await
                 .map_err(anyhow::Error::from)
@@ -169,16 +172,39 @@ impl T3App {
                         return;
                     }
                     Err(e) => e.to_string(),
-                    Ok((renewed, client, caps)) => {
+                    Ok((renewed, client, descriptor)) => {
                         session = renewed.clone();
+                        let caps = descriptor["capabilities"].clone();
+                        let environment_id =
+                            descriptor["environmentId"].as_str().map(str::to_owned);
                         let Ok(Some(after)) = this.update(cx, |app, cx| {
                             if !alive(app) {
                                 client.close();
                                 return None;
                             }
+                            let known: Vec<(&str, Option<&str>)> = app
+                                .envs
+                                .iter()
+                                .map(|e| (e.key.as_str(), e.environment_id.as_deref()))
+                                .collect();
+                            if let Some(drop) = duplicate_to_drop(
+                                &known,
+                                &key,
+                                environment_id.as_deref(),
+                                app.active.as_deref(),
+                            ) {
+                                if drop == key {
+                                    client.close();
+                                }
+                                app.remove_env(&drop, cx);
+                                if drop == key {
+                                    return None;
+                                }
+                            }
                             let active = app.env().is_some_and(|e| e.key == key);
                             let env = app.env_by_mut(&key)?;
                             env.session = renewed;
+                            env.environment_id = environment_id;
                             env.client = Some(client.clone());
                             env.error = None;
                             env.shell.omit_subagents = caps["shellThreadFamilies"] == true;
@@ -502,6 +528,20 @@ pub fn probe_timeout(inactive: Option<Duration>) -> Duration {
 }
 
 /// Rows per page of older settled threads (web: one "Show more" step).
+/// When `key` turns out to be a server already connected under another address (the same
+/// `environmentId`, e.g. `localhost` and `127.0.0.1`), the address to forget: the open one
+/// stays, else the one connected first.
+pub(crate) fn duplicate_to_drop(
+    known: &[(&str, Option<&str>)],
+    key: &str,
+    environment_id: Option<&str>,
+    active: Option<&str>,
+) -> Option<String> {
+    let id = environment_id?;
+    let (other, _) = known.iter().find(|(k, e)| *k != key && *e == Some(id))?;
+    Some(if active == Some(key) { other } else { key }.to_string())
+}
+
 const OLDER_SETTLED_PAGE: usize = 25;
 
 impl T3App {
