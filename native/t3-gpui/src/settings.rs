@@ -965,6 +965,27 @@ impl T3App {
                 .child(self.render_storage(cx))
                 .child(section("Sharing & access"))
                 .child(self.render_access(cx))
+                .child(section("About"))
+                .child(
+                    row()
+                        .child(v_flex().flex_1().child(format!("t3-gpui v{}", env!("CARGO_PKG_VERSION"))).child(
+                            div().text_xs().text_color(c.muted_foreground).child(t("Native client for T3 Code servers")),
+                        ))
+                        .child(
+                            Button::new("about-source")
+                                .small()
+                                .ghost()
+                                .label(t("Source code"))
+                                .on_click(|_, _, cx| cx.open_url("https://github.com/pingdotgg/t3code")),
+                        )
+                        .child(
+                            Button::new("about-license")
+                                .small()
+                                .ghost()
+                                .label(t("License"))
+                                .on_click(|_, _, cx| cx.open_url("https://github.com/pingdotgg/t3code/blob/main/LICENSE")),
+                        ),
+                )
                 .child(section("Servers"))
                 .children(self.envs.iter().enumerate().map(|(i, e)| {
                     let active = e.key == server;
