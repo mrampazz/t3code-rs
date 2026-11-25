@@ -1092,3 +1092,20 @@ async fn e2e_queued_runs() {
     )
     .await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_secret_answer_shape() {
+    let env = connect().await;
+    let item = json!({ "id": "turn-item:missing", "threadId": "thread:missing", "label": "Key" });
+    let answer = crate::secrets::save_answer(&item, &[(String::new(), "value".into())]).unwrap();
+    let error = env
+        .client
+        .call("secrets.answerRequest", answer)
+        .await
+        .expect_err("no such request")
+        .to_string();
+    println!("answer error: {error}");
+    // A decode failure would name the schema; the server reached its own lookup.
+    assert!(error.contains("SecretRequestError"), "{error}");
+}

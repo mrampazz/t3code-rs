@@ -164,6 +164,7 @@ impl T3App {
                     .into_any_element()
             }
             "user_input_request" if is_open(item) => self.render_question(item, &c, cx),
+            "secret_request" => self.render_secret_request(item, &c, cx),
             "system_notice" | "run_interrupt_request" | "run_interrupt_result" => div()
                 .text_xs()
                 .text_color(c.muted_foreground)

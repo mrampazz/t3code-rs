@@ -20,6 +20,7 @@ mod pull_requests;
 mod queue;
 mod rpc;
 pub(crate) mod scripts;
+pub(crate) mod secrets;
 mod settings;
 mod sidebar;
 mod terminal;
