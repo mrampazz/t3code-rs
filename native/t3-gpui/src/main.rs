@@ -36,6 +36,7 @@ pub(crate) mod secrets;
 mod settings;
 mod sidebar;
 pub(crate) mod source_control;
+mod stash;
 mod storage;
 mod terminal;
 mod terminal_drawer;
@@ -244,6 +245,9 @@ struct T3App {
     /// The transcript list: one item per timeline row, then the working indicator.
     transcript: ListState,
     queued_edit: Option<queue::QueuedEdit>,
+    /// Stashed prompts, newest first, and whether their list is open.
+    stash: Vec<stash::Entry>,
+    stash_open: bool,
     /// Signed URLs for host-file images by environment, thread and path; `None` while minting.
     asset_urls: std::cell::RefCell<std::collections::HashMap<String, Option<String>>>,
     /// The thread and row keys the list was last spliced to (`sync_transcript`).
@@ -440,6 +444,8 @@ impl T3App {
             transcript: ListState::new(0, ListAlignment::Top, px(800.)),
             transcript_rows: Default::default(),
             queued_edit: None,
+            stash: stash::load(),
+            stash_open: false,
             asset_urls: Default::default(),
             _subscriptions,
         };
@@ -1152,6 +1158,7 @@ impl T3App {
                 };
                 cx.write_to_clipboard(ClipboardItem::new_string(format!("#{number}")));
             }
+            "composer.stash" => self.stash_prompt(window, cx),
             "thread.editQueuedMessage" if self.composer.read(cx).cursor() == 0 => {
                 return self.edit_queued(None, window, cx);
             }
@@ -1982,6 +1989,7 @@ impl T3App {
                             self.menu_trigger.is_some() && !self.menu_items.is_empty(),
                             |col| col.child(self.render_composer_menu(cx)),
                         )
+                        .child(self.render_stash(cx))
                         .child(self.render_attachments(cx))
                         .child(Textarea::new(&self.composer))
                         .children(
@@ -2216,6 +2224,7 @@ impl T3App {
                     .children(self.render_stop_banner(cx))
                     .child(self.render_guest_messages(cx))
                     .child(self.render_queue(cx))
+                    .child(self.render_stash(cx))
                     .child(self.render_attachments(cx))
                     .child(
                         div()

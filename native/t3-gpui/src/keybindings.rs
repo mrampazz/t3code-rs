@@ -162,6 +162,7 @@ pub fn defaults() -> Vec<Value> {
         rule("]", &["mod", "shift"], "thread.next", None),
         rule("s", &["mod", "shift"], "thread.settle", Some(&not_terminal)),
         rule("p", &["mod", "shift"], "thread.pin", Some(&not_terminal)),
+        rule("s", &["mod"], "composer.stash", Some(&not_terminal)),
         rule(
             "arrowup",
             &["alt"],
