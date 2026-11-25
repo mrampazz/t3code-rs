@@ -94,6 +94,9 @@ pub struct ThreadShell {
     pub last_error_class: Option<String>,
     #[serde(default)]
     pub usage_limit_reset_at: Option<String>,
+    /// `OrchestrationV2AppThreadLineage`.
+    #[serde(default)]
+    pub lineage: Value,
     /// `OrchestrationV2LimitRecovery`, or null.
     #[serde(default)]
     pub limit_recovery: Value,
@@ -125,6 +128,21 @@ impl ThreadShell {
             (Some(_), None) => true,
             _ => false,
         }
+    }
+
+    /// `isListedThreadLineage`: subagents, side chats and workflow steps live inside their
+    /// parent's view, never in thread lists.
+    pub fn is_listed(&self) -> bool {
+        self.lineage["relationshipToParent"] != "subagent"
+            && self.lineage["sideChat"] != true
+            && self.lineage["workflowStep"] != true
+    }
+
+    /// The thread this one was spawned from, for a "back" link.
+    pub fn parent_id(&self) -> Option<&str> {
+        self.lineage["parentThreadId"]
+            .as_str()
+            .filter(|_| !self.is_listed())
     }
 
     pub fn is_running(&self) -> bool {

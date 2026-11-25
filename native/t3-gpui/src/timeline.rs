@@ -216,6 +216,36 @@ impl T3App {
                 .text_color(c.muted_foreground)
                 .child(item.str("message").to_string())
                 .into_any_element(),
+            "subagent" => {
+                let child = item.raw["childThreadId"].as_str().map(str::to_owned);
+                let progress = item.raw["progress"]
+                    .as_str()
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_owned);
+                let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
+                v_flex()
+                    .gap_1()
+                    .child(self.render_tool(item, expanded, &c, mono, cx))
+                    .children(progress.map(|p| {
+                        div()
+                            .pl_4()
+                            .text_xs()
+                            .text_color(c.muted_foreground)
+                            .child(p)
+                    }))
+                    .children(child.map(|child| {
+                        div().pl_4().child(
+                            Button::new(SharedString::from(format!("subagent-open-{}", item.id)))
+                                .xsmall()
+                                .ghost()
+                                .label(t("Open thread"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.select_thread(env.clone(), child.clone(), cx)
+                                })),
+                        )
+                    }))
+                    .into_any_element()
+            }
             _ => self.render_tool(item, expanded, &c, mono, cx),
         }
     }

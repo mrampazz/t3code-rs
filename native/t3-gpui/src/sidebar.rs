@@ -44,7 +44,7 @@ pub fn is_snoozed(t: &ThreadShell, now_ms: i64) -> bool {
 
 pub fn sections(threads: &[ThreadShell], now_ms: i64) -> Sections<'_> {
     let mut out = Sections::default();
-    for t in threads {
+    for t in threads.iter().filter(|t| t.is_listed()) {
         if is_snoozed(t, now_ms) {
             out.snoozed.push(t);
         } else if t.settled_override.as_deref() == Some("settled") {
@@ -463,6 +463,35 @@ mod tests {
             Some(Status::Completed)
         );
         assert_eq!(status(&row(json!({"latestRunId": null}))), None);
+    }
+
+    #[test]
+    fn leaves_subagent_threads_out_of_sections() {
+        let thread = |id: &str, lineage: serde_json::Value| {
+            serde_json::from_value::<ThreadShell>(json!({"id": id, "projectId": "p", "title": id,
+                "updatedAt": "2026-01-01T00:00:00Z", "lineage": lineage}))
+            .unwrap()
+        };
+        let threads = [
+            thread(
+                "parent",
+                json!({"parentThreadId": null, "relationshipToParent": null, "rootThreadId": "parent"}),
+            ),
+            thread(
+                "child",
+                json!({"parentThreadId": "parent", "relationshipToParent": "subagent", "rootThreadId": "parent"}),
+            ),
+            thread(
+                "fork",
+                json!({"parentThreadId": "parent", "relationshipToParent": "fork", "rootThreadId": "parent"}),
+            ),
+        ];
+        let s = sections(&threads, 0);
+        let mut ids: Vec<_> = s.active.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["fork", "parent"]);
+        assert_eq!(threads[1].parent_id(), Some("parent"));
+        assert_eq!(threads[2].parent_id(), None, "a fork is listed on its own");
     }
 
     #[test]

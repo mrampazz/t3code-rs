@@ -486,7 +486,7 @@ impl T3App {
         .detach();
     }
 
-    fn select_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
+    pub(crate) fn select_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
         self.adding_project = false;
         let same_env = self.env().is_some_and(|e| e.key == env);
         self.activate(&env, cx);
@@ -1760,6 +1760,23 @@ impl T3App {
                     .gap_2()
                     .border_b_1()
                     .border_color(theme.border)
+                    .children(thread.parent_id().map(|parent| {
+                        let parent = parent.to_owned();
+                        let env = thread.env.clone();
+                        let title = self
+                            .shell()
+                            .threads
+                            .iter()
+                            .find(|t| t.id == parent)
+                            .map_or_else(|| t("Parent thread"), |t| t.title.clone());
+                        Button::new("open-parent")
+                            .xsmall()
+                            .ghost()
+                            .label(format!("← {title}"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_thread(env.clone(), parent.clone(), cx)
+                            }))
+                    }))
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
