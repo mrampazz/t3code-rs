@@ -1422,3 +1422,56 @@ async fn e2e_issue_links() {
         })
         .await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_files_browse_and_edit() {
+    let env = connect().await;
+    let cwd = env
+        .shell
+        .state
+        .lock()
+        .unwrap()
+        .projects
+        .iter()
+        .find(|p| p.id == env.project_id)
+        .unwrap()
+        .workspace_root
+        .clone();
+    env.client
+        .call(
+            "projects.writeFile",
+            json!({ "cwd": cwd, "relativePath": "dir/hello.txt", "contents": "one" }),
+        )
+        .await
+        .unwrap();
+    let root = env
+        .client
+        .call("projects.listEntries", json!({ "cwd": cwd }))
+        .await
+        .unwrap();
+    let rows = crate::files::sorted_entries(root["entries"].as_array().unwrap());
+    assert!(rows.iter().any(|(p, dir)| p == "dir" && *dir), "{rows:?}");
+    let inner = env
+        .client
+        .call(
+            "projects.listEntries",
+            json!({ "cwd": cwd, "directoryPath": "dir" }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        crate::files::sorted_entries(inner["entries"].as_array().unwrap())
+            .iter()
+            .any(|(p, _)| p == "dir/hello.txt")
+    );
+    let file = env
+        .client
+        .call(
+            "projects.readFile",
+            json!({ "cwd": cwd, "relativePath": "dir/hello.txt" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(file["contents"], "one");
+}

@@ -8,6 +8,7 @@ mod dpop;
 mod drag;
 mod editors;
 mod env;
+mod files;
 mod find;
 mod git;
 mod guest;
@@ -104,6 +105,7 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    files: files::FilesState,
     /// Scheduled tasks, streamed while Settings is open.
     scheduled: Vec<serde_json::Value>,
     scheduled_sub: Option<String>,
@@ -320,6 +322,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            files: Default::default(),
             scheduled: Vec::new(),
             scheduled_sub: None,
             composer_contexts: Vec::new(),
@@ -2057,6 +2060,14 @@ impl T3App {
                             ),
                     )
                     .child(
+                        Button::new("files-toggle")
+                            .small()
+                            .label(t("Files"))
+                            .when(self.files.open, |b| b.primary())
+                            .when(!self.files.open, |b| b.ghost())
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx))),
+                    )
+                    .child(
                         Button::new("diff-toggle")
                             .small()
                             .label(t("Diff"))
@@ -2240,6 +2251,9 @@ impl Render for T3App {
                 })
                 .when(self.diff_open && self.selected.is_some(), |root| {
                     root.child(self.render_diff_panel(cx))
+                })
+                .when(self.files.open && self.selected.is_some(), |root| {
+                    root.child(self.render_files(cx))
                 })
                 .when(self.palette_open, |root| {
                     root.child(self.render_palette(cx))
