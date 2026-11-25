@@ -177,6 +177,7 @@ impl T3App {
             self.subscribe_scheduled(cx);
             self.subscribe_storage(cx);
             self.discover_source_control(cx);
+            self.load_peer_links(cx);
         } else {
             self.release_access();
             self.release_scheduled();
@@ -966,6 +967,9 @@ impl T3App {
                 .child(self.render_source_control(cx))
                 .child(section("Storage"))
                 .child(self.render_storage(cx))
+                .when(settings["linkedEnvironmentsEnabled"] == true, |col| {
+                    col.child(section("Linked environments")).child(self.render_peer_links(cx))
+                })
                 .child(section("Sharing & access"))
                 .child(self.render_access(cx))
                 .child(section("About"))

@@ -1697,3 +1697,33 @@ async fn e2e_source_control_discovery() {
     let lines = crate::source_control::summary(&found);
     assert!(lines.iter().any(|(label, _)| label == "Git"), "{lines:?}");
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_peer_links() {
+    let env = connect().await;
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "linkedEnvironmentsEnabled": true } }),
+        )
+        .await
+        .unwrap();
+    let list = env.client.call("peerLinks.list", json!({})).await.unwrap();
+    assert!(list["links"].is_array());
+    let error = env
+        .client
+        .call("peerLinks.link", json!({ "url": "http://127.0.0.1:9", "pairingCode": "BOGUS", "access": "approval-required" }))
+        .await
+        .expect_err("nothing answers there")
+        .to_string();
+    println!("link: {error}");
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "linkedEnvironmentsEnabled": false } }),
+        )
+        .await
+        .unwrap();
+    assert!(error.contains("did not answer"), "{error}");
+}

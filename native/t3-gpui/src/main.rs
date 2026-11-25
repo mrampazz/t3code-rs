@@ -17,6 +17,7 @@ mod i18n;
 mod issues;
 mod keybindings;
 mod limits;
+mod linked;
 mod menus;
 mod model;
 mod notify;
@@ -108,6 +109,8 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    /// `PeerLinkSummary`s, read when Settings opens.
+    peer_links: Vec<serde_json::Value>,
     /// (tool or host, status) from `server.discoverSourceControl`, read when Settings opens.
     source_control: Vec<(String, String)>,
     storage: storage::StorageState,
@@ -336,6 +339,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            peer_links: Vec::new(),
             source_control: Vec::new(),
             storage: Default::default(),
             latest_releases: Default::default(),
