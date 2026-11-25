@@ -1325,6 +1325,57 @@ async fn e2e_thread_mention() {
 
 #[tokio::test]
 #[ignore]
+async fn e2e_review_comment() {
+    use crate::composer_menu::message_context;
+    use crate::diff_panel::{patch_texts, review_record, review_rows};
+    let env = connect().await;
+    let (thread_id, view) = launch(&env, "showcase", "Show me what you can do").await;
+    wait_idle(&env, &thread_id).await;
+    let latest = view.state.lock().unwrap().latest_turn();
+    let fallback =
+        "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
+    let mut patches = vec![fallback.to_owned()];
+    if let Some(turn) = latest {
+        let diff = env
+            .client
+            .call(
+                "orchestration.getFullThreadDiff",
+                json!({ "threadId": thread_id, "toTurnCount": turn }),
+            )
+            .await
+            .unwrap();
+        patches.splice(0..0, patch_texts(&diff));
+    }
+    let (files, _) = crate::diff_panel::parse_turn_diff(&json!({ "diff": patches[0] })).unwrap();
+    let path = files[0].path().to_string();
+    let rows = review_rows(&patches, &path);
+    println!("commenting on {path} ({} rows)", rows.len());
+    let record = review_record(
+        &rows,
+        (0, 1.min(rows.len() - 1)),
+        &path,
+        ("thread", "All turns"),
+        "why?",
+        "e2e",
+    )
+    .unwrap();
+    let text = format!(
+        "[{}](t3-context://v1/review-comment/{}) ",
+        record["label"].as_str().unwrap(),
+        record["contextId"].as_str().unwrap()
+    );
+    let context = message_context(&text, &[record]).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    dispatch(
+        &env.client,
+        json!({ "type": "message.dispatch", "messageId": id, "threadId": thread_id, "text": text, "attachments": [],
+            "context": context, "dispatchMode": { "type": "queue_after_active" }, "createdBy": "user", "creationSource": "web" }),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
 async fn e2e_steer_follow_up() {
     let env = connect().await;
     let (thread_id, view) = launch_in(&env, "approval", "write a file", "approval-required").await;

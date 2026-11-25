@@ -102,7 +102,7 @@ pub fn context_id(kind: &str, producer: &str) -> String {
 }
 
 /// `sanitizeComposerContextLabel`.
-fn context_label(label: &str, kind: &str) -> String {
+pub fn context_label(label: &str, kind: &str) -> String {
     let cleaned: String = label
         .replace(['[', ']', '\\', '\r', '\n'], " ")
         .split_whitespace()

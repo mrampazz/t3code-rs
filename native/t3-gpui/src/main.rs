@@ -261,6 +261,7 @@ struct T3App {
     /// Diff panel: split layout, and the changed-files list unfolded.
     diff_split: bool,
     diff_files_open: bool,
+    diff_review: diff_panel::Review,
     /// Selected option values per `requestId:questionId`.
     input_picks: std::collections::HashMap<String, Vec<String>>,
     /// The transcript list: one item per timeline row, then the working indicator.
@@ -467,6 +468,7 @@ impl T3App {
             diff_whitespace: None,
             diff_split: false,
             diff_files_open: true,
+            diff_review: Default::default(),
             input_picks: Default::default(),
             transcript: ListState::new(0, ListAlignment::Top, px(800.)),
             transcript_rows: Default::default(),
