@@ -77,6 +77,23 @@ where
     RUNTIME.get().unwrap().spawn(f)
 }
 
+/// Going somewhere new: where the app was goes on the back stack and forward is forgotten,
+/// unless it is already there.
+fn record(back: &mut Vec<Route>, forward: &mut Vec<Route>, current: Option<Route>, to: &Route) {
+    if current.as_ref() != Some(to) {
+        back.extend(current);
+        forward.clear();
+    }
+}
+
+/// A place back/forward returns to (web routes `/$env/$thread`, `/draft`, `/settings`).
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum Route {
+    Thread(String, String),
+    Draft(String, String),
+    Settings,
+}
+
 #[derive(Clone)]
 struct ModelOption {
     title: SharedString,
@@ -132,8 +149,8 @@ struct T3App {
     folded_projects: std::collections::HashSet<String>,
     notifier: notify::Notifier,
     /// Thread history for back/forward, as (environment, thread).
-    nav_back: Vec<(String, String)>,
-    nav_forward: Vec<(String, String)>,
+    nav_back: Vec<Route>,
+    nav_forward: Vec<Route>,
     /// The sidebar's Working shelf is unfolded.
     working_open: bool,
     /// Provider banners dismissed this session (`provider_banner::banner_key`, per environment).
@@ -498,6 +515,17 @@ impl T3App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.record_route(&Route::Draft(env.clone(), project_id.clone()));
+        self.open_draft(env, project_id, window, cx);
+    }
+
+    fn open_draft(
+        &mut self,
+        env: String,
+        project_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.activate(&env, cx);
         if let (Some(client), Some(sub)) = (self.client(), self.thread_sub.take()) {
             client.cancel(&sub);
@@ -507,7 +535,7 @@ impl T3App {
         self.adding_project = false;
         self.draft_project = Some(project_id);
         self.draft_model = None;
-        self.settings_open = false;
+        self.set_settings_open(false, cx);
         self.release_access();
         self.draft_runtime_mode = self.config().settings["defaultRuntimeMode"]
             .as_str()
@@ -584,30 +612,50 @@ impl T3App {
 
     pub(crate) fn select_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
         self.load_family(&env, &id, cx);
-        // Back/forward history (`navigation.back` / `navigation.forward`).
-        let current = self.env().map(|e| e.key.clone()).zip(self.selected.clone());
-        if current.as_ref() != Some(&(env.clone(), id.clone())) {
-            if let Some(current) = current {
-                self.nav_back.push(current);
-            }
-            self.nav_forward.clear();
-        }
+        self.record_route(&Route::Thread(env.clone(), id.clone()));
         self.open_thread(env, id, cx);
     }
 
-    /// Steps through thread history without recording the step itself.
-    fn navigate(&mut self, back: bool, cx: &mut Context<Self>) -> bool {
-        let current = self.env().map(|e| e.key.clone()).zip(self.selected.clone());
+    /// Where the app is, as the web's router would name it.
+    fn route(&self) -> Option<Route> {
+        if self.settings_open {
+            return Some(Route::Settings);
+        }
+        let env = self.env()?.key.clone();
+        match (&self.draft_project, &self.selected) {
+            (Some(project), _) => Some(Route::Draft(env, project.clone())),
+            (None, Some(id)) => Some(Route::Thread(env, id.clone())),
+            (None, None) => None,
+        }
+    }
+
+    /// Back/forward history (`navigation.back` / `navigation.forward`): leaving for `to`
+    /// remembers where the app was.
+    pub(crate) fn record_route(&mut self, to: &Route) {
+        let current = self.route();
+        record(&mut self.nav_back, &mut self.nav_forward, current, to);
+    }
+
+    /// Steps through history without recording the step itself.
+    fn navigate(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let current = self.route();
         let (from, to) = if back {
             (&mut self.nav_back, &mut self.nav_forward)
         } else {
             (&mut self.nav_forward, &mut self.nav_back)
         };
-        let Some((env, id)) = from.pop() else {
+        let Some(route) = from.pop() else {
             return false;
         };
         to.extend(current);
-        self.open_thread(env, id, cx);
+        if route != Route::Settings && self.settings_open {
+            self.set_settings_open(false, cx);
+        }
+        match route {
+            Route::Thread(env, id) => self.open_thread(env, id, cx),
+            Route::Draft(env, project) => self.open_draft(env, project, window, cx),
+            Route::Settings => self.set_settings_open(true, cx),
+        }
         true
     }
 
@@ -620,7 +668,7 @@ impl T3App {
             self.visit_sent_at = None;
         }
         self.draft_project = None;
-        self.settings_open = false;
+        self.set_settings_open(false, cx);
         self.release_access();
         if !same_env || self.selected.as_deref() != Some(id.as_str()) {
             self.thread = ThreadView::default();
@@ -1119,7 +1167,7 @@ impl T3App {
                 return self.step_thread(command == "thread.next", cx);
             }
             "navigation.back" | "navigation.forward" => {
-                return self.navigate(command == "navigation.back", cx);
+                return self.navigate(command == "navigation.back", window, cx);
             }
             "rightPanel.toggle" if thread.is_some() => self.toggle_diff(cx),
             "rightPanel.close" if self.diff_open => self.toggle_diff(cx),
@@ -2444,6 +2492,28 @@ mod e2e;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn records_routes_once() {
+        use super::{Route, record};
+        let thread = Route::Thread("e".into(), "t".into());
+        let (mut back, mut forward) = (vec![], vec![Route::Settings]);
+        record(&mut back, &mut forward, Some(thread.clone()), &thread);
+        assert!(
+            back.is_empty() && forward.len() == 1,
+            "staying put is no step"
+        );
+        record(
+            &mut back,
+            &mut forward,
+            Some(thread.clone()),
+            &Route::Settings,
+        );
+        assert_eq!(back, [thread]);
+        assert!(forward.is_empty(), "a new step forgets forward");
+        record(&mut back, &mut forward, None, &Route::Settings);
+        assert_eq!(back.len(), 1, "nowhere is not a place");
+    }
+
     #[test]
     fn backoff_is_bounded() {
         for attempt in 0..20 {

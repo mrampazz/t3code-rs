@@ -170,7 +170,17 @@ pub fn toggle_instance(settings: &Value, instance_id: &str, driver: &str, enable
 
 impl T3App {
     pub(crate) fn toggle_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings_open = !self.settings_open;
+        if !self.settings_open {
+            self.record_route(&crate::Route::Settings);
+        }
+        self.set_settings_open(!self.settings_open, cx);
+    }
+
+    pub(crate) fn set_settings_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if open == self.settings_open {
+            return;
+        }
+        self.settings_open = open;
         self.new_pairing_url = None;
         if self.settings_open {
             self.subscribe_access(cx);
