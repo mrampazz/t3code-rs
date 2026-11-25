@@ -184,6 +184,7 @@ impl T3App {
         self.new_pairing_url = None;
         if self.settings_open {
             self.subscribe_access(cx);
+            self.subscribe_provider_setup(cx);
             self.subscribe_scheduled(cx);
             self.subscribe_storage(cx);
             self.discover_source_control(cx);
@@ -191,6 +192,7 @@ impl T3App {
             self.subscribe_workflows(cx);
         } else {
             self.release_access();
+            self.release_provider_setup();
             self.release_scheduled();
             self.release_storage();
             self.release_workflows();
@@ -635,7 +637,9 @@ impl T3App {
                             })),
                     ),
             );
-            providers = providers.child(usage_rows);
+            providers = providers
+                .child(usage_rows)
+                .child(self.render_provider_setup(p, cx));
         }
         let mut drivers: Vec<String> = self
             .config()
@@ -1061,9 +1065,11 @@ impl T3App {
                                 .when(!active, |b| b.ghost())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.release_access();
+                                    this.release_provider_setup();
                                     this.activate(&switch_key, cx);
                                     this.new_pairing_url = None;
                                     this.subscribe_access(cx);
+                                    this.subscribe_provider_setup(cx);
                                     cx.notify();
                                 })),
                         )

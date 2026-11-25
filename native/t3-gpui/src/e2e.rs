@@ -1548,6 +1548,88 @@ async fn e2e_provider_instance_add_remove() {
 
 #[tokio::test]
 #[ignore]
+async fn e2e_provider_setup() {
+    let env = connect().await;
+    let (signable, replay) = {
+        let c = env.config.state.lock().unwrap();
+        let signable: Vec<String> = c
+            .providers
+            .iter()
+            .filter(|p| crate::provider_setup::has_account(&c.settings, p))
+            .map(|p| p.instance_id.clone())
+            .collect();
+        let replay = c
+            .providers
+            .iter()
+            .find(|p| p.instance_id == REPLAY)
+            .unwrap()
+            .clone();
+        (signable, replay)
+    };
+    for id in &signable {
+        let (_, mut rx) = env
+            .client
+            .request("provider.auth.subscribe", json!({ "instanceId": id }));
+        let state = tokio::time::timeout(WAIT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(state["phase"].is_string(), "{id}: {state}");
+        println!(
+            "{id}: {} {:?}",
+            state["phase"],
+            crate::provider_setup::auth_url(&state)
+        );
+    }
+    let slug = replay.models[0].slug.clone();
+    let hide = |hidden: bool| json!({ "patch": { "setModelsHidden": [{ "provider": REPLAY, "model": slug, "hidden": hidden }] } });
+    env.client
+        .call("server.updateSettings", hide(true))
+        .await
+        .unwrap();
+    env.config
+        .until("model hidden", |c| {
+            let p = c.providers.iter().find(|p| p.instance_id == REPLAY)?;
+            (!c.visible_models(p).iter().any(|m| m.slug == slug)).then_some(())
+        })
+        .await;
+    env.client
+        .call("server.updateSettings", hide(false))
+        .await
+        .unwrap();
+    let settings = env.config.state.lock().unwrap().settings.clone();
+    let add = crate::provider_setup::custom_models_mutation(&settings, &replay, "e2e-custom", true);
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": {}, "providerInstanceMutation": add }),
+        )
+        .await
+        .unwrap();
+    env.config
+        .until("custom model listed", |c| {
+            let p = c.providers.iter().find(|p| p.instance_id == REPLAY)?;
+            p.models
+                .iter()
+                .any(|m| m.slug == "e2e-custom" && m.is_custom)
+                .then_some(())
+        })
+        .await;
+    let settings = env.config.state.lock().unwrap().settings.clone();
+    let remove =
+        crate::provider_setup::custom_models_mutation(&settings, &replay, "e2e-custom", false);
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": {}, "providerInstanceMutation": remove }),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore]
 async fn e2e_project_settings() {
     use crate::project_settings::update;
     let env = connect().await;

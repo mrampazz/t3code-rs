@@ -28,6 +28,7 @@ mod plans;
 mod project_settings;
 mod projects;
 mod provider_banner;
+mod provider_setup;
 mod pull_requests;
 mod queue;
 mod rpc;
@@ -240,6 +241,7 @@ struct T3App {
     settings_open: bool,
     settings_status: Option<SharedString>,
     access: access::Access,
+    provider_setup: provider_setup::ProviderSetup,
     access_sub: Option<String>,
     /// The pairing link just created in Settings, to copy.
     new_pairing_url: Option<SharedString>,
@@ -452,6 +454,7 @@ impl T3App {
             settings_open: false,
             settings_status: None,
             access: Default::default(),
+            provider_setup: Default::default(),
             access_sub: None,
             new_pairing_url: None,
             prefs: settings::load_prefs(),

@@ -407,6 +407,9 @@ pub struct Provider {
     pub workspace_snapshots: Vec<Value>,
     #[serde(default)]
     pub models: Vec<ProviderModel>,
+    /// `{canAuthenticate, canInstall, documentationUrl?}`; absent on older servers.
+    #[serde(default)]
+    pub setup: Value,
 }
 
 impl Provider {
@@ -431,6 +434,8 @@ pub struct ProviderModel {
     pub name: String,
     #[serde(default)]
     pub is_default: bool,
+    #[serde(default)]
+    pub is_custom: bool,
 }
 
 /// `subscribeServerConfig` projection (`packages/contracts/src/server.ts`).
@@ -545,13 +550,39 @@ impl ServerConfig {
             .iter()
             .filter(|p| p.picker_ready())
             .flat_map(|p| {
-                p.models.iter().map(move |m| {
+                self.visible_models(p).into_iter().map(move |m| {
                     let selection =
                         serde_json::json!({ "instanceId": p.instance_id, "model": m.slug });
                     (self.label(&selection), selection)
                 })
             })
             .collect()
+    }
+
+    /// `applyInstanceModelPreferences`: hidden built-in models dropped, `modelOrder` first.
+    pub fn visible_models<'a>(&self, p: &'a Provider) -> Vec<&'a ProviderModel> {
+        let prefs = &self.settings["providerModelPreferences"][&p.instance_id];
+        let listed = |key: &str| -> Vec<&str> {
+            prefs[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect()
+        };
+        let (hidden, order) = (listed("hiddenModels"), listed("modelOrder"));
+        let mut models: Vec<_> = p
+            .models
+            .iter()
+            .filter(|m| m.is_custom || !hidden.contains(&m.slug.as_str()))
+            .collect();
+        models.sort_by_key(|m| {
+            order
+                .iter()
+                .position(|s| *s == m.slug)
+                .unwrap_or(usize::MAX)
+        });
+        models
     }
 
     /// "Provider · Model" with display names when this server knows them.
@@ -1173,6 +1204,27 @@ mod tests {
 
     fn thread(id: &str, at: &str) -> Value {
         json!({"id": id, "projectId": "p", "title": id, "status": "idle", "updatedAt": at, "extra": 1})
+    }
+
+    #[test]
+    fn picker_drops_hidden_models_and_follows_saved_order() {
+        let p: Provider = serde_json::from_value(json!({"instanceId": "codex", "models": [
+            {"slug": "a", "name": "A"}, {"slug": "b", "name": "B"},
+            {"slug": "c", "name": "C"}, {"slug": "x", "name": "X", "isCustom": true}
+        ]}))
+        .unwrap();
+        let config = ServerConfig {
+            settings: json!({"providerModelPreferences": {"codex": {
+                "hiddenModels": ["a", "x"], "modelOrder": ["c"]
+            }}}),
+            ..Default::default()
+        };
+        let slugs: Vec<_> = config
+            .visible_models(&p)
+            .iter()
+            .map(|m| m.slug.as_str())
+            .collect();
+        assert_eq!(slugs, ["c", "b", "x"]);
     }
 
     #[test]
