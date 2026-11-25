@@ -1475,3 +1475,59 @@ async fn e2e_files_browse_and_edit() {
         .unwrap();
     assert_eq!(file["contents"], "one");
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_provider_instance_add_remove() {
+    let env = connect().await;
+    let driver = env
+        .config
+        .state
+        .lock()
+        .unwrap()
+        .providers
+        .iter()
+        .find(|p| p.instance_id == REPLAY)
+        .unwrap()
+        .driver
+        .clone();
+    let taken: Vec<String> = env
+        .config
+        .state
+        .lock()
+        .unwrap()
+        .providers
+        .iter()
+        .map(|p| p.instance_id.clone())
+        .collect();
+    let id = crate::settings::new_instance_id(&driver, "E2E copy", &taken);
+    let create = json!({ "operation": "create", "instanceId": id, "instance": { "driver": driver, "displayName": "E2E copy", "enabled": true } });
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": {}, "providerInstanceMutation": create }),
+        )
+        .await
+        .unwrap();
+    env.config
+        .until("instance listed", |c| {
+            c.providers
+                .iter()
+                .any(|p| p.instance_id == id)
+                .then_some(())
+        })
+        .await;
+    let remove = json!({ "operation": "remove", "instanceId": id });
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": {}, "providerInstanceMutation": remove }),
+        )
+        .await
+        .unwrap();
+    env.config
+        .until("instance removed", |c| {
+            (!c.providers.iter().any(|p| p.instance_id == id)).then_some(())
+        })
+        .await;
+}

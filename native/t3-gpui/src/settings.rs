@@ -90,6 +90,43 @@ const SERVER_TOGGLES: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// A free instance id for a new instance of `driver` named `name`: `driver-name` slugged to the
+/// contract's `^[a-zA-Z][a-zA-Z0-9_-]*$`, suffixed until unused.
+pub fn new_instance_id(driver: &str, name: &str, taken: &[String]) -> String {
+    let slug: String = format!("{driver}-{name}")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+        .chars()
+        .take(56)
+        .collect();
+    let base = if slug.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        slug
+    } else {
+        format!("p-{slug}")
+    };
+    (1..)
+        .map(|n| {
+            if n == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            }
+        })
+        .find(|id| !taken.contains(id))
+        .unwrap()
+}
+
 /// A provider's usage windows as (label, percent used, reset time), most used first.
 pub fn usage_windows(usage: &Value) -> Vec<(String, f64, Option<jiff::Timestamp>)> {
     let mut windows: Vec<_> = usage["windows"]
@@ -191,6 +228,54 @@ impl T3App {
                     next.push(preset);
                     app.update(cx, |this, cx| {
                         this.update_settings(json!({ "patch": { "snoozePresets": next } }), cx)
+                    })
+                    .ok();
+                    true
+                })
+        });
+    }
+
+    fn add_provider_instance(
+        &mut self,
+        driver: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::WindowExt;
+        use gpui_kit::component::dialog::DialogButtonProps;
+        use gpui_kit::component::input::{Input, InputState};
+        let taken: Vec<String> = self
+            .config()
+            .providers
+            .iter()
+            .map(|p| p.instance_id.clone())
+            .collect();
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t("Name")));
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input, driver, taken) =
+                (app.clone(), input.clone(), driver.clone(), taken.clone());
+            dialog
+                .title(format!("{} · {driver}", t("Add provider instance")))
+                .child(Input::new(&input))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t("Add"))
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx: &mut App| {
+                    let name = input.read(cx).value().trim().to_string();
+                    if name.is_empty() {
+                        return false;
+                    }
+                    let id = new_instance_id(&driver, &name, &taken);
+                    let mutation = json!({ "operation": "create", "instanceId": id,
+                        "instance": { "driver": driver, "displayName": name, "enabled": true } });
+                    app.update(cx, |this, cx| {
+                        this.update_settings(
+                            json!({ "patch": {}, "providerInstanceMutation": mutation }),
+                            cx,
+                        )
                     })
                     .ok();
                     true
@@ -348,6 +433,20 @@ impl T3App {
                                     .child(detail),
                             ),
                     )
+                    .when(p.instance_id != p.driver, |row| {
+                        let id = p.instance_id.clone();
+                        row.child(
+                            Button::new(SharedString::from(format!("provider-remove-{id}")))
+                                .small()
+                                .ghost()
+                                .label("✕")
+                                .tooltip(t("Remove"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let mutation = json!({ "operation": "remove", "instanceId": id });
+                                    this.update_settings(json!({ "patch": {}, "providerInstanceMutation": mutation }), cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new(SharedString::from(format!("provider-{}", p.instance_id)))
                             .small()
@@ -365,6 +464,37 @@ impl T3App {
             );
             providers = providers.child(usage_rows);
         }
+        let mut drivers: Vec<String> = self
+            .config()
+            .providers
+            .iter()
+            .map(|p| p.driver.clone())
+            .collect();
+        drivers.sort();
+        drivers.dedup();
+        let add_app = cx.entity().downgrade();
+        providers = providers.child(
+            div().py_2().child(
+                Button::new("provider-add")
+                    .small()
+                    .outline()
+                    .label(t("Add provider instance"))
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for driver in &drivers {
+                            let (app, driver) = (add_app.clone(), driver.clone());
+                            menu = menu.item(PopupMenuItem::new(driver.clone()).on_click(
+                                move |_, window, cx| {
+                                    app.update(cx, |this, cx| {
+                                        this.add_provider_instance(driver.clone(), window, cx)
+                                    })
+                                    .ok();
+                                },
+                            ));
+                        }
+                        menu
+                    }),
+            ),
+        );
 
         let runtime = settings["defaultRuntimeMode"]
             .as_str()
@@ -670,7 +800,20 @@ impl T3App {
 
 #[cfg(test)]
 mod tests {
-    use super::{theme_mode, toggle_instance, usage_windows};
+    use super::{new_instance_id, theme_mode, toggle_instance, usage_windows};
+
+    #[test]
+    fn derives_free_instance_ids() {
+        assert_eq!(
+            new_instance_id("codex", "Work Account", &[]),
+            "codex-work-account"
+        );
+        assert_eq!(
+            new_instance_id("codex", "Work", &["codex-work".into()]),
+            "codex-work-2"
+        );
+        assert_eq!(new_instance_id("9x", "a", &[]), "p-9x-a");
+    }
     use gpui_kit::component::ThemeMode;
     use serde_json::json;
 
