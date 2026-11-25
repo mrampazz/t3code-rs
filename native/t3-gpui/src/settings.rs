@@ -26,7 +26,7 @@ pub fn load_prefs() -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-fn save_prefs(prefs: &Value) {
+pub(crate) fn save_prefs(prefs: &Value) {
     let Some(path) = prefs_path() else { return };
     let _ = std::fs::create_dir_all(path.parent().unwrap());
     let _ = std::fs::write(path, serde_json::to_vec_pretty(prefs).unwrap());

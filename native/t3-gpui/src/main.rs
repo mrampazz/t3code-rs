@@ -6,6 +6,7 @@ mod composer_menu;
 mod diff_panel;
 mod dpop;
 mod drag;
+mod editors;
 mod env;
 mod find;
 mod git;
@@ -918,6 +919,7 @@ impl T3App {
                 self.new_thread(env, project, window, cx);
             }
             "chat.find" if thread.is_some() => self.open_find(window, cx),
+            "editor.openFavorite" if thread.is_some() => self.open_in_editor(None, cx),
             "terminal.new" if self.term.is_some() => self.new_terminal(cx),
             "terminal.close" if self.term.is_some() => {
                 let id = self.term_id.clone();
@@ -1703,6 +1705,7 @@ impl T3App {
                     )
                     .child(div().flex_1())
                     .child(self.render_pull_requests(cx))
+                    .child(self.render_open_in(cx))
                     .child(self.render_git_toolbar(cx))
                     .child(
                         Button::new("terminal-toggle")

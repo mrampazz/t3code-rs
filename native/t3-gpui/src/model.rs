@@ -282,6 +282,10 @@ pub struct ServerConfig {
     pub settings: Value,
     /// `ResolvedKeybindingsConfig`; empty until the snapshot arrives.
     pub keybindings: Vec<Value>,
+    /// `EditorId`s the server can launch.
+    pub available_editors: Vec<String>,
+    /// `RemoteOpenTarget`s: SSH hosts this server is reachable at.
+    pub remote_open_targets: Vec<Value>,
 }
 
 /// Picker key for a model selection: provider instance and model slug.
@@ -307,6 +311,8 @@ impl ServerConfig {
                     .as_array()
                     .cloned()
                     .unwrap_or_default();
+                self.available_editors = decode_vec(&config["availableEditors"]);
+                self.remote_open_targets = decode_vec(&config["remoteOpenTargets"]);
             }
             Some("providerStatuses") => self.providers = decode_vec(&event["payload"]["providers"]),
             Some("keybindingsUpdated") => {

@@ -979,3 +979,18 @@ async fn e2e_dpop_pair_and_renew() {
     );
     connect_once(renewed).await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_available_editors() {
+    let env = connect().await;
+    // The file manager needs no CLI, so every server on a desktop OS offers it.
+    let editors = env
+        .config
+        .until("available editors", |c| {
+            (!c.available_editors.is_empty()).then(|| c.available_editors.clone())
+        })
+        .await;
+    println!("available editors: {editors:?}");
+    assert!(editors.iter().any(|e| e == "file-manager"));
+}

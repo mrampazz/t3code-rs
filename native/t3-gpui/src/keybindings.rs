@@ -88,6 +88,7 @@ pub fn defaults() -> Vec<Value> {
         rule("k", &["mod"], "commandPalette.toggle", Some(&not_terminal)),
         rule("n", &["mod"], "chat.new", Some(&not_terminal)),
         rule("f", &["mod"], "chat.find", Some(&not_terminal)),
+        rule("o", &["mod"], "editor.openFavorite", None),
         rule("[", &["mod", "shift"], "thread.previous", None),
         rule("]", &["mod", "shift"], "thread.next", None),
         rule("s", &["mod", "shift"], "thread.settle", Some(&not_terminal)),
