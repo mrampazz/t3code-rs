@@ -16,6 +16,7 @@ mod i18n;
 mod keybindings;
 mod limits;
 mod model;
+mod notify;
 mod palette;
 mod plans;
 mod projects;
@@ -100,6 +101,7 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    notifier: notify::Notifier,
     /// Thread history for back/forward, as (environment, thread).
     nav_back: Vec<(String, String)>,
     nav_forward: Vec<(String, String)>,
@@ -300,6 +302,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            notifier: Default::default(),
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             working_open: false,
@@ -2080,6 +2083,7 @@ impl Render for T3App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_picker(window, cx);
         self.sync_composer_draft(window, cx);
+        self.flush_toasts(window, cx);
         let theme = cx.theme().colors;
         let root = h_flex()
             .relative()
@@ -2090,6 +2094,9 @@ impl Render for T3App {
             .on_action(
                 cx.listener(|this, link: &editors::OpenLink, _, cx| this.open_link(&link.url, cx)),
             )
+            .on_action(cx.listener(|this, open: &notify::OpenThread, _, cx| {
+                this.select_thread(open.env.to_string(), open.id.to_string(), cx)
+            }))
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 if matches!(this.screen, Screen::Connected) && this.run_shortcut(e, window, cx) {
                     cx.stop_propagation();

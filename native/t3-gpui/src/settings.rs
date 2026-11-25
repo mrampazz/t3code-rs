@@ -350,6 +350,21 @@ impl T3App {
                             })),
                     )
                 })
+                .child({
+                    let on = self.prefs["inAppNotifications"] != false;
+                    row().child(div().flex_1().child(t("In-app notifications"))).child(
+                        Button::new("in-app-notifications")
+                            .small()
+                            .label(if on { t("On") } else { t("Off") })
+                            .when(on, |b| b.primary())
+                            .when(!on, |b| b.outline())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.prefs["inAppNotifications"] = json!(!on);
+                                save_prefs(&this.prefs);
+                                cx.notify();
+                            })),
+                    )
+                })
                 .child(section("Sharing & access"))
                 .child(self.render_access(cx))
                 .child(section("Servers"))

@@ -206,6 +206,7 @@ impl T3App {
                                 env.shell.apply(&item);
                                 let reload = env.shell.removals != removals
                                     || item["kind"] == "synchronized";
+                                app.observe_statuses(&key);
                                 if app.env().is_some_and(|e| e.key == key) {
                                     app.maybe_visit(cx);
                                 }
