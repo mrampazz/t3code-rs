@@ -265,6 +265,12 @@ impl T3App {
             cx.new(|cx| InputState::new(window, cx).placeholder(t("Search threads and commands…")));
         let _subscriptions = vec![
             cx.observe_window_bounds(window, |this, window, _| this.remember_bounds(window)),
+            // Coming back to the app is a good moment to retry (web: supervisor wakeups).
+            cx.observe_window_activation(window, |this, window, _| {
+                if window.is_window_active() {
+                    this.wake_disconnected();
+                }
+            }),
             cx.on_app_quit(|this, _| {
                 settings::save_prefs(&this.prefs);
                 async {}
@@ -1638,7 +1644,17 @@ impl T3App {
                         .pt_2()
                         .text_xs()
                         .text_color(theme.danger)
-                        .child(format!("{}: {error}", e.label())),
+                        .child(format!("{}: {error}", e.label()))
+                        .when(e.client.is_none(), |d| {
+                            let wake = e.wake.clone();
+                            d.child(
+                                Button::new(SharedString::from(format!("retry-{}", e.key)))
+                                    .xsmall()
+                                    .ghost()
+                                    .label(t("Retry now"))
+                                    .on_click(move |_, _, _| wake.notify_waiters()),
+                            )
+                        }),
                 )
             }));
         if !working.is_empty() {

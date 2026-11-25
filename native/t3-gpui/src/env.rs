@@ -22,6 +22,8 @@ pub struct Env {
     pub terminals: crate::terminal::TerminalList,
     /// Bumped per connect or removal so a stale supervisor loop stops.
     pub generation: u64,
+    /// Cuts a reconnect backoff short (window focus, "Retry now").
+    pub wake: std::sync::Arc<tokio::sync::Notify>,
     pub error: Option<SharedString>,
 }
 
@@ -109,6 +111,7 @@ impl T3App {
                     config: ServerConfig::default(),
                     terminals: Default::default(),
                     generation: 1,
+                    wake: Default::default(),
                     error: None,
                 });
                 1
@@ -252,10 +255,29 @@ impl T3App {
                 }) else {
                     return;
                 };
-                cx.background_executor().timer(delay).await;
+                let wake = this
+                    .update(cx, |app, _| app.env_by(&key).map(|e| e.wake.clone()))
+                    .ok()
+                    .flatten();
+                let timer = cx.background_executor().timer(delay);
+                match wake {
+                    Some(wake) => {
+                        let woken = wake.notified();
+                        futures::pin_mut!(timer, woken);
+                        futures::future::select(timer, woken).await;
+                    }
+                    None => timer.await,
+                }
             }
         })
         .detach();
+    }
+
+    /// Retries every disconnected environment now instead of after its backoff.
+    pub(crate) fn wake_disconnected(&self) {
+        for env in self.envs.iter().filter(|e| e.client.is_none()) {
+            env.wake.notify_waiters();
+        }
     }
 
     /// Forgets an environment: closes its socket and saved session. With none left, pairing shows.
