@@ -40,6 +40,56 @@ pub fn theme_mode(prefs: &Value) -> ThemeMode {
     }
 }
 
+/// Server settings shown as on/off rows, by section, with the web's labels.
+/// shortcut: number, text and per-project settings (auto-settle days, title instructions, project
+/// overrides) are not editable here yet.
+const SERVER_TOGGLES: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Threads",
+        &[
+            ("autoResumeLimitedThreads", "Resume after usage limits"),
+            ("snoozeLimitedThreads", "Snooze until limits reset"),
+            ("sidebarAutoSettleOnMerge", "Auto-settle merged threads"),
+            (
+                "sidebarAutoSettleKeepPullRequests",
+                "Keep threads with a PR",
+            ),
+            (
+                "continueThreadsAfterServerUpdate",
+                "Continue threads after restarts",
+            ),
+            ("keepAwakeWhileAgentsWork", "Keep awake while agents work"),
+        ],
+    ),
+    (
+        "Worktrees",
+        &[
+            (
+                "newWorktreesStartFromOrigin",
+                "New worktrees start from remote",
+            ),
+            ("ghqCloneLayout", "Clone into host folders"),
+        ],
+    ),
+    (
+        "Providers",
+        &[
+            ("enableProviderUpdateChecks", "Provider update checks"),
+            ("enableAgentBrowserAccess", "Agent browser access"),
+        ],
+    ),
+    (
+        "Beta",
+        &[
+            ("guestSharingEnabled", "Guest links"),
+            ("linkedEnvironmentsEnabled", "Linked environments"),
+            ("workflowsEnabled", "Workflows"),
+            ("promptSuggestionsEnabled", "Suggest next prompt"),
+            ("fastWorktreeCheckout", "Fast worktree checkout"),
+        ],
+    ),
+];
+
 /// A provider's usage windows as (label, percent used, reset time), most used first.
 pub fn usage_windows(usage: &Value) -> Vec<(String, f64, Option<jiff::Timestamp>)> {
     let mut windows: Vec<_> = usage["windows"]
@@ -365,6 +415,22 @@ impl T3App {
                             })),
                     )
                 })
+                .children(SERVER_TOGGLES.iter().map(|(title, rows)| {
+                    v_flex().child(section(title)).children(rows.iter().map(|(key, label)| {
+                        // Absent keys come from servers that predate the setting.
+                        let value = settings.get(*key).and_then(Value::as_bool);
+                        row().child(div().flex_1().child(t(label))).children(value.map(|on| {
+                            Button::new(SharedString::from(format!("setting-{key}")))
+                                .small()
+                                .label(if on { t("On") } else { t("Off") })
+                                .when(on, |b| b.primary())
+                                .when(!on, |b| b.outline())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.update_settings(json!({ "patch": { *key: !on } }), cx)
+                                }))
+                        }))
+                    }))
+                }))
                 .child(section("Sharing & access"))
                 .child(self.render_access(cx))
                 .child(section("Servers"))

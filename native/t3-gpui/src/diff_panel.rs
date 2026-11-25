@@ -84,10 +84,10 @@ impl T3App {
         .detach();
     }
 
-    /// This session's choice, else the `diffIgnoreWhitespace` setting.
+    /// This session's choice, else the client's `diffIgnoreWhitespace` preference.
     fn diff_ignore_whitespace(&self) -> bool {
         self.diff_whitespace
-            .unwrap_or(self.config().settings["diffIgnoreWhitespace"] == true)
+            .unwrap_or(self.prefs["diffIgnoreWhitespace"] == true)
     }
 
     pub(crate) fn render_diff_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {

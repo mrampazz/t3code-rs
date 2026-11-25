@@ -1228,3 +1228,33 @@ async fn e2e_guest_share_refused_without_connect() {
     println!("guest share: {error}");
     assert!(error.contains("GuestShareCreateError"), "{error}");
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_server_toggle() {
+    let env = connect().await;
+    env.config
+        .until("settings", |c| {
+            c.settings
+                .get("guestSharingEnabled")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .await;
+    let before = env.config.state.lock().unwrap().settings["guestSharingEnabled"] == true;
+    let saved = env
+        .client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "guestSharingEnabled": !before } }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved["guestSharingEnabled"], !before);
+    env.client
+        .call(
+            "server.updateSettings",
+            json!({ "patch": { "guestSharingEnabled": before } }),
+        )
+        .await
+        .unwrap();
+}
