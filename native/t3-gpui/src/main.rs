@@ -511,6 +511,12 @@ impl T3App {
         self.maybe_visit(cx);
     }
 
+    /// Within a few lines of the end of the transcript (gpui offsets run negative).
+    fn transcript_at_bottom(&self) -> bool {
+        let s = &self.transcript_scroll;
+        s.max_offset().y + s.offset().y < px(48.)
+    }
+
     /// (Re)subscribes the selected thread, resuming from its cursor when it already has data.
     fn subscribe_thread(&mut self, cx: &mut Context<Self>) {
         let (Some(client), Some(id)) = (self.client(), self.selected.clone()) else {
@@ -532,6 +538,9 @@ impl T3App {
                     if app.thread_sub.as_deref() != Some(sub.as_str()) {
                         return false;
                     }
+                    // Follow like `useTimelineFollow`: stay pinned only when already at the bottom,
+                    // so reading earlier messages is not interrupted; the first snapshot lands there.
+                    let follow = app.thread.sequence == 0 || app.transcript_at_bottom();
                     match item {
                         Ok(item) => {
                             let before = app.thread.latest_turn();
@@ -545,7 +554,9 @@ impl T3App {
                         }
                         Err(e) => app.error = Some(e.to_string().into()),
                     }
-                    app.transcript_scroll.scroll_to_bottom();
+                    if follow {
+                        app.transcript_scroll.scroll_to_bottom();
+                    }
                     cx.notify();
                     true
                 });
@@ -581,6 +592,7 @@ impl T3App {
         };
         self.composer
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.transcript_scroll.scroll_to_bottom();
         let command_id = uuid::Uuid::new_v4().to_string();
         self.dispatch(
             json!({
