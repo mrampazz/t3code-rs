@@ -1834,3 +1834,49 @@ async fn e2e_markdown_host_image() {
     response.into_body().read_to_end(&mut body).await.unwrap();
     assert_eq!(body, png);
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_slim_shell() {
+    let env = connect().await;
+    let (thread_id, _view) = launch(&env, "showcase", "Show me what you can do").await;
+    wait_idle(&env, &thread_id).await;
+    let caps = auth::capabilities(&env.base_url).await;
+    assert_eq!(caps["shellOlderSettled"], true);
+    let slim = Live::start(
+        &env.client,
+        "orchestration.subscribeShell",
+        json!({ "requestCompletionMarker": true, "omitIdleSubagents": true, "omitOlderSettled": true }),
+        Shell::apply,
+    );
+    let before = slim
+        .until("older settled cut", |s| {
+            s.older.as_ref().map(|o| o.before.clone())
+        })
+        .await;
+    let page = env
+        .client
+        .call(
+            "orchestration.getOlderSettledThreads",
+            json!({ "before": { "settledAt": before }, "limit": 25 }),
+        )
+        .await
+        .unwrap();
+    assert!(page["threads"].is_array(), "{page}");
+    let family = env
+        .client
+        .call(
+            "orchestration.getThreadFamily",
+            json!({ "threadId": thread_id }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        family["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == thread_id.as_str()),
+        "{family}"
+    );
+}

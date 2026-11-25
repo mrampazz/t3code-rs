@@ -113,6 +113,21 @@ async fn exchange(
     })
 }
 
+/// The environment descriptor's `capabilities`, or null when it cannot be read.
+pub async fn capabilities(base_url: &str) -> serde_json::Value {
+    let read = async {
+        reqwest::Client::new()
+            .get(format!("{base_url}/.well-known/t3/environment"))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await
+    };
+    read.await
+        .map(|d| d["capabilities"].clone())
+        .unwrap_or_default()
+}
+
 /// Pairs with a DPoP key when the server can renew such sessions (`accessTokenRenewal`),
 /// else with a bearer token, as the capability's contract asks.
 /// Pair against the server's own port: the Vite dev proxy rewrites Host for `/api`

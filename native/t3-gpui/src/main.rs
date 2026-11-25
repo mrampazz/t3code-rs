@@ -577,6 +577,7 @@ impl T3App {
     }
 
     pub(crate) fn select_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
+        self.load_family(&env, &id, cx);
         // Back/forward history (`navigation.back` / `navigation.forward`).
         let current = self.env().map(|e| e.key.clone()).zip(self.selected.clone());
         if current.as_ref() != Some(&(env.clone(), id.clone())) {
@@ -1796,13 +1797,38 @@ impl T3App {
             {
                 continue;
             }
+            // Settled counts the older threads the shell left out (`olderSettled`).
+            let hidden = if section == drag::Section::Settled {
+                self.envs.iter().map(|e| e.shell.older_remaining()).sum()
+            } else {
+                0
+            };
             list = list.child(self.section_header(
-                format!("{} ({})", i18n::t(label), rows.len()),
+                format!("{} ({})", i18n::t(label), rows.len() as u64 + hidden),
                 section,
                 cx,
             ));
             for (index, thread) in rows.iter().enumerate() {
                 list = list.child(self.thread_row(thread, false, Some((section, index)), cx));
+            }
+            if hidden > 0 {
+                let loading = self.envs.iter().any(|e| e.shell.older_loading);
+                list = list.child(
+                    div()
+                        .id("settled-more")
+                        .px_2()
+                        .py_1()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme.foreground))
+                        .child(if loading {
+                            i18n::t("Loading")
+                        } else {
+                            format!("▾ {} ({hidden})", i18n::t("Show more"))
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.load_older_settled(cx))),
+                );
             }
         }
         let archived: Vec<model::ThreadShell> = self

@@ -139,7 +139,10 @@ impl T3App {
                         s
                     };
                     let url = auth::socket_url(&s).await?;
-                    anyhow::Ok((s, RpcClient::connect(&url).await?))
+                    let client = RpcClient::connect(&url).await?;
+                    // Which shell omissions the server supports (`shellOlderSettled`, ...).
+                    let caps = auth::capabilities(&s.base_url).await;
+                    anyhow::Ok((s, client, caps))
                 })
                 .await
                 .map_err(anyhow::Error::from)
@@ -156,7 +159,7 @@ impl T3App {
                         return;
                     }
                     Err(e) => e.to_string(),
-                    Ok((renewed, client)) => {
+                    Ok((renewed, client, caps)) => {
                         session = renewed.clone();
                         let Ok(Some(after)) = this.update(cx, |app, cx| {
                             if !alive(app) {
@@ -168,6 +171,7 @@ impl T3App {
                             env.session = renewed;
                             env.client = Some(client.clone());
                             env.error = None;
+                            env.shell.omit_subagents = caps["shellThreadFamilies"] == true;
                             let after = env.shell.sequence;
                             app.subscribe_config(&key, &client, cx);
                             app.subscribe_terminal_list(&key, &client, cx);
@@ -186,6 +190,12 @@ impl T3App {
                         };
                         // The server sends `synchronized` only when asked; backoff resets on it.
                         let mut payload = json!({ "requestCompletionMarker": true });
+                        if caps["shellThreadFamilies"] == true {
+                            payload["omitIdleSubagents"] = json!(true);
+                        }
+                        if caps["shellOlderSettled"] == true {
+                            payload["omitOlderSettled"] = json!(true);
+                        }
                         if after > 0 {
                             payload["afterSequence"] = json!(after);
                         }
@@ -379,5 +389,92 @@ impl T3App {
         self.selected = None;
         self.thread = Default::default();
         self.active = Some(key.to_owned());
+    }
+}
+
+/// Rows per page of older settled threads (web: one "Show more" step).
+const OLDER_SETTLED_PAGE: usize = 25;
+
+impl T3App {
+    /// Reads the next page of older settled threads in every environment that has more.
+    pub(crate) fn load_older_settled(&mut self, cx: &mut Context<Self>) {
+        for env in self.envs.iter_mut() {
+            let (Some(client), Some(cursor)) = (env.client.clone(), env.shell.older_cursor.clone())
+            else {
+                continue;
+            };
+            if env.shell.older_loading || env.shell.older_remaining() == 0 {
+                continue;
+            }
+            env.shell.older_loading = true;
+            let key = env.key.clone();
+            cx.spawn(async move |this, cx| {
+                let page = on_tokio(async move {
+                    client
+                        .call(
+                            "orchestration.getOlderSettledThreads",
+                            json!({ "before": cursor, "limit": OLDER_SETTLED_PAGE }),
+                        )
+                        .await
+                })
+                .await;
+                this.update(cx, |app, cx| {
+                    let Some(env) = app.env_by_mut(&key) else {
+                        return;
+                    };
+                    env.shell.older_loading = false;
+                    match page {
+                        Ok(Ok(page)) => {
+                            let threads = page["threads"].as_array().cloned().unwrap_or_default();
+                            env.shell.older_cursor = threads
+                                .last()
+                                .filter(|_| threads.len() == OLDER_SETTLED_PAGE)
+                                .map(
+                                    |t| json!({ "settledAt": t["settledAt"], "threadId": t["id"] }),
+                                );
+                            env.shell.add_threads(&page["threads"]);
+                        }
+                        Ok(Err(e)) => app.error = Some(e.to_string().into()),
+                        Err(e) => app.error = Some(e.to_string().into()),
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// Reads a thread's family (`getThreadFamily`) when its shell left the thread out, as it
+    /// does idle subagent children, so the thread can open.
+    pub(crate) fn load_family(&mut self, env: &str, id: &str, cx: &mut Context<Self>) {
+        let Some(e) = self.env_by(env) else { return };
+        let Some(client) = e
+            .client
+            .clone()
+            .filter(|_| !e.shell.threads.iter().any(|t| t.id == id))
+        else {
+            return;
+        };
+        let (key, id) = (env.to_owned(), id.to_owned());
+        cx.spawn(async move |this, cx| {
+            let family = on_tokio(async move {
+                client
+                    .call("orchestration.getThreadFamily", json!({ "threadId": id }))
+                    .await
+            })
+            .await;
+            if let Ok(Ok(family)) = family {
+                this.update(cx, |app, cx| {
+                    if let Some(env) = app.env_by_mut(&key) {
+                        env.shell.add_threads(&family["threads"]);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 }

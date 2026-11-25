@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +87,8 @@ pub struct ThreadShell {
     #[serde(default)]
     pub pending_runtime_request: Value,
     #[serde(default)]
+    pub pending_background_tasks: Vec<Value>,
+    #[serde(default)]
     pub last_visited_at: Option<String>,
     #[serde(default)]
     pub latest_run_completed_at: Option<String>,
@@ -164,6 +166,25 @@ impl ThreadShell {
             .filter(|_| !self.is_listed())
     }
 
+    /// `isLiveSubagentShell`: shells that omit idle subagents still send these.
+    pub fn is_live(&self) -> bool {
+        self.activity_run_status.is_some()
+            || self.is_running()
+            || !self.pending_runtime_request.is_null()
+            || !self.pending_background_tasks.is_empty()
+    }
+
+    /// `isOlderSettledThreadShell`: a listed thread settled before `before_ms`.
+    pub fn is_older_settled(&self, before_ms: i64) -> bool {
+        self.is_listed()
+            && self.settled_override.as_deref() == Some("settled")
+            && self
+                .settled_at
+                .as_deref()
+                .and_then(|s| s.parse::<jiff::Timestamp>().ok())
+                .is_some_and(|at| at.as_millisecond() < before_ms)
+    }
+
     pub fn is_running(&self) -> bool {
         matches!(
             self.status.as_str(),
@@ -185,6 +206,37 @@ pub struct Shell {
     pub synced: bool,
     /// Resume cursor for `afterSequence`; 0 until the first snapshot.
     pub sequence: u64,
+    /// Subscribed with `omitIdleSubagents`: snapshots leave idle subagent children out.
+    pub omit_subagents: bool,
+    /// Where snapshots cut older settled threads, and how many there are per project.
+    pub older: Option<OlderSettled>,
+    /// `getOlderSettledThreads` paging: the next cursor, or `None` once all are loaded.
+    pub older_cursor: Option<Value>,
+    pub older_loading: bool,
+}
+
+pub struct OlderSettled {
+    pub before: String,
+    pub before_ms: i64,
+    pub total: u64,
+}
+
+impl OlderSettled {
+    fn from_value(v: &Value) -> Option<Self> {
+        let before = v["before"].as_str()?.to_owned();
+        let before_ms = before.parse::<jiff::Timestamp>().ok()?.as_millisecond();
+        let total = v["counts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c["count"].as_u64())
+            .sum();
+        Some(Self {
+            before,
+            before_ms,
+            total,
+        })
+    }
 }
 
 impl Shell {
@@ -202,7 +254,19 @@ impl Shell {
                     .flatten()
                     .filter_map(Project::from_value)
                     .collect();
-                self.threads = decode_vec(&snap["threads"]);
+                let previous = std::mem::replace(&mut self.threads, decode_vec(&snap["threads"]));
+                let older = OlderSettled::from_value(&snap["olderSettled"]);
+                if older.as_ref().map(|o| &o.before) != self.older.as_ref().map(|o| &o.before) {
+                    self.older_cursor = older.as_ref().map(|o| json!({ "settledAt": o.before }));
+                }
+                self.older = older;
+                // Absence is not deletion: a snapshot leaves out the kinds of thread it was asked
+                // to omit, so those already known stay until a removal says otherwise.
+                let kept: Vec<ThreadShell> = previous
+                    .into_iter()
+                    .filter(|t| !self.threads.iter().any(|n| n.id == t.id) && self.omits(t))
+                    .collect();
+                self.threads.extend(kept);
                 self.stamp();
             }
             Some("synchronized") => self.synced = true,
@@ -242,6 +306,40 @@ impl Shell {
                 (b.pinned_at.is_some(), &b.updated_at).cmp(&(a.pinned_at.is_some(), &a.updated_at))
             });
         }
+    }
+
+    /// Whether snapshots of this shell leave `t` out.
+    fn omits(&self, t: &ThreadShell) -> bool {
+        (self.omit_subagents && !t.is_listed() && !t.is_live())
+            || self
+                .older
+                .as_ref()
+                .is_some_and(|o| t.is_older_settled(o.before_ms))
+    }
+
+    /// Older settled threads the server counts that are not loaded yet.
+    pub fn older_remaining(&self) -> u64 {
+        let Some(older) = &self.older else { return 0 };
+        if self.older_cursor.is_none() {
+            return 0;
+        }
+        let loaded = self
+            .threads
+            .iter()
+            .filter(|t| t.is_older_settled(older.before_ms))
+            .count() as u64;
+        older.total.saturating_sub(loaded)
+    }
+
+    /// Adds threads read on demand (older settled pages, thread families).
+    pub fn add_threads(&mut self, threads: &Value) {
+        for mut t in decode_vec::<ThreadShell>(threads) {
+            t.env = self.env.clone();
+            upsert(&mut self.threads, t, |t| &t.id);
+        }
+        self.threads.sort_by(|a, b| {
+            (b.pinned_at.is_some(), &b.updated_at).cmp(&(a.pinned_at.is_some(), &a.updated_at))
+        });
     }
 
     pub fn new(env: &str) -> Self {
@@ -1075,6 +1173,43 @@ mod tests {
 
     fn thread(id: &str, at: &str) -> Value {
         json!({"id": id, "projectId": "p", "title": id, "status": "idle", "updatedAt": at, "extra": 1})
+    }
+
+    #[test]
+    fn omitted_threads_survive_a_new_snapshot() {
+        let mut shell = Shell {
+            omit_subagents: true,
+            ..Shell::default()
+        };
+        let mut old = thread("old", "1");
+        old["settledOverride"] = json!("settled");
+        old["settledAt"] = json!("2026-01-01T00:00:00Z");
+        let mut child = thread("child", "1");
+        child["lineage"] = json!({"relationshipToParent": "subagent", "parentThreadId": "a"});
+        let older = json!({"before": "2026-06-01T00:00:00Z", "asOfSequence": 1,
+            "counts": [{"projectId": "p", "count": 3}]});
+        shell.apply(&json!({"kind": "snapshot", "snapshot": {
+            "threads": [thread("a", "1"), thread("gone", "1")], "olderSettled": older,
+        }}));
+        assert_eq!(shell.older_remaining(), 3);
+        shell.add_threads(&json!([old, child]));
+        assert_eq!(shell.older_remaining(), 2, "a loaded page counts as loaded");
+        shell.apply(&json!({"kind": "snapshot", "snapshot": {
+            "threads": [thread("a", "2")], "olderSettled": older,
+        }}));
+        let mut ids: Vec<&str> = shell.threads.iter().map(|t| t.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            ["a", "child", "old"],
+            "only a thread the snapshot should hold is gone"
+        );
+        shell.older_cursor = None;
+        assert_eq!(
+            shell.older_remaining(),
+            0,
+            "no cursor means nothing more to load"
+        );
     }
 
     #[test]
