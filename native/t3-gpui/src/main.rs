@@ -1150,6 +1150,19 @@ impl T3App {
                 _ => p.title.clone(),
             });
         let presets = env.and_then(|e| e.config.snooze_presets.clone());
+        // An unread completion is moot on the open thread.
+        let status =
+            sidebar::status(thread).filter(|s| !(selected && *s == sidebar::Status::Completed));
+        let status_color = status.map(|s| match s {
+            sidebar::Status::PendingApproval => theme.warning,
+            sidebar::Status::AwaitingInput => theme.info,
+            sidebar::Status::GuestRequest => theme.cyan,
+            sidebar::Status::Working | sidebar::Status::Connecting => theme.blue,
+            sidebar::Status::Waiting => theme.muted_foreground,
+            sidebar::Status::Failed => theme.danger,
+            sidebar::Status::PlanReady => theme.magenta,
+            sidebar::Status::Completed => theme.success,
+        });
         h_flex()
             .id(SharedString::from(format!("thread-{id}")))
             .gap_2()
@@ -1168,13 +1181,14 @@ impl T3App {
                 div()
                     .size(px(6.))
                     .rounded_full()
-                    .when(thread.is_running(), |d| d.bg(theme.success))
-                    .when(
-                        !thread.is_running() && !selected && thread.has_unseen_completion(),
-                        |d| d.bg(theme.info),
-                    ),
+                    .when_some(status_color, |d, c| d.bg(c)),
             )
             .child(div().flex_1().truncate().child(thread.title.clone()))
+            .children(
+                status
+                    .zip(status_color)
+                    .map(|(s, c)| div().text_xs().text_color(c).child(t(s.label()))),
+            )
             .children(project.map(|p| {
                 div()
                     .max_w(px(90.))

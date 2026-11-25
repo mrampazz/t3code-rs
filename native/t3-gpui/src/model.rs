@@ -80,6 +80,16 @@ pub struct ThreadShell {
     pub latest_run_started_at: Option<String>,
     #[serde(default)]
     pub pull_requests: Vec<Value>,
+    #[serde(default)]
+    pub latest_run_id: Option<String>,
+    #[serde(default)]
+    pub activity_run_status: Option<String>,
+    #[serde(default)]
+    pub blocked_on_thread_wait: bool,
+    #[serde(default)]
+    pub pending_guest_message_count: u64,
+    #[serde(default)]
+    pub has_actionable_proposed_plan: bool,
 }
 
 impl ThreadShell {

@@ -1110,3 +1110,29 @@ async fn e2e_secret_answer_shape() {
     // A decode failure would name the schema; the server reached its own lookup.
     assert!(error.contains("SecretRequestError"), "{error}");
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_sidebar_status() {
+    use crate::sidebar::{Status, status};
+    let env = connect().await;
+    let (thread_id, _view) = launch_in(&env, "approval", "write a file", "approval-required").await;
+    let of = |want: Status| {
+        let id = thread_id.clone();
+        move |s: &Shell| {
+            s.threads
+                .iter()
+                .find(|t| t.id == id)
+                .filter(|t| status(t) == Some(want))
+                .map(|_| ())
+        }
+    };
+    env.shell
+        .until("pending approval", of(Status::PendingApproval))
+        .await;
+    dispatch(
+        &env.client,
+        json!({ "type": "thread.stop", "threadId": thread_id }),
+    )
+    .await;
+}

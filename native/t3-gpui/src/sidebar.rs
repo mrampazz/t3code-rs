@@ -140,6 +140,80 @@ fn plural(n: i64, one: &str) -> String {
     }
 }
 
+/// A sidebar row's status, most urgent first (`resolveThreadStatusPill`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Status {
+    PendingApproval,
+    AwaitingInput,
+    GuestRequest,
+    Working,
+    Connecting,
+    Waiting,
+    Failed,
+    PlanReady,
+    Completed,
+}
+
+impl Status {
+    /// The web's label, for `i18n::t`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::PendingApproval => "Pending Approval",
+            Status::AwaitingInput => "Awaiting Input",
+            Status::GuestRequest => "Guest Request",
+            Status::Working => "Working",
+            Status::Connecting => "Connecting",
+            Status::Waiting => "Waiting",
+            Status::Failed => "Failed",
+            Status::PlanReady => "Plan Ready",
+            Status::Completed => "Completed",
+        }
+    }
+}
+
+/// shortcut: subagent requests and background tasks that hold a finished run are not read yet;
+/// those threads show their own state instead. Add when the shell decodes them.
+pub fn status(t: &ThreadShell) -> Option<Status> {
+    let request = t.pending_runtime_request["kind"].as_str();
+    match request {
+        Some("user_input") => return Some(Status::AwaitingInput),
+        Some("auth_refresh") | None => {}
+        Some(_) => return Some(Status::PendingApproval),
+    }
+    if t.pending_guest_message_count > 0 {
+        return Some(Status::GuestRequest);
+    }
+    let thread_status = t.status.as_str().unwrap_or("");
+    let runtime = t
+        .latest_run_id
+        .as_ref()
+        .map(|_| t.activity_run_status.as_deref().unwrap_or(thread_status));
+    match runtime {
+        Some("running") if t.blocked_on_thread_wait => return Some(Status::Waiting),
+        Some("running" | "waiting") => return Some(Status::Working),
+        Some("preparing" | "starting" | "queued") => return Some(Status::Connecting),
+        _ => {}
+    }
+    let after_visit = |at: Option<&str>| match (ts_ms(at), ts_ms(t.last_visited_at.as_deref())) {
+        (_, None) => true,
+        (Some(at), Some(seen)) => at > seen,
+        (None, Some(_)) => true,
+    };
+    if thread_status == "failed"
+        && after_visit(
+            t.latest_run_completed_at
+                .as_deref()
+                .or(t.latest_run_started_at.as_deref()),
+        )
+    {
+        return Some(Status::Failed);
+    }
+    if t.interaction_mode == "plan" && t.has_actionable_proposed_plan && !t.is_running() {
+        return Some(Status::PlanReady);
+    }
+    t.has_unseen_completion().then_some(Status::Completed)
+}
+
 /// `resolveCustomSnooze` from one field: a local `YYYY-MM-DD HH:MM`, or a duration such as `90m`,
 /// `2h` or `3d`. `None` unless it lands in the future; a time skipped by a DST change is rejected.
 pub fn custom_snooze(input: &str, now: &Zoned) -> Option<Timestamp> {
@@ -325,6 +399,70 @@ mod tests {
         assert!(active_sort_key(&a).starts_with('0') && active_sort_key(&a).ends_with('n'));
         let arranged = thread("c", json!({"activeOrderKey": "m"}));
         assert_eq!(active_sort_key(&arranged), "m");
+    }
+
+    #[test]
+    fn resolves_row_status() {
+        let row = |extra: serde_json::Value| {
+            let mut t = json!({"id": "t", "projectId": "p", "title": "x", "updatedAt": "2026-01-01T00:00:00Z",
+                "latestRunId": "r", "status": "idle", "lastVisitedAt": "2026-01-01T00:00:00Z"});
+            t.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<ThreadShell>(t).unwrap()
+        };
+        assert_eq!(
+            status(&row(
+                json!({"pendingRuntimeRequest": {"kind": "command"}, "status": "running"})
+            )),
+            Some(Status::PendingApproval)
+        );
+        assert_eq!(
+            status(&row(
+                json!({"pendingRuntimeRequest": {"kind": "user_input"}})
+            )),
+            Some(Status::AwaitingInput)
+        );
+        assert_eq!(
+            status(&row(json!({"status": "running"}))),
+            Some(Status::Working)
+        );
+        assert_eq!(
+            status(&row(
+                json!({"status": "running", "blockedOnThreadWait": true})
+            )),
+            Some(Status::Waiting)
+        );
+        assert_eq!(
+            status(&row(json!({"status": "starting"}))),
+            Some(Status::Connecting)
+        );
+        assert_eq!(
+            status(&row(
+                json!({"status": "failed", "latestRunCompletedAt": "2026-01-02T00:00:00Z"})
+            )),
+            Some(Status::Failed)
+        );
+        assert_eq!(
+            status(&row(
+                json!({"status": "failed", "latestRunCompletedAt": "2025-12-31T00:00:00Z"})
+            )),
+            None,
+            "seen"
+        );
+        assert_eq!(
+            status(&row(
+                json!({"interactionMode": "plan", "hasActionableProposedPlan": true})
+            )),
+            Some(Status::PlanReady)
+        );
+        assert_eq!(
+            status(&row(
+                json!({"latestRunCompletedAt": "2026-01-02T00:00:00Z"})
+            )),
+            Some(Status::Completed)
+        );
+        assert_eq!(status(&row(json!({"latestRunId": null}))), None);
     }
 
     #[test]
