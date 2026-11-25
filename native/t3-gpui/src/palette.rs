@@ -311,7 +311,7 @@ pub(crate) fn palette_rows(
         });
     }
     for shell in shells {
-        for p in &shell.projects {
+        for p in shell.projects.iter().filter(|p| !p.is_archived()) {
             let label = format!("New thread in {}", p.title);
             if query.is_empty() || label.to_lowercase().contains(query) {
                 rows.push(PaletteRow {

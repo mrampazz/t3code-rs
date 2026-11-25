@@ -226,7 +226,13 @@ impl T3App {
             .as_ref()
             .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
             .map(|t| t.project_id.clone())
-            .or_else(|| self.shell().projects.first().map(|p| p.id.clone()));
+            .or_else(|| {
+                self.shell()
+                    .projects
+                    .iter()
+                    .find(|p| !p.is_archived())
+                    .map(|p| p.id.clone())
+            });
         let Some(project_id) = project else {
             self.settings_status = Some(t("Add a project first.").into());
             return cx.notify();

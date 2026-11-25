@@ -28,6 +28,11 @@ pub struct Project {
 }
 
 impl Project {
+    /// Archived projects keep their threads but leave pickers.
+    pub fn is_archived(&self) -> bool {
+        !self.raw["archivedAt"].is_null()
+    }
+
     fn from_value(v: &Value) -> Option<Self> {
         let mut project: Project = decode(v)?;
         project.raw = v.clone();

@@ -1065,7 +1065,13 @@ impl T3App {
                             .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
                             .map(|t| t.project_id.clone())
                     })
-                    .or_else(|| self.shell().projects.first().map(|p| p.id.clone()));
+                    .or_else(|| {
+                        self.shell()
+                            .projects
+                            .iter()
+                            .find(|p| !p.is_archived())
+                            .map(|p| p.id.clone())
+                    });
                 let (Some(env), Some(project)) = (env, project) else {
                     return false;
                 };
@@ -1105,7 +1111,13 @@ impl T3App {
                     .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
                     .map(|t| t.project_id.clone())
                     .or_else(|| self.draft_project.clone())
-                    .or_else(|| self.shell().projects.first().map(|p| p.id.clone()));
+                    .or_else(|| {
+                        self.shell()
+                            .projects
+                            .iter()
+                            .find(|p| !p.is_archived())
+                            .map(|p| p.id.clone())
+                    });
                 let (Some(env), Some(project)) = (env, project) else {
                     return false;
                 };
@@ -1806,14 +1818,18 @@ impl T3App {
             .envs
             .iter()
             .flat_map(|e| {
-                e.shell.projects.iter().map(move |p| {
-                    let title = if many {
-                        format!("{} · {}", p.title, e.label())
-                    } else {
-                        p.title.clone()
-                    };
-                    (e.key.clone(), p.id.clone(), title)
-                })
+                e.shell
+                    .projects
+                    .iter()
+                    .filter(|p| !p.is_archived())
+                    .map(move |p| {
+                        let title = if many {
+                            format!("{} · {}", p.title, e.label())
+                        } else {
+                            p.title.clone()
+                        };
+                        (e.key.clone(), p.id.clone(), title)
+                    })
             })
             .collect();
         let app = cx.entity().downgrade();
