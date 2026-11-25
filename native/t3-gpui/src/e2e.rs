@@ -994,3 +994,64 @@ async fn e2e_available_editors() {
     println!("available editors: {editors:?}");
     assert!(editors.iter().any(|e| e == "file-manager"));
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_project_scripts() {
+    use crate::scripts::{resolve, settings_patch, upsert};
+    let env = connect().await;
+    let state = || {
+        let config = env.config.state.lock().unwrap();
+        let project = env
+            .shell
+            .state
+            .lock()
+            .unwrap()
+            .projects
+            .iter()
+            .find(|p| p.id == env.project_id)
+            .map(|p| p.scripts.clone())
+            .unwrap_or_default();
+        (
+            config.settings.clone(),
+            config.project_settings_overrides,
+            project,
+        )
+    };
+    env.config
+        .until("settings", |c| c.settings.is_object().then_some(()))
+        .await;
+    let (settings, per_project, own) = state();
+    let before = resolve(&settings, &env.project_id, &own);
+    let edit = json!({ "name": "E2E echo", "command": "echo e2e", "runOnWorktreeCreate": false, "runOnSettle": false, "stopOnSettle": false });
+    let added = upsert(&before, None, &edit);
+    let save = |scripts: Vec<Value>| {
+        let (settings, ..) = state();
+        settings_patch(&settings, &env.project_id, scripts, per_project)
+    };
+    env.client
+        .call("server.updateSettings", save(added.clone()))
+        .await
+        .unwrap();
+    let project = env.project_id.clone();
+    env.config
+        .until("saved action", |c| {
+            resolve(&c.settings, &project, &own)
+                .iter()
+                .any(|s| s["id"] == "e2e-echo")
+                .then_some(())
+        })
+        .await;
+    env.client
+        .call("server.updateSettings", save(before.clone()))
+        .await
+        .unwrap();
+    env.config
+        .until("deleted action", |c| {
+            (!resolve(&c.settings, &project, &own)
+                .iter()
+                .any(|s| s["id"] == "e2e-echo"))
+            .then_some(())
+        })
+        .await;
+}

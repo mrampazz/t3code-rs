@@ -132,6 +132,9 @@ impl T3App {
         if resume {
             payload["resume"] = json!(true);
         }
+        if let Some(script) = &self.script_launch {
+            payload["stopOnSettle"] = json!(script["stopOnSettle"] == true);
+        }
         let (sub, mut rx) = client.request("terminal.attach", payload);
         self.term_sub = Some(sub.clone());
         cx.spawn(async move |this, cx| {
@@ -186,6 +189,11 @@ impl T3App {
                     ),
                     None => None,
                 };
+                if let Some(script) = self.script_launch.take() {
+                    // A leading space keeps the command out of shell history (`projectScriptTerminalInput`).
+                    let input = format!(" {}\r", script["command"].as_str().unwrap_or(""));
+                    self.terminal_write(input, false, cx);
+                }
             }
             Some("output") => term.feed(event["data"].as_str().unwrap_or("")),
             Some("cleared") => term.reset(),

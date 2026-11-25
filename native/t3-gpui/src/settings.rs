@@ -62,7 +62,7 @@ impl T3App {
         cx.notify();
     }
 
-    fn update_settings(&mut self, payload: Value, cx: &mut Context<Self>) {
+    pub(crate) fn update_settings(&mut self, payload: Value, cx: &mut Context<Self>) {
         let Some(client) = self.client() else {
             return;
         };

@@ -18,6 +18,7 @@ mod palette;
 mod projects;
 mod pull_requests;
 mod rpc;
+pub(crate) mod scripts;
 mod settings;
 mod sidebar;
 mod terminal;
@@ -130,6 +131,10 @@ struct T3App {
     term_id: String,
     /// The grid size last sent with `terminal.resize`.
     term_requested: Option<(usize, usize)>,
+    /// A script waiting for its new terminal's shell before its command is typed.
+    script_launch: Option<serde_json::Value>,
+    /// The last action run per project, shown as the run button.
+    last_script: std::collections::HashMap<String, String>,
     term_focus: FocusHandle,
     git: git::GitStatus,
     /// Request id of the `subscribeVcsStatus` stream.
@@ -298,6 +303,8 @@ impl T3App {
             term_status: None,
             term_id: "term-1".into(),
             term_requested: None,
+            script_launch: None,
+            last_script: Default::default(),
             term_focus: cx.focus_handle(),
             git: Default::default(),
             git_sub: None,
@@ -920,6 +927,9 @@ impl T3App {
             }
             "chat.find" if thread.is_some() => self.open_find(window, cx),
             "editor.openFavorite" if thread.is_some() => self.open_in_editor(None, cx),
+            c if thread.is_some() && c.starts_with("script.") && c.ends_with(".run") => {
+                return self.run_script(&c["script.".len()..c.len() - ".run".len()], cx);
+            }
             "terminal.new" if self.term.is_some() => self.new_terminal(cx),
             "terminal.close" if self.term.is_some() => {
                 let id = self.term_id.clone();
@@ -1705,6 +1715,7 @@ impl T3App {
                     )
                     .child(div().flex_1())
                     .child(self.render_pull_requests(cx))
+                    .child(self.render_scripts(cx))
                     .child(self.render_open_in(cx))
                     .child(self.render_git_toolbar(cx))
                     .child(

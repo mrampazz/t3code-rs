@@ -19,6 +19,9 @@ pub struct Project {
     pub default_model_selection: Value,
     #[serde(default)]
     pub repository_identity: Value,
+    /// `ProjectScript`s; settings may override them (`scripts::resolve`).
+    #[serde(default)]
+    pub scripts: Value,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -286,6 +289,8 @@ pub struct ServerConfig {
     pub available_editors: Vec<String>,
     /// `RemoteOpenTarget`s: SSH hosts this server is reachable at.
     pub remote_open_targets: Vec<Value>,
+    /// Scripts save to `projectSettingsOverrides`; older servers use `projectScriptOverrides`.
+    pub project_settings_overrides: bool,
 }
 
 /// Picker key for a model selection: provider instance and model slug.
@@ -305,6 +310,8 @@ impl ServerConfig {
                 let config = &event["config"];
                 self.providers = decode_vec(&config["providers"]);
                 self.thread_stop = config["environment"]["capabilities"]["threadStop"] == true;
+                self.project_settings_overrides =
+                    config["environment"]["capabilities"]["projectSettingsOverrides"] == true;
                 self.snooze_presets = config["settings"].get("snoozePresets").cloned();
                 self.settings = config["settings"].clone();
                 self.keybindings = config["keybindings"]
