@@ -241,9 +241,18 @@ impl T3App {
                     .filter(|p| !p.is_empty())
                     .map(str::to_owned);
                 let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
+                let tooltip = SharedString::from(self.subagent_tooltip(item));
                 v_flex()
                     .gap_1()
-                    .child(self.render_tool(item, expanded, &c, mono, cx))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("subagent-tip-{}", item.id)))
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tooltip.clone())
+                                    .build(window, cx)
+                            })
+                            .child(self.render_tool(item, expanded, &c, mono, cx)),
+                    )
                     .children(progress.map(|p| {
                         div()
                             .pl_4()
@@ -266,6 +275,53 @@ impl T3App {
             }
             _ => self.render_tool(item, expanded, &c, mono, cx),
         }
+    }
+
+    /// The subagent hover card (web: `SubagentTooltipContent`): model, status, the child's
+    /// worktree when it differs from this thread's, and the latest result or progress.
+    fn subagent_tooltip(&self, item: &TurnItem) -> String {
+        let raw = &item.raw;
+        let model = raw["executedModel"]
+            .as_str()
+            .or(raw["model"].as_str())
+            .or(raw["modelSelection"]["model"].as_str())
+            .filter(|m| !m.trim().is_empty());
+        let instance = raw["providerInstanceId"].as_str().unwrap_or("");
+        let model = model.map_or_else(
+            || t("Not reported").to_string(),
+            |m| {
+                self.config()
+                    .label(&serde_json::json!({ "instanceId": instance, "model": m }))
+            },
+        );
+        let status = item.str("status").replace('_', " ");
+        let shell = self.env().map(|e| &e.shell);
+        let worktree = |id: Option<&str>| {
+            let id = id?;
+            shell?
+                .threads
+                .iter()
+                .find(|t| t.id == id)?
+                .worktree_path
+                .clone()
+        };
+        let child = worktree(raw["childThreadId"].as_str())
+            .filter(|w| Some(w) != worktree(self.selected.as_deref()).as_ref());
+        let preview = subagent_preview(
+            item.str("status"),
+            raw["result"].as_str(),
+            raw["progress"].as_str(),
+        );
+        [
+            Some(model),
+            Some(t(&status).to_string()),
+            child.map(|w| w.rsplit('/').next().unwrap_or(&w).to_owned()),
+            preview,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     /// A folded run of work items; expands to the individual rows.
@@ -663,6 +719,30 @@ fn tail(s: &str) -> String {
     }
 }
 
+/// `subagentDetailPreview`: the result once finished, else the progress, whitespace collapsed
+/// and cut at 280 characters.
+pub(crate) fn subagent_preview(
+    status: &str,
+    result: Option<&str>,
+    progress: Option<&str>,
+) -> Option<String> {
+    let done = matches!(status, "completed" | "failed" | "cancelled" | "interrupted");
+    let (preferred, fallback) = if done {
+        (result, progress)
+    } else {
+        (progress, result)
+    };
+    let detail = [preferred, fallback]
+        .into_iter()
+        .flatten()
+        .find(|d| !d.trim().is_empty())?;
+    let compact = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(match compact.char_indices().nth(280) {
+        Some((cut, _)) => format!("{}…", compact[..cut].trim_end()),
+        None => compact,
+    })
+}
+
 /// `workEntryIconName`: the lucide icon for one work row.
 /// shortcut: built-in icons only; the web also shows MCP favicons and provider logos.
 pub(crate) fn tool_icon(item: &TurnItem) -> &'static str {
@@ -985,6 +1065,22 @@ mod tests {
 
     fn item(v: Value) -> TurnItem {
         TurnItem::from_value(&v).unwrap()
+    }
+
+    #[test]
+    fn subagent_preview_prefers_result_when_done() {
+        use super::subagent_preview;
+        assert_eq!(
+            subagent_preview("completed", Some("all  done\n"), Some("x")).as_deref(),
+            Some("all done")
+        );
+        assert_eq!(
+            subagent_preview("running", Some("r"), Some(" step 2 ")).as_deref(),
+            Some("step 2")
+        );
+        assert_eq!(subagent_preview("running", None, Some("  ")), None);
+        let long = subagent_preview("completed", Some(&"a ".repeat(300)), None).unwrap();
+        assert!(long.ends_with('…') && long.chars().count() <= 281);
     }
 
     #[test]
