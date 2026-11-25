@@ -292,7 +292,10 @@ impl T3App {
                 &composer,
                 window,
                 |this, _, e: &InputEvent, window, cx| match e {
-                    InputEvent::PressEnter { shift: false, .. } => this.send(window, cx),
+                    InputEvent::PressEnter {
+                        shift: false,
+                        secondary,
+                    } => this.send(*secondary, window, cx),
                     InputEvent::Change => this.update_composer_menu(cx),
                     _ => {}
                 },
@@ -631,7 +634,7 @@ impl T3App {
         cx.notify();
     }
 
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn send(&mut self, alternate: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().trim().to_string();
         if text.is_empty() && self.attachments.is_empty() {
             return;
@@ -665,10 +668,22 @@ impl T3App {
                 "threadId": thread_id,
                 "text": text,
                 "attachments": attachments,
-                "dispatchMode": { "type": "queue_after_active" },
                 "createdBy": "user",
                 "creationSource": "web",
         });
+        let thread = self.shell().threads.iter().find(|t| t.id == thread_id);
+        // Sending declines a shown approval to redirect the agent, so it always steers then.
+        let default = if thread.is_some_and(|t| t.pending_runtime_request["kind"].is_string()) {
+            "steer"
+        } else {
+            self.prefs["followUpBehavior"].as_str().unwrap_or("steer")
+        };
+        let mode =
+            composer::dispatch_mode(thread.is_some_and(|t| t.is_running()), alternate, default);
+        command
+            .as_object_mut()
+            .unwrap()
+            .extend(composer::delivery(mode).as_object().unwrap().clone());
         if let Some(context) = context {
             command["context"] = context;
         }

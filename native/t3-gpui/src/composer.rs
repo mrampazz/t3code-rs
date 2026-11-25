@@ -130,6 +130,26 @@ impl T3App {
     }
 }
 
+/// `resolveComposerDispatchMode`: "auto" when idle; while a turn runs, the follow-up default
+/// ("steer" or "queue"), swapped by the alternate send (mod+Enter).
+pub fn dispatch_mode(running: bool, alternate: bool, default: &str) -> &'static str {
+    let steer = default != "queue";
+    match (running, steer != alternate) {
+        (false, _) => "auto",
+        (true, true) => "steer",
+        (true, false) => "queue",
+    }
+}
+
+/// `message.dispatch` delivery fields for a mode, as the web sends them.
+pub fn delivery(mode: &str) -> serde_json::Value {
+    if mode == "queue" {
+        json!({ "dispatchMode": { "type": "queue_after_active" } })
+    } else {
+        json!({ "dispatchMode": { "type": "start_immediately" }, "deliveryIntent": mode })
+    }
+}
+
 /// The composer draft's owner: the open thread, or a new thread in a project.
 pub fn draft_key(env: &str, thread: Option<&str>, draft_project: Option<&str>) -> Option<String> {
     match (thread, draft_project) {
@@ -173,7 +193,25 @@ impl T3App {
 
 #[cfg(test)]
 mod draft_tests {
-    use super::draft_key;
+    use super::{delivery, dispatch_mode, draft_key};
+
+    #[test]
+    fn steers_or_queues_follow_ups_like_the_web() {
+        assert_eq!(dispatch_mode(false, false, "steer"), "auto");
+        assert_eq!(dispatch_mode(true, false, "steer"), "steer");
+        assert_eq!(dispatch_mode(true, true, "steer"), "queue");
+        assert_eq!(dispatch_mode(true, false, "queue"), "queue");
+        assert_eq!(dispatch_mode(true, true, "queue"), "steer");
+        assert_eq!(
+            delivery("queue")["dispatchMode"]["type"],
+            "queue_after_active"
+        );
+        assert_eq!(delivery("steer")["deliveryIntent"], "steer");
+        assert_eq!(
+            delivery("auto")["dispatchMode"]["type"],
+            "start_immediately"
+        );
+    }
 
     #[test]
     fn keys_drafts_by_owner() {

@@ -499,6 +499,20 @@ impl T3App {
                     )
                 })
                 .child({
+                    let queue = self.prefs["followUpBehavior"] == "queue";
+                    row().child(div().flex_1().child(t("Follow-up behavior"))).child(
+                        Button::new("follow-up")
+                            .small()
+                            .outline()
+                            .label(if queue { t("Queue") } else { t("Steer") })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.prefs["followUpBehavior"] = json!(if queue { "steer" } else { "queue" });
+                                save_prefs(&this.prefs);
+                                cx.notify();
+                            })),
+                    )
+                })
+                .child({
                     let on = self.prefs["projectFolders"] == true;
                     row().child(div().flex_1().child(t("Boring sidebar (group by project)"))).child(
                         Button::new("project-folders")

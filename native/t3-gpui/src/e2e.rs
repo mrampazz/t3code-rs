@@ -1308,3 +1308,31 @@ async fn e2e_thread_mention() {
     )
     .await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_steer_follow_up() {
+    let env = connect().await;
+    let (thread_id, view) = launch_in(&env, "approval", "write a file", "approval-required").await;
+    view.until("approval request", |v| {
+        v.items()
+            .any(|i| i.kind == "approval_request")
+            .then_some(())
+    })
+    .await;
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut command = json!({ "type": "message.dispatch", "messageId": id, "threadId": thread_id, "text": "actually, stop there",
+        "attachments": [], "createdBy": "user", "creationSource": "web" });
+    command.as_object_mut().unwrap().extend(
+        crate::composer::delivery("steer")
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    dispatch(&env.client, command).await;
+    dispatch(
+        &env.client,
+        json!({ "type": "thread.stop", "threadId": thread_id }),
+    )
+    .await;
+}
