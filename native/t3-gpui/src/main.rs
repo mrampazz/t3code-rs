@@ -41,6 +41,7 @@ mod stash;
 mod storage;
 mod terminal;
 mod terminal_drawer;
+mod thread_chips;
 mod timeline;
 mod workflows;
 mod workspace;

@@ -364,20 +364,25 @@ impl T3App {
         }
     }
 
+    /// The (environment, thread id, title) a thread link names, looked up across connected
+    /// environments with the active one first (`threadLinkCandidates`).
+    pub(crate) fn find_thread_link(&self, href: &str) -> Option<(String, String, String)> {
+        let active = self.env().map(|e| e.key.clone());
+        let mut envs: Vec<&crate::env::Env> = self.envs.iter().collect();
+        envs.sort_by_key(|e| Some(&e.key) != active.as_ref());
+        thread_link_ids(href).iter().find_map(|id| {
+            envs.iter().find_map(|e| {
+                let thread = e.shell.threads.iter().find(|t| &t.id == id)?;
+                Some((e.key.clone(), id.clone(), thread.title.clone()))
+            })
+        })
+    }
+
     /// Opens a chat link: web pages in the browser, files in the preferred editor at their line.
     pub(crate) fn open_link(&mut self, href: &str, cx: &mut Context<Self>) {
-        let ids = thread_link_ids(href);
-        if !ids.is_empty() {
-            let active = self.env().map(|e| e.key.clone());
-            let mut envs: Vec<&crate::env::Env> = self.envs.iter().collect();
-            envs.sort_by_key(|e| Some(&e.key) != active.as_ref());
-            let found = ids.iter().find_map(|id| {
-                envs.iter()
-                    .find(|e| e.shell.threads.iter().any(|t| &t.id == id))
-                    .map(|e| (e.key.clone(), id.clone()))
-            });
-            return match found {
-                Some((env, id)) => self.select_thread(env, id, cx),
+        if !thread_link_ids(href).is_empty() {
+            return match self.find_thread_link(href) {
+                Some((env, id, _)) => self.select_thread(env, id, cx),
                 None => {
                     self.error = Some(t("The thread's environment is not available.").into());
                     cx.notify()

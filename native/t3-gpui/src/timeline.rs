@@ -63,6 +63,7 @@ impl T3App {
                 SharedString::from(item.id.clone()),
                 self.resolve_images(&text, cx).into_owned(),
             ))
+            .plugin(crate::thread_chips::ThreadChips(cx.weak_entity()))
             .on_link_click(open_link)
             .into_any_element(),
             "proposed_plan" => {
