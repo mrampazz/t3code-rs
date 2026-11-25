@@ -90,6 +90,13 @@ pub struct ThreadShell {
     pub pending_guest_message_count: u64,
     #[serde(default)]
     pub has_actionable_proposed_plan: bool,
+    #[serde(default)]
+    pub last_error_class: Option<String>,
+    #[serde(default)]
+    pub usage_limit_reset_at: Option<String>,
+    /// `OrchestrationV2LimitRecovery`, or null.
+    #[serde(default)]
+    pub limit_recovery: Value,
 }
 
 impl ThreadShell {

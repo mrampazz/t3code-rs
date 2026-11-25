@@ -13,6 +13,7 @@ mod git;
 mod history;
 mod i18n;
 mod keybindings;
+mod limits;
 mod model;
 mod palette;
 mod projects;
@@ -1856,8 +1857,22 @@ impl T3App {
                     .clone()
                     .map(|e| div().px_4().text_sm().text_color(theme.danger).child(e)),
             )
+            .when_some(self.render_limit_banner(thread, cx), |col, banner| {
+                col.child(
+                    div()
+                        .mx_auto()
+                        .max_w(px(760.))
+                        .w_full()
+                        .px_4()
+                        .child(banner),
+                )
+            })
             .when_some(
-                thread.last_error.clone().filter(|_| !thread.is_running()),
+                thread
+                    .last_error
+                    .clone()
+                    .filter(|_| !thread.is_running())
+                    .filter(|_| thread.last_error_class.as_deref() != Some("usage_limit")),
                 |col, error| {
                     col.child(
                         div().mx_auto().max_w(px(760.)).w_full().px_4().child(
