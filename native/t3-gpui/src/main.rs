@@ -20,6 +20,7 @@ mod limits;
 mod linked;
 mod media;
 mod menus;
+mod mermaid;
 mod model;
 mod notify;
 mod palette;
