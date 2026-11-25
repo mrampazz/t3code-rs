@@ -80,6 +80,9 @@ pub struct ThreadShell {
     pub latest_run_started_at: Option<String>,
     #[serde(default)]
     pub pull_requests: Vec<Value>,
+    /// `ThreadIssueLink`s.
+    #[serde(default)]
+    pub issues: Vec<Value>,
     #[serde(default)]
     pub latest_run_id: Option<String>,
     #[serde(default)]

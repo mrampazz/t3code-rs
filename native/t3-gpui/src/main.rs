@@ -13,6 +13,7 @@ mod git;
 mod guest;
 mod history;
 mod i18n;
+mod issues;
 mod keybindings;
 mod limits;
 mod model;
@@ -2022,6 +2023,7 @@ impl T3App {
                     )
                     .child(div().flex_1())
                     .child(self.render_guest_share(cx))
+                    .child(self.render_issues(cx))
                     .child(self.render_pull_requests(cx))
                     .child(self.render_scripts(cx))
                     .child(self.render_open_in(cx))

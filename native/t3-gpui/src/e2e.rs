@@ -1388,3 +1388,37 @@ async fn e2e_scheduled_tasks() {
         })
         .await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_issue_links() {
+    let env = connect().await;
+    let (thread_id, _) = launch(&env, "multi-turn", "issues").await;
+    let entry = json!({ "tracker": "github", "host": "github.com", "scope": "o/r", "key": "12", "projectId": env.project_id,
+        "url": "https://github.com/o/r/issues/12", "displayKey": "#12", "title": "A bug" });
+    dispatch(&env.client, crate::issues::link_command(&thread_id, &entry)).await;
+    let id = thread_id.clone();
+    env.shell
+        .until("issue linked", |s| {
+            s.threads
+                .iter()
+                .find(|t| t.id == id)
+                .filter(|t| t.issues.iter().any(|l| l["displayKey"] == "#12"))
+                .map(|_| ())
+        })
+        .await;
+    dispatch(
+        &env.client,
+        json!({ "type": "thread.issue.unlink", "threadId": thread_id, "tracker": "github", "host": "github.com", "scope": "o/r", "key": "12" }),
+    )
+    .await;
+    env.shell
+        .until("issue unlinked", |s| {
+            s.threads
+                .iter()
+                .find(|t| t.id == id)
+                .filter(|t| t.issues.is_empty())
+                .map(|_| ())
+        })
+        .await;
+}
