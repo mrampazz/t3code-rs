@@ -151,6 +151,22 @@ impl T3App {
         ))
     }
 
+    /// (id, name) of the open thread's project actions.
+    pub(crate) fn script_names(&self) -> Vec<(String, String)> {
+        self.project_scripts()
+            .map_or_else(Vec::new, |(_, scripts)| {
+                scripts
+                    .iter()
+                    .map(|s| {
+                        (
+                            s["id"].as_str().unwrap_or("").to_owned(),
+                            s["name"].as_str().unwrap_or("").to_owned(),
+                        )
+                    })
+                    .collect()
+            })
+    }
+
     /// Runs a script in a new terminal; its command is typed once the shell is up.
     pub(crate) fn run_script(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
         let Some((project, scripts)) = self.project_scripts() else {

@@ -154,7 +154,7 @@ impl T3App {
             )
     }
 
-    fn open_link_pr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_link_pr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(thread) = self
             .selected
             .as_ref()

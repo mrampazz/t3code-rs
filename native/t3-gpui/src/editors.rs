@@ -173,6 +173,11 @@ impl T3App {
         }
     }
 
+    /// The editor `editor.openFavorite` would use, when one can open here.
+    pub(crate) fn favorite_editor(&self) -> Option<String> {
+        self.preferred_editor(&self.offered_editors(&self.open_mode()))
+    }
+
     fn preferred_editor(&self, offered: &[String]) -> Option<String> {
         preferred(self.prefs["editor"].as_str(), offered)
     }

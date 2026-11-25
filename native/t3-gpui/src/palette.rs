@@ -9,6 +9,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{Value, json};
 
+use crate::i18n::{t, tv};
 use crate::{T3App, on_tokio};
 
 actions!(t3, [ClosePalette]);
@@ -31,6 +32,10 @@ pub(crate) enum PaletteAction {
     Disconnect,
     Settings,
     AddProject,
+    Find,
+    LinkPr,
+    OpenInEditor,
+    RunScript(String),
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +49,7 @@ impl T3App {
     pub(crate) fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = !self.palette_open;
         self.palette_matches.clear();
+        self.palette_index = 0;
         if self.palette_open {
             self.palette_input.update(cx, |input, cx| {
                 input.set_value("", window, cx);
@@ -61,12 +67,13 @@ impl T3App {
     ) {
         match event {
             InputEvent::PressEnter { .. } => {
-                if let Some(row) = self.palette_rows(cx).into_iter().next() {
+                if let Some(row) = self.palette_rows(cx).into_iter().nth(self.palette_index) {
                     self.run_palette(row.action, window, cx);
                 }
             }
             InputEvent::Change => {
                 self.palette_generation += 1;
+                self.palette_index = 0;
                 let generation = self.palette_generation;
                 let query = self.palette_input.read(cx).value().trim().to_string();
                 self.palette_matches.clear();
@@ -117,34 +124,39 @@ impl T3App {
         let shells: Vec<&crate::model::Shell> = self.envs.iter().map(|e| &e.shell).collect();
         let active = self.env().map(|e| e.key.clone()).unwrap_or_default();
         let mut rows = palette_rows(&shells, &self.palette_matches, &active, &query, title_of);
-        if self.selected.is_some() && "toggle diff".contains(&query) {
-            rows.push(PaletteRow {
-                label: "Toggle diff".into(),
-                detail: "Command".into(),
-                action: PaletteAction::ToggleDiff,
-            });
+        let thread = self.selected.is_some();
+        let mut commands = vec![];
+        if thread {
+            commands.push(("Toggle diff".to_owned(), PaletteAction::ToggleDiff));
+            commands.push((t("Find in current thread"), PaletteAction::Find));
+            commands.push((t("Link pull request to thread"), PaletteAction::LinkPr));
+            if let Some(editor) = self.favorite_editor() {
+                let label = crate::editors::label(&editor);
+                commands.push((
+                    tv("Open in {app}", &[("app", &label)]),
+                    PaletteAction::OpenInEditor,
+                ));
+            }
+            for (id, name) in self.script_names() {
+                commands.push((
+                    tv("Run {name}", &[("name", &name)]),
+                    PaletteAction::RunScript(id),
+                ));
+            }
         }
-        if "add project".contains(&query) {
-            rows.push(PaletteRow {
-                label: "Add project".into(),
-                detail: "Command".into(),
-                action: PaletteAction::AddProject,
-            });
-        }
-        if "settings".contains(&query) {
-            rows.push(PaletteRow {
-                label: "Settings".into(),
-                detail: "Command".into(),
-                action: PaletteAction::Settings,
-            });
-        }
-        if "disconnect".contains(&query) {
-            rows.push(PaletteRow {
-                label: "Disconnect".into(),
-                detail: "Command".into(),
-                action: PaletteAction::Disconnect,
-            });
-        }
+        commands.push((t("Add project"), PaletteAction::AddProject));
+        commands.push((t("Open settings"), PaletteAction::Settings));
+        commands.push(("Disconnect".to_owned(), PaletteAction::Disconnect));
+        rows.extend(
+            commands
+                .into_iter()
+                .filter(|(label, _)| label.to_lowercase().contains(&query))
+                .map(|(label, action)| PaletteRow {
+                    label,
+                    detail: "Command".into(),
+                    action,
+                }),
+        );
         rows.truncate(MAX_ROWS);
         rows
     }
@@ -158,6 +170,12 @@ impl T3App {
             PaletteAction::Disconnect => self.forget_session(cx),
             PaletteAction::Settings => self.toggle_settings(cx),
             PaletteAction::AddProject => self.open_add_project(window, cx),
+            PaletteAction::Find => self.open_find(window, cx),
+            PaletteAction::LinkPr => self.open_link_pr(window, cx),
+            PaletteAction::OpenInEditor => self.open_in_editor(None, cx),
+            PaletteAction::RunScript(id) => {
+                self.run_script(&id, cx);
+            }
         }
         cx.notify();
     }
@@ -188,6 +206,16 @@ impl T3App {
                     .bg(c.popover)
                     .text_color(c.popover_foreground)
                     .shadow_lg()
+                    // Captured so the input does not take ↑/↓ as caret moves.
+                    .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                        let count = this.palette_rows(cx).len();
+                        let Some(step) = palette_step(&e.keystroke.key, count) else {
+                            return;
+                        };
+                        this.palette_index = (this.palette_index + step) % count;
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                         this.palette_open = false;
                         cx.notify();
@@ -206,7 +234,7 @@ impl T3App {
                                     .py_1p5()
                                     .gap_3()
                                     .cursor_pointer()
-                                    .when(i == 0, |r| r.bg(c.list_active))
+                                    .when(i == self.palette_index, |r| r.bg(c.list_active))
                                     .hover(|r| r.bg(c.list_hover))
                                     .child(div().flex_1().truncate().text_sm().child(row.label))
                                     .child(
@@ -223,6 +251,16 @@ impl T3App {
                             })),
                     ),
             )
+    }
+}
+
+/// How far ↑/↓ move the selection, as a forward step that wraps around `count` rows.
+fn palette_step(key: &str, count: usize) -> Option<usize> {
+    match key {
+        _ if count == 0 => None,
+        "down" => Some(1),
+        "up" => Some(count - 1),
+        _ => None,
     }
 }
 
@@ -289,7 +327,15 @@ pub(crate) fn palette_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::{PaletteAction, palette_rows};
+    use super::{PaletteAction, palette_rows, palette_step};
+
+    #[test]
+    fn arrows_wrap() {
+        assert_eq!((2 + palette_step("down", 3).unwrap()) % 3, 0);
+        assert_eq!(palette_step("up", 3).unwrap() % 3, 2);
+        assert_eq!(palette_step("up", 0), None);
+        assert_eq!(palette_step("a", 3), None);
+    }
     use serde_json::json;
 
     #[test]

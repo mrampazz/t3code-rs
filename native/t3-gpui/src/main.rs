@@ -152,6 +152,8 @@ struct T3App {
     palette_matches: Vec<serde_json::Value>,
     /// Drops search responses for an older query.
     palette_generation: u64,
+    /// The highlighted palette row (↑/↓, Enter).
+    palette_index: usize,
     show_archived: bool,
     history_loading: bool,
     find_open: bool,
@@ -316,6 +318,7 @@ impl T3App {
             palette_input,
             palette_matches: Vec::new(),
             palette_generation: 0,
+            palette_index: 0,
             show_archived: false,
             history_loading: false,
             find_open: false,
