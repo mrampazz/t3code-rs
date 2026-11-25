@@ -16,6 +16,7 @@ mod i18n;
 mod issues;
 mod keybindings;
 mod limits;
+mod menus;
 mod model;
 mod notify;
 mod palette;
@@ -256,6 +257,11 @@ impl T3App {
         let palette_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t("Search threads and commands…")));
         let _subscriptions = vec![
+            cx.observe_window_bounds(window, |this, window, _| this.remember_bounds(window)),
+            cx.on_app_quit(|this, _| {
+                settings::save_prefs(&this.prefs);
+                async {}
+            }),
             cx.subscribe_in(
                 &find_input,
                 window,
@@ -1011,9 +1017,21 @@ impl T3App {
         else {
             return false;
         };
+        self.run_command(&command, window, cx)
+    }
+
+    /// Runs a keybinding command (also reached from the native menus).
+    pub(crate) fn run_command(
+        &mut self,
+        command: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let thread = self.selected.clone();
-        match command.as_str() {
+        match command {
             "commandPalette.toggle" => self.toggle_palette(window, cx),
+            "settings.open" if !self.settings_open => self.toggle_settings(cx),
+            "project.add" => self.open_add_project(window, cx),
             "sidebar.toggle" => {
                 self.sidebar_hidden = !self.sidebar_hidden;
                 cx.notify();
@@ -1100,7 +1118,7 @@ impl T3App {
                 else {
                     return false;
                 };
-                let kind = match (command.as_str(), t.pinned_at.is_some()) {
+                let kind = match (command, t.pinned_at.is_some()) {
                     ("thread.pin", true) => "thread.unpin",
                     ("thread.pin", false) => "thread.pin",
                     _ => "thread.settle",
@@ -2195,6 +2213,9 @@ impl Render for T3App {
             .on_action(
                 cx.listener(|this, link: &editors::OpenLink, _, cx| this.open_link(&link.url, cx)),
             )
+            .on_action(cx.listener(|this, run: &menus::RunCommand, window, cx| {
+                this.run_command(&run.command, window, cx);
+            }))
             .on_action(cx.listener(|this, open: &notify::OpenThread, _, cx| {
                 this.select_thread(open.env.to_string(), open.id.to_string(), cx)
             }))
@@ -2243,8 +2264,12 @@ fn main() {
                 .as_str(),
         );
         gpui_kit::component::Theme::change(settings::theme_mode(&prefs), None, cx);
+        menus::install(cx);
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(None, size(px(1200.), px(800.)), cx)),
+            window_bounds: Some(
+                menus::bounds_from_json(&prefs["window"])
+                    .unwrap_or_else(|| WindowBounds::centered(None, size(px(1200.), px(800.)), cx)),
+            ),
             ..Default::default()
         };
         gpui_kit::open_window(options, cx, |window, cx| {
