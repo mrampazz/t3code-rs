@@ -110,6 +110,29 @@ impl T3App {
         });
     }
 
+    /// The web's "Download": a save panel on this machine, starting in Downloads.
+    pub(crate) fn download_plan(&mut self, markdown: String, cx: &mut Context<Self>) {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let picked = cx.prompt_for_new_path(&home.join("Downloads"), Some(&filename(&markdown)));
+        let contents = format!("{}\n", markdown.trim_end());
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = picked.await else {
+                return;
+            };
+            let result = std::fs::write(&path, contents);
+            this.update(cx, |app, cx| {
+                app.error = result
+                    .err()
+                    .map(|e| format!("{}: {e}", t("Could not save plan")).into());
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn write_plan(&mut self, payload: serde_json::Value, cx: &mut Context<Self>) {
         let Some(client) = self.client() else { return };
         cx.spawn(async move |this, cx| {

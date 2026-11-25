@@ -106,6 +106,19 @@ impl T3App {
                                         )))
                                     }),
                             )
+                            .child({
+                                let download = save.clone();
+                                Button::new(SharedString::from(format!(
+                                    "plan-download-{}",
+                                    item.id
+                                )))
+                                .xsmall()
+                                .ghost()
+                                .label(t("Download"))
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| this.download_plan(download.clone(), cx),
+                                ))
+                            })
                             .child(
                                 Button::new(SharedString::from(format!("plan-save-{}", item.id)))
                                     .xsmall()
