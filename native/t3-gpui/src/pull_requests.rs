@@ -10,8 +10,8 @@ use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, dialog::DialogButtonP
 use gpui_kit::*;
 use serde_json::{Value, json};
 
-use crate::T3App;
 use crate::i18n::t;
+use crate::{T3App, on_tokio};
 
 /// (host, repository, number) of a pull request URL.
 pub fn parse_pr_url(input: &str) -> Option<(String, String, u64)> {
@@ -77,6 +77,16 @@ pub fn chip_label(link: &Value) -> String {
     parts.join(" · ")
 }
 
+fn check_mark(status: &str) -> &'static str {
+    match status {
+        "success" => "✓",
+        "failure" | "cancelled" => "✕",
+        "pending" => "…",
+        "action-required" => "!",
+        _ => "·",
+    }
+}
+
 fn capitalize(s: &str) -> String {
     s.chars()
         .take(1)
@@ -102,6 +112,7 @@ impl T3App {
             })
             .unwrap_or_default();
         let thread_id = thread.map(|t| t.id.clone()).unwrap_or_default();
+        let project_id = thread.map(|t| t.project_id.clone()).unwrap_or_default();
         let app = cx.entity().downgrade();
         h_flex()
             .gap_1()
@@ -113,7 +124,7 @@ impl T3App {
                     (_, Some("pending")) => c.warning,
                     _ => c.success,
                 };
-                let (app, thread_id) = (app.clone(), thread_id.clone());
+                let (app, thread_id, project_id) = (app.clone(), thread_id.clone(), project_id.clone());
                 let watching = link["watch"].is_object();
                 Button::new(("pr-chip", i))
                     .xsmall()
@@ -136,6 +147,29 @@ impl T3App {
                         };
                         let url = link["url"].as_str().unwrap_or("").to_owned();
                         let menu = menu.item(PopupMenuItem::new(t("Open in browser")).on_click(move |_, _, cx| cx.open_url(&url)));
+                        let pr_ref = json!({ "projectId": project_id, "host": link["host"], "repository": link["repository"], "number": link["number"] });
+                        let checks = {
+                            let (app, pr_ref) = (app.clone(), pr_ref.clone());
+                            PopupMenuItem::new(t("Checks…")).on_click(move |_, window, cx| {
+                                app.update(cx, |this, cx| this.show_pr_checks(pr_ref.clone(), window, cx)).ok();
+                            })
+                        };
+                        let action = |label: String, action: &'static str, confirm: bool| {
+                            let (app, pr_ref) = (app.clone(), pr_ref.clone());
+                            PopupMenuItem::new(label.clone()).on_click(move |_, window, cx| {
+                                app.update(cx, |this, cx| this.pr_action(pr_ref.clone(), action, label.clone(), confirm, window, cx)).ok();
+                            })
+                        };
+                        let state = link["snapshot"]["state"].as_str().unwrap_or("");
+                        let draft = link["snapshot"]["isDraft"] == true;
+                        let menu = menu.item(checks).separator();
+                        let menu = match state {
+                            "open" if draft => menu.item(action(t("Mark ready for review"), "ready", false)).item(action(t("Close"), "close", true)),
+                            "open" => menu.item(action(t("Merge"), "merge", true)).item(action(t("Close"), "close", true)),
+                            "closed" => menu.item(action(t("Reopen"), "reopen", false)),
+                            _ => menu,
+                        };
+                        let menu = menu.separator();
                         let menu = if watching {
                             menu.item(item(t("Stop watching"), command("thread.pull-request.watch", json!({ "watching": false }))))
                         } else {
@@ -152,6 +186,118 @@ impl T3App {
                     .label(t("Link PR…"))
                     .on_click(cx.listener(|this, _, window, cx| this.open_link_pr(window, cx))),
             )
+    }
+
+    /// `pullRequests.checks` in a dialog; each check opens its page.
+    fn show_pr_checks(&mut self, pr_ref: Value, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(client) = self.client() else { return };
+        let window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let result =
+                on_tokio(async move { client.call("pullRequests.checks", pr_ref).await }).await;
+            let checks = match result {
+                Ok(Ok(v)) => v["checks"].as_array().cloned().unwrap_or_default(),
+                Ok(Err(e)) => {
+                    this.update(cx, |app, cx| {
+                        app.error = Some(format!("Could not load checks: {e}").into());
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+                Err(_) => return,
+            };
+            window_handle
+                .update(cx, |_, window, cx| {
+                    window.open_dialog(cx, move |dialog, _, _| {
+                        let rows = checks
+                            .iter()
+                            .filter(|c| c["placeholder"] != true)
+                            .enumerate()
+                            .map(|(i, check)| {
+                                let url = check["url"].as_str().map(str::to_owned);
+                                Button::new(("pr-check", i))
+                                    .small()
+                                    .ghost()
+                                    .label(format!(
+                                        "{} {}{}",
+                                        check_mark(check["status"].as_str().unwrap_or("")),
+                                        check["name"].as_str().unwrap_or(""),
+                                        check["description"]
+                                            .as_str()
+                                            .map(|d| format!(" — {d}"))
+                                            .unwrap_or_default()
+                                    ))
+                                    .on_click(move |_, _, cx| {
+                                        if let Some(url) = &url {
+                                            cx.open_url(url);
+                                        }
+                                    })
+                            });
+                        dialog.title(t("Checks")).child(
+                            gpui_kit::component::v_flex()
+                                .id("pr-checks")
+                                .max_h(px(360.))
+                                .overflow_y_scroll()
+                                .children(rows),
+                        )
+                    });
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    fn pr_action(
+        &mut self,
+        pr_ref: Value,
+        action: &'static str,
+        label: String,
+        confirm: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut input = pr_ref;
+        input["action"] = json!(action);
+        if !confirm {
+            return self.run_pr_action(input, cx);
+        }
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input) = (app.clone(), input.clone());
+            dialog
+                .title(format!("{label}?"))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(label.clone())
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx: &mut App| {
+                    app.update(cx, |this, cx| this.run_pr_action(input.clone(), cx))
+                        .ok();
+                    true
+                })
+        });
+    }
+
+    fn run_pr_action(&mut self, input: Value, cx: &mut Context<Self>) {
+        let Some(client) = self.client() else { return };
+        cx.spawn(async move |this, cx| {
+            let result =
+                on_tokio(async move { client.call("pullRequests.runAction", input).await }).await;
+            if let Some(e) = match result {
+                Ok(Ok(_)) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(e) => Some(e.to_string()),
+            } {
+                this.update(cx, |app, cx| {
+                    app.error = Some(format!("Pull request action failed: {e}").into());
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     pub(crate) fn open_link_pr(&mut self, window: &mut Window, cx: &mut Context<Self>) {

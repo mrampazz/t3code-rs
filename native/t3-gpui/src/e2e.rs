@@ -1651,3 +1651,28 @@ async fn e2e_storage() {
         .unwrap();
     assert!(report["finishedAt"].is_string(), "{report}");
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_pull_request_checks_shape() {
+    let env = connect().await;
+    let pr_ref = json!({ "projectId": env.project_id, "host": "github.com", "repository": "o/r", "number": 1 });
+    for (method, payload) in [
+        ("pullRequests.checks", pr_ref.clone()),
+        ("pullRequests.runAction", {
+            let mut p = pr_ref.clone();
+            p["action"] = json!("ready");
+            p
+        }),
+    ] {
+        match env.client.call(method, payload).await {
+            Ok(v) => println!("{method}: {v}"),
+            // A host failure, not a schema rejection, proves the request decoded.
+            Err(e) => {
+                let e = e.to_string();
+                println!("{method}: {e}");
+                assert!(e.contains("PullRequestUnavailableError"), "{e}");
+            }
+        }
+    }
+}
