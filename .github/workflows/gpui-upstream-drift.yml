@@ -1,0 +1,39 @@
+name: gpui upstream drift
+
+# Schedules only fire from the default branch's copy of this file.
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    if: github.repository != 'pingdotgg/t3code'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: package.json
+
+      - name: Open an issue for new upstream commits
+        run: |
+          git fetch --quiet https://github.com/pingdotgg/t3code.git main:refs/remotes/upstream/main
+          title="Upstream drift through $(git rev-parse --short=10 upstream/main)"
+          if [ "$(gh issue list --state all --search "\"$title\" in:title" --json number --jq length)" != 0 ]; then
+            echo "Already reported: $title"
+            exit 0
+          fi
+          node native/t3-gpui/scripts/upstream-drift.ts > "$RUNNER_TEMP/drift.md"
+          gh issue create --title "$title" --body-file "$RUNNER_TEMP/drift.md"
