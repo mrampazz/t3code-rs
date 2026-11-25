@@ -99,6 +99,8 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    /// The sidebar's Working shelf is unfolded.
+    working_open: bool,
     /// Provider banners dismissed this session (`provider_banner::banner_key`, per environment).
     dismissed_banners: std::collections::HashSet<String>,
     drafts: std::collections::HashMap<String, String>,
@@ -291,6 +293,7 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            working_open: false,
             dismissed_banners: Default::default(),
             drafts: Default::default(),
             model_picker,
@@ -1454,7 +1457,22 @@ impl T3App {
             .iter()
             .flat_map(|e| e.shell.threads.iter().cloned())
             .collect();
-        let sections = sidebar::sections(&threads, now_ms);
+        let mut sections = sidebar::sections(&threads, now_ms);
+        // The web's Working shelf (`sidebarWorkingShelfEnabled`, on by default): threads with a run
+        // in progress leave Active for a shelf that stays folded to the open thread.
+        // shortcut: no exit grace; a thread returns to Active as soon as its run ends.
+        let working: Vec<&model::ThreadShell> = if self.prefs["workingShelf"] != false {
+            let (working, rest) = sections.active.iter().partition(|t| {
+                matches!(
+                    sidebar::status(t),
+                    Some(sidebar::Status::Working | sidebar::Status::Connecting)
+                )
+            });
+            sections.active = rest;
+            working
+        } else {
+            vec![]
+        };
         let mut list = v_flex()
             .id("threads")
             .flex_1()
@@ -1472,6 +1490,35 @@ impl T3App {
                         .child(format!("{}: {error}", e.label())),
                 )
             }));
+        if !working.is_empty() {
+            let open = self.working_open;
+            list = list.child(
+                div()
+                    .id("section-working")
+                    .px_2()
+                    .pt_3()
+                    .pb_1()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .cursor_pointer()
+                    .child(format!(
+                        "{} {} ({})",
+                        if open { "▾" } else { "▸" },
+                        i18n::t("Working"),
+                        working.len()
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.working_open = !this.working_open;
+                        cx.notify();
+                    })),
+            );
+            for thread in working
+                .iter()
+                .filter(|t| open || self.selected.as_deref() == Some(t.id.as_str()))
+            {
+                list = list.child(self.thread_row(thread, false, None, cx));
+            }
+        }
         for (label, rows, section) in [
             ("Pinned", &sections.pinned, drag::Section::Pinned),
             ("Active", &sections.active, drag::Section::Active),

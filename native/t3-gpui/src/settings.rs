@@ -335,6 +335,21 @@ impl T3App {
                                 .on_click(cx.listener(|this, _, window, cx| this.set_theme(true, window, cx))),
                         ),
                 )
+                .child({
+                    let on = self.prefs["workingShelf"] != false;
+                    row().child(div().flex_1().child(t("Working section"))).child(
+                        Button::new("working-shelf")
+                            .small()
+                            .label(if on { t("On") } else { t("Off") })
+                            .when(on, |b| b.primary())
+                            .when(!on, |b| b.outline())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.prefs["workingShelf"] = json!(!on);
+                                save_prefs(&this.prefs);
+                                cx.notify();
+                            })),
+                    )
+                })
                 .child(section("Sharing & access"))
                 .child(self.render_access(cx))
                 .child(section("Servers"))
