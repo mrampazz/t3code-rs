@@ -1531,3 +1531,44 @@ async fn e2e_provider_instance_add_remove() {
         })
         .await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_project_settings() {
+    use crate::project_settings::update;
+    let env = connect().await;
+    let id = env.project_id.clone();
+    env.client
+        .call(
+            "projects.mutate",
+            update(
+                &id,
+                json!({ "title": "Renamed e2e", "pinned": true, "autoPull": true }),
+            ),
+        )
+        .await
+        .unwrap();
+    env.shell
+        .until("project updated", |s| {
+            s.projects
+                .iter()
+                .find(|p| p.id == id)
+                .filter(|p| {
+                    p.title == "Renamed e2e"
+                        && !p.raw["pinnedAt"].is_null()
+                        && p.raw["autoPull"] == true
+                })
+                .map(|_| ())
+        })
+        .await;
+    env.client
+        .call(
+            "projects.mutate",
+            update(
+                &id,
+                json!({ "pinned": false, "defaultThreadEnvMode": null }),
+            ),
+        )
+        .await
+        .unwrap();
+}

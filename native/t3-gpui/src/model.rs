@@ -19,9 +19,20 @@ pub struct Project {
     pub default_model_selection: Value,
     #[serde(default)]
     pub repository_identity: Value,
+    /// The project as the shell sent it, for fields read in one place (pin, archive, auto-pull).
+    #[serde(skip)]
+    pub raw: Value,
     /// `ProjectScript`s; settings may override them (`scripts::resolve`).
     #[serde(default)]
     pub scripts: Value,
+}
+
+impl Project {
+    fn from_value(v: &Value) -> Option<Self> {
+        let mut project: Project = decode(v)?;
+        project.raw = v.clone();
+        Some(project)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -180,13 +191,18 @@ impl Shell {
             Some("snapshot") => {
                 let snap = &item["snapshot"];
                 self.sequence = snap["snapshotSequence"].as_u64().unwrap_or(0);
-                self.projects = decode_vec(&snap["projects"]);
+                self.projects = snap["projects"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Project::from_value)
+                    .collect();
                 self.threads = decode_vec(&snap["threads"]);
                 self.stamp();
             }
             Some("synchronized") => self.synced = true,
             Some("project.updated") => {
-                if let Some(p) = decode::<Project>(&item["project"]) {
+                if let Some(p) = Project::from_value(&item["project"]) {
                     upsert(&mut self.projects, p, |p| &p.id);
                 }
             }

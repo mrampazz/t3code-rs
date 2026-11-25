@@ -22,6 +22,7 @@ mod model;
 mod notify;
 mod palette;
 mod plans;
+mod project_settings;
 mod projects;
 mod provider_banner;
 mod pull_requests;

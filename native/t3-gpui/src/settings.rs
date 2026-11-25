@@ -742,6 +742,8 @@ impl T3App {
                         }))
                     }))
                 }))
+                .child(section("Projects"))
+                .child(self.render_project_settings(cx))
                 .child(section("Scheduled tasks"))
                 .child(self.render_scheduled(cx))
                 .child(section("Sharing & access"))
