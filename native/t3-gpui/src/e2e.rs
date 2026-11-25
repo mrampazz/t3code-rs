@@ -1336,3 +1336,55 @@ async fn e2e_steer_follow_up() {
     )
     .await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_scheduled_tasks() {
+    let env = connect().await;
+    let model = json!({ "instanceId": REPLAY, "model": "multi-turn" });
+    let saved = env
+        .client
+        .call(
+            "scheduledTasks.upsert",
+            json!({ "title": "E2E task", "prompt": "say hi", "enabled": false,
+                "schedule": crate::scheduled::parse_schedule("weekdays 09:00").unwrap(), "projectId": env.project_id,
+                "workspaceStrategy": { "type": "root" }, "modelSelection": model, "runtimeMode": "full-access",
+                "interactionMode": "default", "creationSource": "web" }),
+        )
+        .await
+        .unwrap();
+    let id = saved["task"]["id"].clone();
+    assert_eq!(
+        crate::scheduled::describe(&saved["task"]["schedule"]),
+        "weekdays 09:00"
+    );
+    let tasks = Live::start(
+        &env.client,
+        "scheduledTasks.subscribe",
+        json!({}),
+        |list: &mut Vec<serde_json::Value>, event| {
+            *list = event["tasks"].as_array().cloned().unwrap_or_default();
+        },
+    );
+    tasks
+        .until("task listed", |list| {
+            list.iter().any(|t| t["id"] == id).then_some(())
+        })
+        .await;
+    env.client
+        .call(
+            "scheduledTasks.setEnabled",
+            json!({ "id": id, "enabled": true }),
+        )
+        .await
+        .unwrap();
+    env.client
+        .call("scheduledTasks.delete", json!({ "id": id }))
+        .await
+        .unwrap();
+    tasks
+        .until("task gone", |list| {
+            (!list.iter().any(|t| t["id"] == id)).then_some(())
+        })
+        .await;
+}

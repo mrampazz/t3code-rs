@@ -124,8 +124,10 @@ impl T3App {
         self.new_pairing_url = None;
         if self.settings_open {
             self.subscribe_access(cx);
+            self.subscribe_scheduled(cx);
         } else {
             self.release_access();
+            self.release_scheduled();
         }
         cx.notify();
     }
@@ -610,6 +612,8 @@ impl T3App {
                         }))
                     }))
                 }))
+                .child(section("Scheduled tasks"))
+                .child(self.render_scheduled(cx))
                 .child(section("Sharing & access"))
                 .child(self.render_access(cx))
                 .child(section("Servers"))

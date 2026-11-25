@@ -24,7 +24,8 @@ mod provider_banner;
 mod pull_requests;
 mod queue;
 mod rpc;
-pub(crate) mod scripts;
+pub(crate) mod scheduled;
+mod scripts;
 pub(crate) mod secrets;
 mod settings;
 mod sidebar;
@@ -101,6 +102,9 @@ struct T3App {
     composer: Entity<TextareaState>,
     /// Whose draft the composer holds (`composer::draft_key`), and the stashed drafts of others.
     composer_owner: Option<String>,
+    /// Scheduled tasks, streamed while Settings is open.
+    scheduled: Vec<serde_json::Value>,
+    scheduled_sub: Option<String>,
     /// Context records of `@` thread mentions in the composer, sent with the message.
     composer_contexts: Vec<serde_json::Value>,
     /// Project folders folded in boring mode, as "env\0project".
@@ -309,6 +313,8 @@ impl T3App {
             pair_input,
             composer,
             composer_owner: None,
+            scheduled: Vec::new(),
+            scheduled_sub: None,
             composer_contexts: Vec::new(),
             folded_projects: Default::default(),
             notifier: Default::default(),
