@@ -17,6 +17,7 @@ mod model;
 mod palette;
 mod projects;
 mod pull_requests;
+mod queue;
 mod rpc;
 pub(crate) mod scripts;
 mod settings;
@@ -1838,6 +1839,7 @@ impl T3App {
                         self.menu_trigger.is_some() && !self.menu_items.is_empty(),
                         |col| col.child(self.render_composer_menu(cx)),
                     )
+                    .child(self.render_queue(cx))
                     .child(self.render_attachments(cx))
                     .child(
                         div()

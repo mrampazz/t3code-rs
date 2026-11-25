@@ -1055,3 +1055,40 @@ async fn e2e_project_scripts() {
         })
         .await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_queued_runs() {
+    let env = connect().await;
+    // The approval scenario holds its turn open, so a follow-up queues behind it.
+    let (thread_id, view) = launch_in(&env, "approval", "write a file", "approval-required").await;
+    view.until("approval request", |v| {
+        v.items()
+            .any(|i| i.kind == "approval_request")
+            .then_some(())
+    })
+    .await;
+    let id = uuid::Uuid::new_v4().to_string();
+    dispatch(
+        &env.client,
+        json!({ "type": "message.dispatch", "messageId": id, "threadId": thread_id, "text": "queued follow-up",
+            "attachments": [], "dispatchMode": { "type": "queue_after_active" }, "createdBy": "user", "creationSource": "web" }),
+    )
+    .await;
+    let queued = view
+        .until("queued run", |v| v.queued_runs().into_iter().next())
+        .await;
+    assert_eq!(queued.text, "queued follow-up");
+    dispatch(
+        &env.client,
+        json!({ "type": "queued-run.cancel", "threadId": thread_id, "runId": queued.run_id }),
+    )
+    .await;
+    view.until("queue empty", |v| v.queued_runs().is_empty().then_some(()))
+        .await;
+    dispatch(
+        &env.client,
+        json!({ "type": "thread.stop", "threadId": thread_id }),
+    )
+    .await;
+}

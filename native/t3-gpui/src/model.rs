@@ -493,6 +493,16 @@ struct RewindPoint {
 struct Run {
     status: String,
     started: bool,
+    ordinal: u64,
+    queue_position: Option<u64>,
+    user_message_id: String,
+}
+
+/// A message waiting for its own turn (`deriveThreadQueueWorkflowState`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueuedRun {
+    pub run_id: String,
+    pub text: String,
 }
 
 /// Thread timeline, mirroring `client-runtime/src/state/orchestrationV2Projection.ts`.
@@ -500,6 +510,8 @@ struct Run {
 pub struct ThreadView {
     rows: Vec<Row>,
     runs: HashMap<String, Run>,
+    /// Text of messages waiting in the queue, by message id; dropped once their run leaves it.
+    queued_messages: HashMap<String, String>,
     /// runId -> root node ids of superseded attempts.
     superseded: HashMap<String, HashSet<String>>,
     /// Newest turn first.
@@ -644,6 +656,39 @@ impl ThreadView {
         })
     }
 
+    /// Queued user runs in queue order, with their message text (`deriveThreadQueueWorkflowState`).
+    pub fn queued_runs(&self) -> Vec<QueuedRun> {
+        let mut queued: Vec<(&String, &Run)> = self
+            .runs
+            .iter()
+            .filter(|(_, r)| r.status == "queued")
+            .collect();
+        queued.sort_by_key(|(_, r)| (r.queue_position.unwrap_or(r.ordinal), r.ordinal));
+        queued
+            .into_iter()
+            .filter_map(|(id, run)| {
+                Some(QueuedRun {
+                    run_id: id.clone(),
+                    text: self.queued_messages.get(&run.user_message_id)?.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// The newest preparing, starting, running or waiting run (`resolveActiveThreadRun`).
+    pub fn active_run(&self) -> Option<&str> {
+        self.runs
+            .iter()
+            .filter(|(_, r)| {
+                matches!(
+                    r.status.as_str(),
+                    "preparing" | "starting" | "running" | "waiting"
+                )
+            })
+            .max_by_key(|(_, r)| r.ordinal)
+            .map(|(id, _)| id.as_str())
+    }
+
     pub fn latest_turn(&self) -> Option<u64> {
         self.checkpoints.first().map(|c| c.turn)
     }
@@ -660,6 +705,17 @@ impl ThreadView {
                 }
                 for attempt in projection["attempts"].as_array().into_iter().flatten() {
                     self.apply_attempt(attempt);
+                }
+                self.queued_messages.clear();
+                for message in projection["messages"].as_array().into_iter().flatten() {
+                    let id = message["id"].as_str().unwrap_or("");
+                    if self
+                        .runs
+                        .values()
+                        .any(|r| r.status == "queued" && r.user_message_id == id)
+                    {
+                        self.apply_message(message);
+                    }
                 }
                 self.checkpoints.clear();
                 self.rewind.clear();
@@ -680,6 +736,7 @@ impl ThreadView {
                         }
                     }
                     Some("run.created" | "run.updated") => self.apply_run(payload),
+                    Some("message.updated") => self.apply_message(payload),
                     Some("run-attempt.created" | "run-attempt.updated") => {
                         self.apply_attempt(payload)
                     }
@@ -694,14 +751,44 @@ impl ThreadView {
     fn apply_run(&mut self, run: &Value) {
         if let (Some(id), Some(status)) = (run["id"].as_str(), run["status"].as_str()) {
             let started = !run["startedAt"].is_null();
+            if status != "queued"
+                && let Some(message) = run["userMessageId"].as_str()
+            {
+                self.queued_messages.remove(message);
+            }
             self.runs.insert(
                 id.to_owned(),
                 Run {
                     status: status.to_owned(),
                     started,
+                    ordinal: run["ordinal"].as_u64().unwrap_or(0),
+                    queue_position: run["queuePosition"].as_u64(),
+                    user_message_id: run["userMessageId"].as_str().unwrap_or("").to_owned(),
                 },
             );
         }
+    }
+
+    /// Keeps a user message that may sit in the queue; automatic completions never show there
+    /// (`getUserQueuedThreadRuns`).
+    fn apply_message(&mut self, message: &Value) {
+        let Some(id) = message["id"].as_str() else {
+            return;
+        };
+        let automatic =
+            !message["delegatedCompletion"].is_null() || !message["notification"].is_null();
+        let started = self
+            .runs
+            .values()
+            .any(|r| r.user_message_id == id && r.status != "queued");
+        if message["role"] != "user" || automatic || started {
+            return;
+        }
+        let text = message["context"]["guest"]["text"]
+            .as_str()
+            .or(message["text"].as_str())
+            .unwrap_or("");
+        self.queued_messages.insert(id.to_owned(), text.to_owned());
     }
 
     fn apply_attempt(&mut self, attempt: &Value) {
@@ -976,6 +1063,42 @@ mod tests {
         assert_eq!(view.items().count(), 0);
         view.apply(&json!({"kind": "event", "sequence": 3, "event": {"type": "run.updated", "payload": {"id": "q", "status": "running", "startedAt": "t"}}}));
         assert_eq!(view.items().count(), 1);
+    }
+
+    #[test]
+    fn lists_queued_runs_in_queue_order() {
+        let mut view = ThreadView::default();
+        let msg = |id: &str, text: &str| json!({"id": id, "role": "user", "text": text});
+        view.apply(&json!({"kind": "snapshot", "snapshotSequence": 1, "projection": {
+            "runs": [
+                {"id": "a", "status": "running", "ordinal": 1, "userMessageId": "m0", "startedAt": "t"},
+                {"id": "q1", "status": "queued", "ordinal": 2, "queuePosition": 2, "userMessageId": "m1", "startedAt": null},
+                {"id": "q2", "status": "queued", "ordinal": 3, "queuePosition": 1, "userMessageId": "m2", "startedAt": null}],
+            "messages": [msg("m0", "running"), msg("m1", "first"), msg("m2", "second")],
+            "attempts": [], "visibleTurnItems": []}}));
+        let texts: Vec<_> = view.queued_runs().into_iter().map(|q| q.text).collect();
+        assert_eq!(texts, ["second", "first"]);
+        assert_eq!(view.active_run(), Some("a"));
+        assert_eq!(
+            view.queued_messages.len(),
+            2,
+            "only queued messages are kept"
+        );
+
+        let event = |seq: u64, kind: &str, payload: serde_json::Value| json!({"kind": "event", "sequence": seq, "event": {"type": kind, "payload": payload}});
+        view.apply(&event(2, "run.updated", json!({"id": "q2", "status": "cancelled", "ordinal": 3, "userMessageId": "m2", "startedAt": null})));
+        assert_eq!(view.queued_runs().len(), 1);
+        view.apply(&event(3, "message.updated", msg("m3", "later")));
+        view.apply(&event(4, "run.created", json!({"id": "q3", "status": "queued", "ordinal": 4, "userMessageId": "m3", "startedAt": null})));
+        assert_eq!(view.queued_runs().last().unwrap().text, "later");
+        let auto = json!({"id": "m4", "role": "user", "text": "done", "delegatedCompletion": {}});
+        view.apply(&event(5, "message.updated", auto));
+        view.apply(&event(6, "run.created", json!({"id": "q4", "status": "queued", "ordinal": 5, "userMessageId": "m4", "startedAt": null})));
+        assert_eq!(
+            view.queued_runs().len(),
+            2,
+            "automatic completions stay out of the queue"
+        );
     }
 
     #[test]
