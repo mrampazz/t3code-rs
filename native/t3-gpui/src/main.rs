@@ -279,8 +279,9 @@ impl T3App {
                     this.wake_disconnected();
                 }
             }),
-            cx.on_app_quit(|this, _| {
+            cx.on_app_quit(|this, cx| {
                 settings::save_prefs(&this.prefs);
+                this.save_drafts(cx);
                 async {}
             }),
             cx.subscribe_in(
@@ -356,7 +357,7 @@ impl T3App {
             nav_forward: Vec::new(),
             working_open: false,
             dismissed_banners: Default::default(),
-            drafts: Default::default(),
+            drafts: composer::load_drafts(),
             model_picker,
             picker_synced: (u64::MAX, String::new()),
             draft_model: None,

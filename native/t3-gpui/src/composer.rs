@@ -8,6 +8,7 @@ use gpui_kit::component::{Sizable, h_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::json;
+use std::collections::HashMap;
 
 use crate::T3App;
 
@@ -159,10 +160,36 @@ pub fn draft_key(env: &str, thread: Option<&str>, draft_project: Option<&str>) -
     }
 }
 
+fn drafts_path() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".config/t3-gpui/drafts.json"))
+}
+
+pub fn load_drafts() -> HashMap<String, String> {
+    drafts_path()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
 impl T3App {
+    /// Writes every unsent draft, including the one the composer holds now.
+    pub(crate) fn save_drafts(&self, cx: &App) {
+        let Some(path) = drafts_path() else { return };
+        let mut drafts = self.drafts.clone();
+        let text = self.composer.read(cx).value().to_string();
+        if let Some(owner) = &self.composer_owner
+            && !text.trim().is_empty()
+        {
+            drafts.insert(owner.clone(), text);
+        }
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        let _ = std::fs::write(path, serde_json::to_vec(&drafts).unwrap());
+    }
+
     /// Keeps unsent text per thread: on a switch, the old owner's text is stashed and the new
-    /// owner's is restored. Runs in render, which has the window `set_value` needs.
-    /// shortcut: drafts live in memory (lost on quit) and attachments are not kept per thread.
+    /// owner's is restored. Runs in render, which has the window `set_value` needs. Drafts are
+    /// written on each switch and on quit, so a crash loses at most the open draft's edits.
+    /// shortcut: attachments are not kept per thread.
     pub(crate) fn sync_composer_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
         let key = draft_key(
@@ -188,6 +215,7 @@ impl T3App {
         self.composer
             .update(cx, |input, cx| input.set_value(restored, window, cx));
         self.composer_owner = key;
+        self.save_drafts(cx);
     }
 }
 
