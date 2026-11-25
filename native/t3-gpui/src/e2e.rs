@@ -319,7 +319,7 @@ async fn e2e_chat_diff_and_model() {
         for (method, payload) in [
             (
                 "orchestration.getFullThreadDiff",
-                json!({ "threadId": thread_id, "toTurnCount": turn }),
+                json!({ "threadId": thread_id, "toTurnCount": turn, "ignoreWhitespace": true }),
             ),
             (
                 "orchestration.getTurnDiff",

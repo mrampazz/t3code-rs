@@ -6,6 +6,7 @@ use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::*;
 use serde_json::{Value, json};
 
+use crate::i18n::t;
 use crate::{T3App, on_tokio};
 
 /// Ends a diff the server cut at its size limit (`CHECKPOINT_DIFF_TRUNCATED_MARKER`).
@@ -34,7 +35,8 @@ impl T3App {
             self.diff_note = Some("No changes yet.".into());
             return cx.notify();
         };
-        let (method, payload) = match target {
+        let ignore_whitespace = self.diff_ignore_whitespace();
+        let (method, mut payload) = match target {
             Some(turn) => (
                 "orchestration.getTurnDiff",
                 json!({ "threadId": thread_id, "fromTurnCount": turn.saturating_sub(1), "toTurnCount": turn }),
@@ -44,6 +46,7 @@ impl T3App {
                 json!({ "threadId": thread_id, "toTurnCount": latest }),
             ),
         };
+        payload["ignoreWhitespace"] = json!(ignore_whitespace);
         self.diff_note = Some("Loading…".into());
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -74,6 +77,12 @@ impl T3App {
         .detach();
     }
 
+    /// This session's choice, else the `diffIgnoreWhitespace` setting.
+    fn diff_ignore_whitespace(&self) -> bool {
+        self.diff_whitespace
+            .unwrap_or(self.config().settings["diffIgnoreWhitespace"] == true)
+    }
+
     pub(crate) fn render_diff_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors;
         let mut turns = h_flex()
@@ -82,6 +91,20 @@ impl T3App {
             .p_2()
             .border_b_1()
             .border_color(c.border)
+            .child(
+                Button::new("diff-whitespace")
+                    .xsmall()
+                    .ghost()
+                    .label(if self.diff_ignore_whitespace() {
+                        t("Show whitespace changes")
+                    } else {
+                        t("Hide whitespace changes")
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.diff_whitespace = Some(!this.diff_ignore_whitespace());
+                        this.load_diff(this.diff_target, cx);
+                    })),
+            )
             .child(self.turn_button("diff-all", "All turns".into(), None, cx));
         for checkpoint in &self.thread.checkpoints {
             let label = format!(
