@@ -452,12 +452,13 @@ async fn e2e_thread_actions() {
         })
         .await;
     dispatch(&env.client, cmd("thread.mark-unread", json!({}))).await;
-    let presets = crate::sidebar::snooze_presets(&jiff::Zoned::now(), None);
+    // A custom snooze ("Custom snooze…") goes through the same command as a preset.
+    let until = crate::sidebar::custom_snooze("3d", &jiff::Zoned::now()).unwrap();
     dispatch(
         &env.client,
         cmd(
             "thread.snooze",
-            json!({ "snoozedUntil": presets[0].until.to_string() }),
+            json!({ "snoozedUntil": until.to_string() }),
         ),
     )
     .await;

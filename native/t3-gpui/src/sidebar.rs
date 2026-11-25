@@ -140,6 +140,27 @@ fn plural(n: i64, one: &str) -> String {
     }
 }
 
+/// `resolveCustomSnooze` from one field: a local `YYYY-MM-DD HH:MM`, or a duration such as `90m`,
+/// `2h` or `3d`. `None` unless it lands in the future; a time skipped by a DST change is rejected.
+pub fn custom_snooze(input: &str, now: &Zoned) -> Option<Timestamp> {
+    let input = input.trim();
+    let wake = if let Ok(local) = input.replacen(' ', "T", 1).parse::<jiff::civil::DateTime>() {
+        let zoned = local.to_zoned(now.time_zone().clone()).ok()?;
+        (zoned.datetime() == local).then_some(zoned)?
+    } else {
+        let split = input.find(|c: char| !c.is_ascii_digit())?;
+        let amount: i64 = input[..split].parse().ok().filter(|n| *n > 0)?;
+        let minutes = match input[split..].trim().chars().next()? {
+            'm' => amount,
+            'h' => amount.checked_mul(60)?,
+            'd' => amount.checked_mul(24 * 60)?,
+            _ => return None,
+        };
+        now.checked_add(minutes.minutes()).ok()?
+    };
+    (wake.timestamp() > now.timestamp()).then(|| wake.timestamp())
+}
+
 /// `resolveSnoozePresets`: the environment's presets (or defaults) resolved against `now`,
 /// passed "today" times dropped, sorted by wake minute with duplicates removed.
 pub fn snooze_presets(now: &Zoned, settings: Option<&Value>) -> Vec<SnoozePreset> {
@@ -209,6 +230,48 @@ fn resolve_preset(now: &Zoned, preset: &Value) -> Option<SnoozePreset> {
     })
 }
 
+impl crate::T3App {
+    /// The web's `CustomSnoozeDialog`, as one field taking a date and time or a duration.
+    pub(crate) fn open_custom_snooze(
+        &mut self,
+        env: String,
+        thread_id: String,
+        window: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
+        use crate::i18n::t;
+        use gpui_kit::component::input::{Input, InputState};
+        use gpui_kit::component::{WindowExt, dialog::DialogButtonProps, v_flex};
+        use gpui_kit::{AppContext, ParentElement, Styled};
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("2026-12-01 09:00  ·  90m  ·  2h  ·  3d")
+        });
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input, env, thread_id) = (app.clone(), input.clone(), env.clone(), thread_id.clone());
+            dialog
+                .title(t("Custom snooze"))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(t("Choose when snoozed threads return to your inbox."))
+                        .child(Input::new(&input)),
+                )
+                .button_props(DialogButtonProps::default().ok_text(t("Snooze")).show_cancel(true))
+                .on_ok(move |_, _, cx: &mut gpui_kit::App| {
+                    let text = input.read(cx).value().to_string();
+                    let Some(until) = custom_snooze(&text, &Zoned::now()) else {
+                        return false;
+                    };
+                    let command = serde_json::json!({ "type": "thread.snooze", "threadId": thread_id,
+                        "snoozedUntil": until.to_string() });
+                    app.update(cx, |this, cx| this.dispatch_to(&env, command, cx)).ok();
+                    true
+                })
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +325,22 @@ mod tests {
         assert!(active_sort_key(&a).starts_with('0') && active_sort_key(&a).ends_with('n'));
         let arranged = thread("c", json!({"activeOrderKey": "m"}));
         assert_eq!(active_sort_key(&arranged), "m");
+    }
+
+    #[test]
+    fn resolves_custom_snooze() {
+        let now: Zoned = "2026-03-08T01:00:00[America/New_York]".parse().unwrap();
+        let at = |s: &str| custom_snooze(s, &now).map(|t| t.to_string());
+        assert_eq!(at("90m").as_deref(), Some("2026-03-08T07:30:00Z"));
+        assert_eq!(at("2 hours").as_deref(), Some("2026-03-08T08:00:00Z"));
+        assert_eq!(
+            at("2026-03-09 09:00").as_deref(),
+            Some("2026-03-09T13:00:00Z")
+        );
+        assert_eq!(at("2026-03-08 02:30"), None, "skipped by the DST change");
+        assert_eq!(at("2026-03-07 09:00"), None, "in the past");
+        assert_eq!(at("0h"), None);
+        assert_eq!(at("soon"), None);
     }
 
     #[test]

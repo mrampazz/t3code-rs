@@ -1264,7 +1264,21 @@ impl T3App {
                                 },
                             ));
                         }
-                        sub
+                        let (app, env, thread_id) = (app.clone(), env.clone(), thread_id.clone());
+                        sub.separator()
+                            .item(PopupMenuItem::new(t("Custom snooze") + "…").on_click(
+                                move |_, window, cx| {
+                                    app.update(cx, |this, cx| {
+                                        this.open_custom_snooze(
+                                            env.clone(),
+                                            thread_id.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                    .ok();
+                                },
+                            ))
                     })
                 };
                 menu.item(action("Mark unread", "thread.mark-unread", json!({})))
