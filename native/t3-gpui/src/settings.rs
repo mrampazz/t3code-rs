@@ -176,6 +176,7 @@ impl T3App {
             self.subscribe_access(cx);
             self.subscribe_scheduled(cx);
             self.subscribe_storage(cx);
+            self.discover_source_control(cx);
         } else {
             self.release_access();
             self.release_scheduled();
@@ -961,6 +962,8 @@ impl T3App {
                 }))
                 .child(section("Scheduled tasks"))
                 .child(self.render_scheduled(cx))
+                .child(section("Source control"))
+                .child(self.render_source_control(cx))
                 .child(section("Storage"))
                 .child(self.render_storage(cx))
                 .child(section("Sharing & access"))

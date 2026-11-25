@@ -1676,3 +1676,24 @@ async fn e2e_pull_request_checks_shape() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_source_control_discovery() {
+    let env = connect().await;
+    let found = env
+        .client
+        .call("server.discoverSourceControl", json!({}))
+        .await
+        .unwrap();
+    println!(
+        "{}",
+        serde_json::to_string(&found)
+            .unwrap()
+            .chars()
+            .take(900)
+            .collect::<String>()
+    );
+    let lines = crate::source_control::summary(&found);
+    assert!(lines.iter().any(|(label, _)| label == "Git"), "{lines:?}");
+}
