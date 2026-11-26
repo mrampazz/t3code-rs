@@ -31,6 +31,9 @@ pub struct Tokens {
     pub sidebar_row_selected: Hsla,
     /// Row metadata, a step below titles (`--secondary-label`).
     pub secondary_label: Hsla,
+    /// The composer card: raised glass over the page, and its hairline.
+    pub composer: Hsla,
+    pub composer_outline: Hsla,
     pub error: Hsla,
     pub error_foreground: Hsla,
     pub success_foreground: Hsla,
@@ -57,6 +60,8 @@ pub fn tokens(dark: bool) -> Tokens {
             sidebar_row_active: white(0.11),
             sidebar_row_selected: white(0.07),
             secondary_label: rgb(0x8f8f8f).into(),
+            composer: rgb(0x0e0e0e).into(),
+            composer_outline: white(0.05),
             error: rgb(0xf05252).into(),
             error_foreground: rgb(0xf87171).into(),
             success_foreground: rgb(0x34d399).into(),
@@ -79,6 +84,8 @@ pub fn tokens(dark: bool) -> Tokens {
             sidebar_row_active: rgb(0xffffff).into(),
             sidebar_row_selected: rgb(0xffffff).into(),
             secondary_label: rgb(0x71717a).into(),
+            composer: rgb(0xfefefe).into(),
+            composer_outline: black(0.08),
             error: rgb(0xef4444).into(),
             error_foreground: rgb(0xb91c1c).into(),
             success_foreground: rgb(0x047857).into(),

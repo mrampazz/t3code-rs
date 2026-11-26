@@ -887,7 +887,7 @@ impl T3App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().colors;
-        let frame = div().w_full().max_w(px(760.)).mx_auto().px_4().py_2();
+        let frame = div().w_full().max_w(px(768.)).px_4().py_2();
         let rows = group_rows(self.thread.items());
         let Some(row) = rows.get(i) else {
             let thread = self

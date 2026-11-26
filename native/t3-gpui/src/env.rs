@@ -272,6 +272,9 @@ impl T3App {
                                 if reload {
                                     app.load_archived(&key, cx);
                                 }
+                                if item["kind"] == "synchronized" {
+                                    app.restore_last_thread(&key, cx);
+                                }
                                 cx.notify();
                                 true
                             }) else {

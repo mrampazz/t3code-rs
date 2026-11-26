@@ -12,6 +12,7 @@ mod files;
 mod find;
 mod git;
 mod guest;
+mod header;
 mod history;
 mod i18n;
 mod issues;
@@ -59,7 +60,7 @@ use gpui_kit::component::Sizable;
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{SelectEvent, SelectState};
@@ -114,6 +115,17 @@ impl SearchableListItem for ModelOption {
 
     fn value(&self) -> &SharedString {
         &self.key
+    }
+
+    /// The trigger names the model alone, as the web's picker does; the list keeps the provider.
+    fn display_title(&self) -> Option<AnyElement> {
+        let model = self
+            .title
+            .rsplit(" · ")
+            .next()
+            .unwrap_or(&self.title)
+            .to_owned();
+        Some(div().truncate().child(model).into_any_element())
     }
 }
 
@@ -246,6 +258,12 @@ struct T3App {
     project_status: Option<SharedString>,
     browse_generation: u64,
     sidebar_hidden: bool,
+    /// The thread details card under the header.
+    details_open: bool,
+    /// The right panel with no surface open yet: its picker.
+    surfaces_open: bool,
+    /// The last open thread was offered back once (`restore_last_thread`).
+    restored: bool,
     /// A one-second re-render is scheduled for the working timer.
     working_tick: std::cell::Cell<bool>,
     /// The selected thread's open still has to be reported with `thread.visit`.
@@ -303,7 +321,7 @@ impl T3App {
             .new(|cx| InputState::new(window, cx).placeholder(t("http://host:3773/pair#token=…")));
         let composer = cx.new(|cx| {
             let mut state = TextareaState::new(window, cx)
-                .placeholder(t("Ask anything…"))
+                .placeholder(t("Ask anything. @ files, $ skills, / commands"))
                 .submit_on_enter(true);
             state.set_auto_grow(1, 12, cx);
             state
@@ -479,6 +497,9 @@ impl T3App {
             project_status: None,
             browse_generation: 0,
             sidebar_hidden: false,
+            details_open: false,
+            surfaces_open: false,
+            restored: false,
             working_tick: Default::default(),
             visit_open_pending: false,
             visit_sent_at: None,
@@ -703,9 +724,33 @@ impl T3App {
     }
 
     pub(crate) fn select_thread(&mut self, env: String, id: String, cx: &mut Context<Self>) {
+        if self.prefs["lastThread"] != json!({ "env": env, "id": id }) {
+            self.prefs["lastThread"] = json!({ "env": env, "id": id });
+            settings::save_prefs(&self.prefs);
+        }
         self.load_family(&env, &id, cx);
         self.record_route(&Route::Thread(env.clone(), id.clone()));
         self.open_thread(env, id, cx);
+    }
+
+    /// Reopens the thread that was open last, as the web's `/` route does, once its environment
+    /// has synced; only at launch, and only if nothing else was opened meanwhile.
+    pub(crate) fn restore_last_thread(&mut self, key: &str, cx: &mut Context<Self>) {
+        let last = &self.prefs["lastThread"];
+        if self.restored || last["env"] != key {
+            return;
+        }
+        self.restored = true;
+        let Some(id) = last["id"].as_str().map(str::to_owned) else {
+            return;
+        };
+        let idle = self.selected.is_none() && self.draft_project.is_none() && !self.settings_open;
+        let exists = self
+            .env_by(key)
+            .is_some_and(|e| e.shell.threads.iter().any(|t| t.id == id));
+        if idle && exists {
+            self.select_thread(key.to_owned(), id, cx);
+        }
     }
 
     /// Where the app is, as the web's router would name it.
@@ -1189,7 +1234,10 @@ impl T3App {
             ("terminalOpen", self.term.is_some()),
             ("composerFocus", composer_focus),
             ("editableFocus", composer_focus || self.palette_open),
-            ("rightPanelOpen", self.diff_open),
+            (
+                "rightPanelOpen",
+                self.diff_open || self.files.open || self.surfaces_open,
+            ),
             ("draftThreadRoute", self.draft_project.is_some()),
             ("isDesktop", true),
         ]);
@@ -1274,8 +1322,14 @@ impl T3App {
             "navigation.back" | "navigation.forward" => {
                 return self.navigate(command == "navigation.back", window, cx);
             }
-            "rightPanel.toggle" if thread.is_some() => self.toggle_diff(cx),
-            "rightPanel.close" if self.diff_open => self.toggle_diff(cx),
+            "rightPanel.toggle" if thread.is_some() => self.toggle_right_panel(cx),
+            "rightPanel.close" if self.diff_open || self.files.open || self.surfaces_open => {
+                self.toggle_right_panel(cx)
+            }
+            "threadPanel.toggle" if thread.is_some() => {
+                self.details_open = !self.details_open;
+                cx.notify();
+            }
             "appearance.cycle" => {
                 let light =
                     settings::theme_mode(&self.prefs) != gpui_kit::component::ThemeMode::Light;
@@ -2275,21 +2329,38 @@ impl T3App {
                 .child(
                     v_flex()
                         .mx_auto()
-                        .max_w(px(760.))
+                        .max_w(px(768.))
                         .w_full()
                         .p_4()
                         .gap_2()
                         .child(
                             div()
-                                .text_xl()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!("New thread in {}", project.title)),
+                                .w_full()
+                                .mb_4()
+                                .text_center()
+                                .text_size(px(30.))
+                                .child(i18n::tv(
+                                    "What should we build in {project}?",
+                                    &[("project", &project.title)],
+                                )),
                         )
+                        .when(
+                            self.menu_trigger.is_some() && !self.menu_items.is_empty(),
+                            |col| col.child(self.render_composer_menu(cx)),
+                        )
+                        .child(self.render_stash(cx))
+                        .child(self.render_attachments(cx))
                         .child(match &model {
-                            Some(_) => h_flex()
-                                .gap_2()
-                                .child(self.render_composer_controls(cx))
-                                .child(self.render_workspace_controls(cx))
+                            Some(_) => v_flex()
+                                .w_full()
+                                .child(self.render_composer_card(false, cx))
+                                .child(
+                                    h_flex()
+                                        .px_2()
+                                        .pt_2()
+                                        .text_color(theme.muted_foreground)
+                                        .child(self.render_workspace_controls(cx)),
+                                )
                                 .into_any_element(),
                             None => div()
                                 .text_sm()
@@ -2297,13 +2368,6 @@ impl T3App {
                                 .child(t("No available provider"))
                                 .into_any_element(),
                         })
-                        .when(
-                            self.menu_trigger.is_some() && !self.menu_items.is_empty(),
-                            |col| col.child(self.render_composer_menu(cx)),
-                        )
-                        .child(self.render_stash(cx))
-                        .child(self.render_attachments(cx))
-                        .child(Textarea::new(&self.composer))
                         .children(
                             self.error
                                 .clone()
@@ -2355,97 +2419,24 @@ impl T3App {
         let match_count = matches.len();
         // The list lays out only the rows in view; it asks for each by index.
         let render_row = cx.processor(move |this, i: usize, _, cx| {
-            this.render_transcript_row(i, &revert_turns, &matches, current, cx)
+            h_flex()
+                .w_full()
+                .justify_center()
+                .child(this.render_transcript_row(i, &revert_turns, &matches, current, cx))
+                .into_any_element()
         });
         v_flex()
+            .relative()
             .flex_1()
             .h_full()
-            .child(
-                h_flex()
-                    .h(px(44.))
-                    .px_4()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .children(thread.parent_id().map(|parent| {
-                        let parent = parent.to_owned();
-                        let env = thread.env.clone();
-                        let title = self
-                            .shell()
-                            .threads
-                            .iter()
-                            .find(|t| t.id == parent)
-                            .map_or_else(|| t("Parent thread"), |t| t.title.clone());
-                        Button::new("open-parent")
-                            .xsmall()
-                            .ghost()
-                            .label(format!("← {title}"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_thread(env.clone(), parent.clone(), cx)
-                            }))
-                    }))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .truncate()
-                            .child(thread.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(self.config().label(&thread.model_selection)),
-                    )
-                    .child(div().flex_1())
-                    .child(self.render_guest_share(cx))
-                    .child(self.render_issues(cx))
-                    .child(self.render_pull_requests(cx))
-                    .child(self.render_scripts(cx))
-                    .child(self.render_open_in(cx))
-                    .child(self.render_git_toolbar(cx))
-                    .child(
-                        Button::new("terminal-toggle")
-                            .small()
-                            .label(t("Terminal"))
-                            .when(self.term.is_some(), |b| b.primary())
-                            .when(self.term.is_none(), |b| b.ghost())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("files-toggle")
-                            .small()
-                            .label(t("Files"))
-                            .when(self.files.open, |b| b.primary())
-                            .when(!self.files.open, |b| b.ghost())
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_files(cx))),
-                    )
-                    .child(
-                        Button::new("diff-toggle")
-                            .small()
-                            .label(t("Diff"))
-                            .when(self.diff_open, |b| b.primary())
-                            .when(!self.diff_open, |b| b.ghost())
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_diff(cx))),
-                    )
-                    .when(thread.is_running(), |header| {
-                        header.child(
-                            Button::new("stop")
-                                .small()
-                                .outline()
-                                .label(t("Stop"))
-                                .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
-                        )
-                    }),
-            )
+            .child(self.render_thread_header(thread, cx))
             .when(self.find_open, |col| {
                 col.child(self.render_find_bar(match_count, cx))
             })
             .children(self.render_worktree_setup(cx).map(|card| {
                 div()
                     .w_full()
-                    .max_w(px(760.))
+                    .max_w(px(768.))
                     .mx_auto()
                     .px_4()
                     .py_2()
@@ -2493,7 +2484,7 @@ impl T3App {
                 col.child(
                     div()
                         .mx_auto()
-                        .max_w(px(760.))
+                        .max_w(px(768.))
                         .w_full()
                         .px_4()
                         .child(banner),
@@ -2507,7 +2498,7 @@ impl T3App {
                     .filter(|_| thread.last_error_class.as_deref() != Some("usage_limit")),
                 |col, error| {
                     col.child(
-                        div().mx_auto().max_w(px(760.)).w_full().px_4().child(
+                        div().mx_auto().max_w(px(768.)).w_full().px_4().child(
                             div()
                                 .px_3()
                                 .py_2()
@@ -2524,7 +2515,7 @@ impl T3App {
             .child(
                 v_flex()
                     .mx_auto()
-                    .max_w(px(760.))
+                    .max_w(px(768.))
                     .w_full()
                     .p_4()
                     .gap_2()
@@ -2538,20 +2529,13 @@ impl T3App {
                     .child(self.render_queue(cx))
                     .child(self.render_stash(cx))
                     .child(self.render_attachments(cx))
-                    .child(
-                        div()
-                            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                                this.composer_history_key(e, window, cx)
-                            }))
-                            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                                this.add_attachments(paths.paths().to_vec(), cx)
-                            }))
-                            .child(Textarea::new(&self.composer)),
-                    )
-                    .child(self.render_composer_controls(cx)),
+                    .child(self.render_composer_card(thread.is_running(), cx)),
             )
             .when(self.term.is_some(), |col| {
                 col.child(self.render_terminal(cx))
+            })
+            .when(self.details_open, |col| {
+                col.child(self.render_thread_details(cx))
             })
             .into_any_element()
     }
@@ -2607,6 +2591,13 @@ impl Render for T3App {
                 .when(self.files.open && self.selected.is_some(), |root| {
                     root.child(self.render_files(cx))
                 })
+                .when(
+                    self.surfaces_open
+                        && self.selected.is_some()
+                        && !self.diff_open
+                        && !self.files.open,
+                    |root| root.child(self.render_surface_picker(cx)),
+                )
                 .when(self.palette_open, |root| {
                     root.child(self.render_palette(cx))
                 }),

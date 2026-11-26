@@ -2,9 +2,10 @@
 
 use crate::i18n::t;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::Textarea;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::select::Select;
-use gpui_kit::component::{Sizable, h_flex};
+use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::json;
@@ -66,8 +67,8 @@ impl T3App {
         }
     }
 
-    pub(crate) fn render_composer_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (runtime, interaction) = self.current_modes();
+    /// The permission modes the current model's provider offers, in the web's order.
+    fn supported_runtime_modes(&self) -> Vec<(&'static str, &'static str)> {
         let provider = self.current_model().and_then(|m| {
             self.config()
                 .providers
@@ -75,7 +76,7 @@ impl T3App {
                 .find(|p| m["instanceId"] == p.instance_id.as_str())
                 .cloned()
         });
-        let supported: Vec<(&'static str, &'static str)> = RUNTIME_MODES
+        RUNTIME_MODES
             .into_iter()
             .filter(|(mode, _)| {
                 provider
@@ -83,51 +84,166 @@ impl T3App {
                     .and_then(|p| p.supported_runtime_modes.as_ref())
                     .is_none_or(|m| m.iter().any(|s| s == mode))
             })
-            .collect();
-        let show_plan = provider
-            .as_ref()
-            .is_none_or(|p| p.show_interaction_mode_toggle != Some(false));
+            .collect()
+    }
+}
+
+/// `runtimeModeConfig.ts` icons.
+fn runtime_icon(mode: &str) -> &'static str {
+    match mode {
+        "auto-accept-edits" => "pen-line",
+        "auto" => "shield-check",
+        "full-access" => "shield-off",
+        _ => "lock",
+    }
+}
+
+impl T3App {
+    /// The composer card (web: `ComposerSurface` + `ChatComposer`): the prompt, then a footer with
+    /// attach, permissions, plan, model and send.
+    pub(crate) fn render_composer_card(
+        &self,
+        running: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let c = cx.theme().colors;
+        let web = crate::web_theme::current(cx);
+        let (runtime, interaction) = self.current_modes();
+        let default_runtime = self.config().settings["defaultRuntimeMode"]
+            .as_str()
+            .unwrap_or("full-access")
+            .to_owned();
+        let empty = self.composer.read(cx).value().trim().is_empty() && self.attachments.is_empty();
         let app = cx.entity().downgrade();
-        let plan = interaction == "plan";
-        h_flex()
-            .gap_2()
+        let chip = |id: &'static str| {
+            h_flex()
+                .id(id)
+                .h(px(28.))
+                .px_2()
+                .gap(px(6.))
+                .rounded_md()
+                .cursor_pointer()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(c.foreground.opacity(0.8))
+                .hover(|s| s.bg(c.accent).text_color(c.foreground))
+        };
+        let supported = self.supported_runtime_modes();
+        let show_plan = self.current_model().is_none_or(|m| {
+            self.config()
+                .providers
+                .iter()
+                .find(|p| m["instanceId"] == p.instance_id.as_str())
+                .is_none_or(|p| p.show_interaction_mode_toggle != Some(false))
+        });
+        v_flex()
+            .w_full()
+            .rounded(px(16.))
+            .border_1()
+            .border_color(web.composer_outline)
+            .bg(web.composer)
             .child(
                 div()
-                    .w(px(280.))
-                    .child(Select::new(&self.model_picker).small()),
+                    .px(px(16.))
+                    .pt(px(14.))
+                    .min_h(px(58.))
+                    .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                        this.composer_history_key(e, window, cx)
+                    }))
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                        this.add_attachments(paths.paths().to_vec(), cx)
+                    }))
+                    .child(Textarea::new(&self.composer).appearance(false)),
             )
             .child(
-                Button::new("runtime-mode")
-                    .small()
-                    .ghost()
-                    .label(t(runtime_label(&runtime)))
-                    .dropdown_menu(move |mut menu, _, _| {
-                        for (mode, label) in supported.clone() {
-                            let app = app.clone();
-                            menu = menu.item(
-                                PopupMenuItem::new(t(label))
-                                    .checked(mode == runtime)
-                                    .on_click(move |_, _, cx| {
-                                        app.update(cx, |this, cx| this.set_runtime_mode(mode, cx))
-                                            .ok();
-                                    }),
-                            );
-                        }
-                        menu
+                h_flex()
+                    .px(px(10.))
+                    .pb(px(10.))
+                    .gap_1()
+                    .child(
+                        crate::ui::icon_button("composer-attach", "paperclip", cx)
+                            .on_click(cx.listener(|this, _, _, cx| this.pick_attachments(cx))),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("runtime-mode")
+                            .ghost()
+                            .small()
+                            .h(px(28.))
+                            .icon(crate::ui::icon(runtime_icon(&runtime)))
+                            .when(runtime != default_runtime, |b| {
+                                b.label(t(runtime_label(&runtime)))
+                            })
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for (mode, label) in supported.clone() {
+                                    let app = app.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(t(label))
+                                            .checked(mode == runtime)
+                                            .on_click(move |_, _, cx| {
+                                                app.update(cx, |this, cx| {
+                                                    this.set_runtime_mode(mode, cx)
+                                                })
+                                                .ok();
+                                            }),
+                                    );
+                                }
+                                menu
+                            }),
+                    )
+                    .when(show_plan && interaction == "plan", |row| {
+                        row.child(
+                            chip("plan-mode")
+                                .bg(c.accent)
+                                .child(crate::ui::icon("list-todo").size(px(16.)))
+                                .child(t("Plan"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_interaction_mode("default", cx)
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(200.))
+                            .child(Select::new(&self.model_picker).small().appearance(false)),
+                    )
+                    .child(if running && empty {
+                        div()
+                            .id("composer-stop")
+                            .size(px(32.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(c.danger.opacity(0.9))
+                            .hover(|s| s.bg(c.danger))
+                            .child(div().size(px(8.)).rounded(px(1.5)).bg(white()))
+                            .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
+                    } else {
+                        div()
+                            .id("composer-send")
+                            .size(px(32.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .when(empty, |b| {
+                                b.bg(c.foreground.opacity(0.12))
+                                    .text_color(c.muted_foreground)
+                            })
+                            .when(!empty, |b| {
+                                b.cursor_pointer()
+                                    .bg(c.primary)
+                                    .text_color(c.primary_foreground)
+                                    .hover(|s| s.bg(c.primary_hover))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.send(false, window, cx)
+                                    }))
+                            })
+                            .child(crate::ui::icon("arrow-up").size(px(16.)))
                     }),
             )
-            .when(show_plan, |row| {
-                row.child(
-                    Button::new("plan-mode")
-                        .small()
-                        .label(t("Plan"))
-                        .when(plan, |b| b.primary())
-                        .when(!plan, |b| b.ghost())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_interaction_mode(if plan { "default" } else { "plan" }, cx)
-                        })),
-                )
-            })
     }
 }
 

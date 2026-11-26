@@ -1,7 +1,6 @@
 //! Composer attachments (web: `ComposerAttachmentStrip.tsx`, `lib/attachmentUploadQueue.ts`):
 //! `attachments.createUploadUrl`, then POST the bytes to the signed URL.
 
-use crate::i18n::t;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -269,13 +268,6 @@ impl T3App {
                             })),
                     )
             }))
-            .child(
-                Button::new("attach")
-                    .xsmall()
-                    .ghost()
-                    .label(t("Attach…"))
-                    .on_click(cx.listener(|this, _, _, cx| this.pick_attachments(cx))),
-            )
     }
 }
 
