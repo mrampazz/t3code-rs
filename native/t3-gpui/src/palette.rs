@@ -28,14 +28,14 @@ pub(crate) enum PaletteAction {
     Open(String, String),
     /// (environment, project)
     NewThread(String, String),
-    ToggleDiff,
     Disconnect,
     Settings,
     AddProject,
-    Find,
     LinkPr,
     OpenInEditor,
     RunScript(String),
+    /// A keybinding command (`run_command`).
+    Command(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +43,7 @@ pub(crate) struct PaletteRow {
     pub label: String,
     pub detail: String,
     pub action: PaletteAction,
+    pub shortcut: Option<String>,
 }
 
 impl T3App {
@@ -127,8 +128,18 @@ impl T3App {
         let thread = self.selected.is_some();
         let mut commands = vec![];
         if thread {
-            commands.push(("Toggle diff".to_owned(), PaletteAction::ToggleDiff));
-            commands.push((t("Find in current thread"), PaletteAction::Find));
+            commands.push((
+                "Toggle diff".to_owned(),
+                PaletteAction::Command("diff.toggle"),
+            ));
+            commands.push((
+                t("Find in current thread"),
+                PaletteAction::Command("chat.find"),
+            ));
+            if let Some((_, pr)) = self.thread_reference() {
+                let label = t(if pr { "Copy PR link" } else { "Copy thread" });
+                commands.push((label, PaletteAction::Command("thread.copyReference")));
+            }
             commands.push((t("Link pull request to thread"), PaletteAction::LinkPr));
             if let Some(editor) = self.favorite_editor() {
                 let label = crate::editors::label(&editor);
@@ -145,8 +156,13 @@ impl T3App {
             }
         }
         commands.push((t("Add project"), PaletteAction::AddProject));
+        commands.push((
+            t("Change appearance"),
+            PaletteAction::Command("appearance.cycle"),
+        ));
         commands.push((t("Open settings"), PaletteAction::Settings));
         commands.push(("Disconnect".to_owned(), PaletteAction::Disconnect));
+        let rules = self.keybinding_rules();
         rows.extend(
             commands
                 .into_iter()
@@ -154,6 +170,12 @@ impl T3App {
                 .map(|(label, action)| PaletteRow {
                     label,
                     detail: "Command".into(),
+                    shortcut: match &action {
+                        PaletteAction::Command(c) => {
+                            crate::keybindings::shortcut_label(&rules, c, cfg!(target_os = "macos"))
+                        }
+                        _ => None,
+                    },
                     action,
                 }),
         );
@@ -166,11 +188,12 @@ impl T3App {
         match action {
             PaletteAction::Open(env, id) => self.select_thread(env, id, cx),
             PaletteAction::NewThread(env, project) => self.new_thread(env, project, window, cx),
-            PaletteAction::ToggleDiff => self.toggle_diff(cx),
+            PaletteAction::Command(command) => {
+                self.run_command(command, window, cx);
+            }
             PaletteAction::Disconnect => self.forget_session(cx),
             PaletteAction::Settings => self.toggle_settings(cx),
             PaletteAction::AddProject => self.open_add_project(window, cx),
-            PaletteAction::Find => self.open_find(window, cx),
             PaletteAction::LinkPr => self.open_link_pr(window, cx),
             PaletteAction::OpenInEditor => self.open_in_editor(None, cx),
             PaletteAction::RunScript(id) => {
@@ -245,6 +268,9 @@ impl T3App {
                                             .text_color(c.muted_foreground)
                                             .child(row.detail),
                                     )
+                                    .children(row.shortcut.map(|keys| {
+                                        div().text_xs().text_color(c.muted_foreground).child(keys)
+                                    }))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.run_palette(action.clone(), window, cx)
                                     }))
@@ -293,6 +319,7 @@ pub(crate) fn palette_rows(
                     label: t.title.clone(),
                     detail: project_title(shell, &t.project_id),
                     action: PaletteAction::Open(t.env.clone(), t.id.clone()),
+                    shortcut: None,
                 })
         })
         .collect();
@@ -308,6 +335,7 @@ pub(crate) fn palette_rows(
             label: title_of(id).unwrap_or_else(|| "Thread".into()),
             detail: m["snippet"].as_str().unwrap_or("").replace('\n', " "),
             action,
+            shortcut: None,
         });
     }
     for shell in shells {
@@ -318,6 +346,7 @@ pub(crate) fn palette_rows(
                     label,
                     detail: "Command".into(),
                     action: PaletteAction::NewThread(shell.env.clone(), p.id.clone()),
+                    shortcut: None,
                 });
             }
         }

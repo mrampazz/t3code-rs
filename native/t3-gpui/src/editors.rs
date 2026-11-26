@@ -181,6 +181,20 @@ fn home_of(cwd: &str) -> Option<String> {
     }
 }
 
+/// A link that opens the thread from anywhere (`hostedThreadLink`); ids keep only
+/// `[A-Za-z0-9_-]` unescaped, like `encodeURIComponent` plus its `.!~*'()` escapes.
+pub fn hosted_thread_link(env: &str, thread: &str) -> String {
+    let seg = |id: &str| {
+        id.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' => (b as char).to_string(),
+                _ => format!("%{b:02X}"),
+            })
+            .collect::<String>()
+    };
+    format!("https://app.t3.codes/threads/{}/{}", seg(env), seg(thread))
+}
+
 /// The thread a `t3-thread://v1/<id>`, `t3-thread://v2/<env>/<id>` or hosted
 /// `https://app.t3.codes/threads/<env>/<id>` link names (`parseThreadLinkHref`), as candidates:
 /// the id as written, then percent-decoded. The environment id is not used; the thread is
@@ -506,6 +520,9 @@ mod tests {
         );
         assert!(thread_link_ids("https://app.t3.codes/threads/e").is_empty());
         assert!(thread_link_ids("https://x.dev/threads/e/t").is_empty());
+        let link = super::hosted_thread_link("env-1", "thread:a.b");
+        assert_eq!(link, "https://app.t3.codes/threads/env-1/thread%3Aa%2Eb");
+        assert_eq!(thread_link_ids(&link)[1], "thread:a.b");
     }
 
     #[test]

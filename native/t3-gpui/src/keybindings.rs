@@ -91,6 +91,45 @@ pub fn value_of(rule: &Value) -> String {
     parts.join("+")
 }
 
+/// The newest rule's shortcut for a command, labelled like the web (`formatShortcutLabel`).
+pub fn shortcut_label(rules: &[Value], command: &str, mac: bool) -> Option<String> {
+    let s = &rules.iter().rev().find(|r| r["command"] == command)?["shortcut"];
+    let flag = |k: &str| s[k] == true;
+    let key = match s["key"].as_str()? {
+        " " => "Space".to_owned(),
+        "escape" => "Esc".to_owned(),
+        k if k.starts_with("arrow") => capitalize(&k["arrow".len()..]),
+        k if k.starts_with("page") => format!("Page{}", capitalize(&k["page".len()..])),
+        k => capitalize(k),
+    };
+    let meta = flag("metaKey") || (flag("modKey") && mac);
+    let ctrl = flag("ctrlKey") || (flag("modKey") && !mac);
+    let mods = [
+        (ctrl, "\u{2303}", "Ctrl"),
+        (flag("altKey"), "\u{2325}", "Alt"),
+        (flag("shiftKey"), "\u{21e7}", "Shift"),
+        (meta, "\u{2318}", "Meta"),
+    ]
+    .into_iter()
+    .filter(|(on, ..)| *on);
+    Some(if mac {
+        mods.map(|(_, symbol, _)| symbol).collect::<String>() + &key
+    } else {
+        mods.map(|(_, _, name)| name)
+            .chain([key.as_str()])
+            .collect::<Vec<_>>()
+            .join("+")
+    })
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
 /// A `whenAst` written back as the `when` string it came from, for replacing or removing a rule.
 pub fn when_of(node: &Value) -> Option<String> {
     let wrap = |n: &Value| {
@@ -158,6 +197,19 @@ pub fn defaults() -> Vec<Value> {
             "pullRequest.copyNumber",
             Some(&not_terminal),
         ),
+        rule("o", &["mod", "shift"], "chat.new", Some(&not_terminal)),
+        rule(
+            "c",
+            &["mod", "shift"],
+            "thread.copyReference",
+            Some(&not_terminal),
+        ),
+        rule(
+            "enter",
+            &["mod", "shift"],
+            "thread.steerQueuedMessage",
+            Some(&not_terminal),
+        ),
         rule("[", &["mod", "shift"], "thread.previous", None),
         rule("]", &["mod", "shift"], "thread.next", None),
         rule("s", &["mod", "shift"], "thread.settle", Some(&not_terminal)),
@@ -170,6 +222,19 @@ pub fn defaults() -> Vec<Value> {
             Some(&json!({ "type": "identifier", "name": "composerFocus" })),
         ),
     ]
+    .into_iter()
+    .chain((1..=9).map(|n| {
+        let desktop = json!({ "type": "and",
+            "left": { "type": "not", "node": { "type": "identifier", "name": "modelPickerOpen" } },
+            "right": { "type": "identifier", "name": "isDesktop" } });
+        rule(
+            &n.to_string(),
+            &["mod"],
+            &format!("thread.jump.{n}"),
+            Some(&desktop),
+        )
+    }))
+    .collect()
 }
 
 #[cfg(test)]
@@ -205,6 +270,39 @@ mod tests {
         assert_eq!(
             resolve(&defaults(), "up", alt, true, &ctx).as_deref(),
             Some("thread.editQueuedMessage")
+        );
+    }
+
+    #[test]
+    fn labels_shortcuts_like_the_web() {
+        let rules = defaults();
+        assert_eq!(
+            shortcut_label(&rules, "thread.copyReference", true).as_deref(),
+            Some("\u{21e7}\u{2318}C")
+        );
+        assert_eq!(
+            shortcut_label(&rules, "appearance.cycle", false).as_deref(),
+            Some("Ctrl+Alt+Shift+A")
+        );
+        assert_eq!(
+            shortcut_label(&rules, "thread.editQueuedMessage", false).as_deref(),
+            Some("Alt+Up")
+        );
+        assert_eq!(shortcut_label(&rules, "thread.stop", true), None);
+    }
+
+    #[test]
+    fn jumps_to_threads_on_desktop() {
+        let cmd = Mods {
+            meta: true,
+            ..Default::default()
+        };
+        let mut ctx = HashMap::new();
+        assert_eq!(resolve(&defaults(), "3", cmd, true, &ctx), None);
+        ctx.insert("isDesktop", true);
+        assert_eq!(
+            resolve(&defaults(), "3", cmd, true, &ctx).as_deref(),
+            Some("thread.jump.3")
         );
     }
 

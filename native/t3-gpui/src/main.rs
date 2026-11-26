@@ -1112,17 +1112,25 @@ impl T3App {
             ("draftThreadRoute", self.draft_project.is_some()),
             ("isDesktop", true),
         ]);
-        let rules = if self.config().keybindings.is_empty() {
-            keybindings::defaults()
-        } else {
-            self.config().keybindings.clone()
-        };
-        let Some(command) =
-            keybindings::resolve(&rules, &k.key, mods, cfg!(target_os = "macos"), &ctx)
-        else {
+        let Some(command) = keybindings::resolve(
+            &self.keybinding_rules(),
+            &k.key,
+            mods,
+            cfg!(target_os = "macos"),
+            &ctx,
+        ) else {
             return false;
         };
         self.run_command(&command, window, cx)
+    }
+
+    /// The server's keybindings, else the defaults until they arrive.
+    pub(crate) fn keybinding_rules(&self) -> Vec<serde_json::Value> {
+        if self.config().keybindings.is_empty() {
+            keybindings::defaults()
+        } else {
+            self.config().keybindings.clone()
+        }
     }
 
     /// Runs a keybinding command (also reached from the native menus).
@@ -1214,19 +1222,40 @@ impl T3App {
                 self.draft_env_mode = "local".into();
             }
             "pullRequest.copyNumber" => {
-                let Some(number) = thread
-                    .as_ref()
-                    .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
-                    .and_then(|t| {
-                        t.pull_requests
-                            .iter()
-                            .find(|l| l["source"] != "stack-dismissed")
-                    })
+                let Some(number) = self
+                    .current_pull_request()
                     .and_then(|l| l["number"].as_u64())
                 else {
                     return false;
                 };
                 cx.write_to_clipboard(ClipboardItem::new_string(format!("#{number}")));
+            }
+            "thread.copyReference" => {
+                let Some((text, _)) = self.thread_reference() else {
+                    return false;
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            "thread.stop" if self.thread.active_run().is_some() => self.stop(cx),
+            "thread.steerQueuedMessage" => {
+                let (Some(thread_id), Some(run)) =
+                    (thread, self.thread.queued_runs().into_iter().next())
+                else {
+                    return false;
+                };
+                let active = self.thread.active_run();
+                let send = queue::send_now_command(&thread_id, &run.run_id, active);
+                self.dispatch(send, cx);
+            }
+            c if c.starts_with("thread.jump.") => {
+                let Some((env, id)) = c["thread.jump.".len()..]
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| self.thread_order().into_iter().nth(n.wrapping_sub(1)))
+                else {
+                    return false;
+                };
+                self.select_thread(env, id, cx);
             }
             "composer.stash" => self.stash_prompt(window, cx),
             "thread.editQueuedMessage" if self.composer.read(cx).cursor() == 0 => {
@@ -1252,22 +1281,46 @@ impl T3App {
         true
     }
 
-    /// Selects the next or previous thread in sidebar order.
-    fn step_thread(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
+    /// (environment, thread) in sidebar order.
+    fn thread_order(&self) -> Vec<(String, String)> {
         let threads: Vec<model::ThreadShell> = self
             .envs
             .iter()
             .flat_map(|e| e.shell.threads.iter().cloned())
             .collect();
         let s = sidebar::sections(&threads, jiff::Timestamp::now().as_millisecond());
-        let order: Vec<(String, String)> = s
-            .pinned
+        s.pinned
             .iter()
             .chain(&s.active)
             .chain(&s.snoozed)
             .chain(&s.settled)
             .map(|t| (t.env.clone(), t.id.clone()))
-            .collect();
+            .collect()
+    }
+
+    fn current_pull_request(&self) -> Option<&serde_json::Value> {
+        let id = self.selected.as_ref()?;
+        let thread = self.shell().threads.iter().find(|t| &t.id == id)?;
+        thread
+            .pull_requests
+            .iter()
+            .find(|l| l["source"] != "stack-dismissed")
+    }
+
+    /// What `thread.copyReference` copies (web `resolveThreadReferenceCopyTarget`): the thread's
+    /// pull request link, else a hosted link that opens the thread anywhere; and whether it is a PR.
+    pub(crate) fn thread_reference(&self) -> Option<(String, bool)> {
+        if let Some(url) = self.current_pull_request().and_then(|l| l["url"].as_str()) {
+            return Some((url.to_owned(), true));
+        }
+        let env = self.env()?.environment_id.clone()?;
+        let id = self.selected.as_ref()?;
+        Some((editors::hosted_thread_link(&env, id), false))
+    }
+
+    /// Selects the next or previous thread in sidebar order.
+    fn step_thread(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
+        let order = self.thread_order();
         if order.is_empty() {
             return false;
         }
