@@ -818,7 +818,11 @@ impl T3App {
             self.diff_state = None;
             self.diff_note = None;
         }
+        let switched = !same_env || self.selected.as_deref() != Some(id.as_str());
         self.selected = Some(id);
+        if switched {
+            self.restore_panel(cx);
+        }
         self.subscribe_thread(cx);
         self.subscribe_git(cx);
         self.subscribe_worktree_setup(cx);

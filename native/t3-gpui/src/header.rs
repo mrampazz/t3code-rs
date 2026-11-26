@@ -19,7 +19,126 @@ fn toggle(id: &'static str, icon: &str, pressed: bool, cx: &App) -> Stateful<Div
         .when(pressed, |b| b.bg(c.accent).text_color(c.foreground))
 }
 
+/// Width of the right panel (web: its default inline size).
+pub const RIGHT_PANEL_WIDTH: f32 = 540.;
+
+/// The right panel's frame (web: `RightPanelTabs`): the surface's tab and `+`, the terminal and
+/// panel toggles that leave the thread header while it is open, then the surface.
+pub(crate) fn right_panel(
+    icon: &str,
+    title: Option<String>,
+    body: AnyElement,
+    app: &T3App,
+    cx: &mut Context<T3App>,
+) -> Div {
+    let c = cx.theme().colors;
+    v_flex()
+        .w(px(RIGHT_PANEL_WIDTH))
+        .h_full()
+        .flex_none()
+        .border_l_1()
+        .border_color(c.border)
+        .child(
+            h_flex()
+                .h(px(TOPBAR_HEIGHT))
+                .flex_none()
+                .px_3()
+                .gap_1()
+                .children(title.map(|title| {
+                    h_flex()
+                        .h(px(32.))
+                        .px_2()
+                        .gap(px(6.))
+                        .rounded_md()
+                        .bg(c.accent)
+                        .text_sm()
+                        .child(ui::icon(icon).size(px(14.)))
+                        .child(title)
+                }))
+                .child(
+                    ui::icon_button("panel-add-surface", "plus", cx).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.diff_open = false;
+                            this.files.open = false;
+                            this.surfaces_open = true;
+                            this.remember_panel();
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(div().flex_1())
+                .child(
+                    toggle(
+                        "panel-terminal-toggle",
+                        "panel-bottom",
+                        app.term.is_some(),
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
+                )
+                .child(
+                    toggle("panel-right-toggle", "panel-right", true, cx)
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_right_panel(cx))),
+                ),
+        )
+        .child(body)
+}
+
 impl T3App {
+    fn panel_key(&self) -> Option<String> {
+        Some(format!(
+            "{}\u{0}{}",
+            self.env()?.key,
+            self.selected.as_ref()?
+        ))
+    }
+
+    /// Remembers the open surface per thread, as the web's right panel store does.
+    /// shortcut: entries of deleted threads stay in prefs; prune if prefs grow noticeably.
+    pub(crate) fn remember_panel(&mut self) {
+        let Some(key) = self.panel_key() else { return };
+        let surface = if self.files.open {
+            "files"
+        } else if self.diff_open {
+            "diff"
+        } else {
+            ""
+        };
+        if self.prefs["rightPanel"][&key].as_str().unwrap_or("") == surface {
+            return;
+        }
+        if !self.prefs["rightPanel"].is_object() {
+            self.prefs["rightPanel"] = serde_json::json!({});
+        }
+        let map = self.prefs["rightPanel"].as_object_mut().unwrap();
+        if surface.is_empty() {
+            map.remove(&key);
+        } else {
+            map.insert(key, surface.into());
+        }
+        crate::settings::save_prefs(&self.prefs);
+    }
+
+    /// Reopens the surface the newly selected thread had open.
+    pub(crate) fn restore_panel(&mut self, cx: &mut Context<Self>) {
+        let surface = self
+            .panel_key()
+            .and_then(|k| self.prefs["rightPanel"][&k].as_str().map(str::to_owned));
+        self.surfaces_open = false;
+        self.files.open = false;
+        self.diff_open = false;
+        match surface.as_deref() {
+            Some("files") => self.toggle_files(cx),
+            Some("diff") => self.toggle_diff(cx),
+            _ => {}
+        }
+    }
+
+    /// Whether the right panel owns the terminal and panel toggles (web: they move into it).
+    fn panel_owns_toggles(&self) -> bool {
+        self.files.open || (self.surfaces_open && !self.diff_open)
+    }
+
     /// The right panel shows one surface; with none open it offers the picker.
     pub(crate) fn toggle_right_panel(&mut self, cx: &mut Context<Self>) {
         if self.diff_open || self.files.open || self.surfaces_open {
@@ -29,6 +148,7 @@ impl T3App {
         } else {
             self.surfaces_open = true;
         }
+        self.remember_panel();
         cx.notify();
     }
 
@@ -131,16 +251,19 @@ impl T3App {
                             }),
                         ),
                     )
-                    .child(
-                        toggle("terminal-toggle", "panel-bottom", self.term.is_some(), cx)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx)),
+                    .when(!self.panel_owns_toggles(), |row| {
+                        row.child(
+                            toggle("terminal-toggle", "panel-bottom", self.term.is_some(), cx)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_terminal(window, cx)
+                                })),
+                        )
+                        .child(
+                            toggle("right-panel-toggle", "panel-right", right_open, cx).on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_right_panel(cx)),
                             ),
-                    )
-                    .child(
-                        toggle("right-panel-toggle", "panel-right", right_open, cx)
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_right_panel(cx))),
-                    ),
+                        )
+                    }),
             )
     }
 
@@ -223,53 +346,49 @@ impl T3App {
                 .child(ui::icon(icon).size(px(16.)))
                 .child(div().flex_1().text_sm().child(t(label)))
         };
-        v_flex()
-            .w(px(440.))
-            .h_full()
-            .flex_none()
-            .border_l_1()
-            .border_color(c.border)
-            .child(div().h(px(TOPBAR_HEIGHT)).flex_none())
-            .child(
-                v_flex().flex_1().items_center().justify_center().child(
-                    v_flex()
-                        .w(px(300.))
-                        .gap_1()
-                        .child(
-                            div()
-                                .mb_3()
-                                .text_center()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(t("Open a surface")),
-                        )
-                        .child(
-                            item("surface-terminal", "square-terminal", "Terminal").on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.surfaces_open = false;
-                                    if this.term.is_none() {
-                                        this.toggle_terminal(window, cx);
-                                    }
-                                }),
-                            ),
-                        )
-                        .child(
-                            item("surface-files", "files", "Files").on_click(cx.listener(
-                                |this, _, _, cx| {
-                                    this.surfaces_open = false;
-                                    this.toggle_files(cx);
-                                },
-                            )),
-                        )
-                        .child(
-                            item("surface-diff", "file-diff", "Diff").on_click(cx.listener(
-                                |this, _, _, cx| {
+        let body =
+            div()
+                .flex_1()
+                .child(
+                    v_flex().flex_1().items_center().justify_center().child(
+                        v_flex()
+                            .w(px(300.))
+                            .gap_1()
+                            .child(
+                                div()
+                                    .mb_3()
+                                    .text_center()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(t("Open a surface")),
+                            )
+                            .child(
+                                item("surface-terminal", "square-terminal", "Terminal").on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.surfaces_open = false;
+                                        if this.term.is_none() {
+                                            this.toggle_terminal(window, cx);
+                                        }
+                                    }),
+                                ),
+                            )
+                            .child(
+                                item("surface-files", "files", "Files").on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.surfaces_open = false;
+                                        this.toggle_files(cx);
+                                    },
+                                )),
+                            )
+                            .child(item("surface-diff", "file-diff", "Diff").on_click(
+                                cx.listener(|this, _, _, cx| {
                                     this.surfaces_open = false;
                                     this.toggle_diff(cx);
-                                },
+                                }),
                             )),
-                        ),
-                ),
-            )
+                    ),
+                )
+                .into_any_element();
+        right_panel("", None, body, self, cx)
     }
 }

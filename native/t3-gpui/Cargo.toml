@@ -38,3 +38,8 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
   "NSData",
   "NSString",
 ] }
+
+# gpui lays out and shapes text every frame; unoptimized it lags. Dependencies build optimized
+# even in dev, so only this crate's own code recompiles fast and slow.
+[profile.dev.package."*"]
+opt-level = 2

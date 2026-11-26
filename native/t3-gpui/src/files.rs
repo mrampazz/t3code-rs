@@ -8,9 +8,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Editor, EditorState, Input, Position};
-use gpui_kit::component::{ActiveTheme, Sizable, h_flex, v_flex};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -87,14 +87,36 @@ pub fn search_hits(result: &Value) -> Vec<SearchHit> {
         .collect()
 }
 
+/// A Lucide icon for a file by its extension.
+/// shortcut: generic Lucide glyphs, not the web's per-language colored file icons.
+fn file_icon(name: &str) -> &'static str {
+    let ext = name.rsplit_once('.').map_or("", |(_, e)| e).to_lowercase();
+    match ext.as_str() {
+        _ if is_image(name) => "file-image",
+        "json" | "jsonc" | "toml" | "yml" | "yaml" => "file-json",
+        "md" | "mdx" | "txt" => "file-text",
+        "" => "file",
+        _ => "file-code",
+    }
+}
+
 /// Search waits for the typing to pause.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// One listed entry: its path, whether it is a folder, and whether git ignores it.
+pub type Entry = (String, bool, bool);
+
 /// Directory entries sorted like a file explorer: folders first, then by name.
-pub fn sorted_entries(entries: &[Value]) -> Vec<(String, bool)> {
-    let mut out: Vec<(String, bool)> = entries
+pub fn sorted_entries(entries: &[Value]) -> Vec<Entry> {
+    let mut out: Vec<Entry> = entries
         .iter()
-        .filter_map(|e| Some((e["path"].as_str()?.to_owned(), e["kind"] == "directory")))
+        .filter_map(|e| {
+            Some((
+                e["path"].as_str()?.to_owned(),
+                e["kind"] == "directory",
+                e["ignored"] == true,
+            ))
+        })
         .collect();
     out.sort_by(|a, b| {
         b.1.cmp(&a.1)
@@ -107,7 +129,7 @@ pub fn sorted_entries(entries: &[Value]) -> Vec<(String, bool)> {
 pub struct FilesState {
     pub open: bool,
     /// Entries per loaded directory ("" is the root).
-    children: HashMap<String, Vec<(String, bool)>>,
+    children: HashMap<String, Vec<Entry>>,
     expanded: HashSet<String>,
     /// (path, editor, editable) of the open file.
     preview: Option<(String, Entity<EditorState>, bool)>,
@@ -124,10 +146,13 @@ impl T3App {
     pub(crate) fn toggle_files(&mut self, cx: &mut Context<Self>) {
         self.files.open = !self.files.open;
         if self.files.open {
+            self.diff_open = false;
+            self.surfaces_open = false;
             self.files.children.clear();
             self.files.expanded.clear();
             self.load_dir(String::new(), cx);
         }
+        self.remember_panel();
         cx.notify();
     }
 
@@ -249,7 +274,7 @@ impl T3App {
             })
             .await;
             this.update(cx, |app, cx| {
-                if app.files.image.as_ref().map(|(p, _)| p) != Some(&path) {
+                if app.files.image.as_ref().map(|(p, ..)| p) != Some(&path) {
                     return;
                 }
                 match minted {
@@ -364,55 +389,157 @@ impl T3App {
         .detach();
     }
 
-    fn tree_rows(&self, dir: &str, depth: usize, out: &mut Vec<(String, bool, usize)>) {
-        for (path, is_dir) in self.files.children.get(dir).into_iter().flatten() {
-            out.push((path.clone(), *is_dir, depth));
+    fn tree_rows(&self, dir: &str, depth: usize, out: &mut Vec<(Entry, usize)>) {
+        for entry in self.files.children.get(dir).into_iter().flatten() {
+            out.push((entry.clone(), depth));
+            let (path, is_dir, _) = entry;
             if *is_dir && self.files.expanded.contains(path) {
                 self.tree_rows(path, depth + 1, out);
             }
         }
     }
 
-    pub(crate) fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = cx.theme().colors;
+    /// The tree, virtualized: only the rows in view are built, so a huge folder stays smooth.
+    fn render_tree(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut rows = vec![];
         self.tree_rows("", 0, &mut rows);
-        let open_path = self.files.preview.as_ref().map(|(p, ..)| p.clone());
+        uniform_list(
+            "file-tree",
+            rows.len(),
+            cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                let c = cx.theme().colors;
+                let open = this.files.preview.as_ref().map(|(p, ..)| p.clone());
+                let open = open.or_else(|| this.files.image.as_ref().map(|(p, _)| p.clone()));
+                let mut rows = vec![];
+                this.tree_rows("", 0, &mut rows);
+                rows[range.clone()]
+                    .iter()
+                    .cloned()
+                    .zip(range)
+                    .map(|(((path, is_dir, ignored), depth), i)| {
+                        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+                        let expanded = this.files.expanded.contains(&path);
+                        let selected = open.as_deref() == Some(path.as_str());
+                        h_flex()
+                            .id(("file-row", i))
+                            .w_full()
+                            .h(px(24.))
+                            .px_2()
+                            .gap(px(6.))
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_sm()
+                            .when(ignored, |r| r.text_color(c.muted_foreground))
+                            .when(selected, |r| r.bg(c.accent))
+                            .hover(|r| r.bg(c.list_hover))
+                            .children((0..depth).map(|_| {
+                                div()
+                                    .w(px(16.))
+                                    .h_full()
+                                    .flex_none()
+                                    .flex()
+                                    .justify_center()
+                                    .child(div().w_px().h_full().bg(c.border))
+                            }))
+                            .child(
+                                crate::ui::icon(match (is_dir, expanded) {
+                                    (true, true) => "chevron-down",
+                                    (true, false) => "chevron-right",
+                                    (false, _) => file_icon(&name),
+                                })
+                                .size(px(16.))
+                                .flex_none()
+                                .text_color(c.muted_foreground),
+                            )
+                            .child(div().truncate().child(name))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if is_dir {
+                                    if !this.files.expanded.remove(&path) {
+                                        this.files.expanded.insert(path.clone());
+                                        if !this.files.children.contains_key(&path) {
+                                            this.load_dir(path.clone(), cx);
+                                        }
+                                    }
+                                    cx.notify();
+                                } else {
+                                    this.open_file(path.clone(), None, window, cx);
+                                }
+                            }))
+                            .into_any_element()
+                    })
+                    .collect()
+            }),
+        )
+        .flex_1()
+        .px_3()
+        .into_any_element()
+    }
+
+    /// Refresh, search and collapse over the tree, or the matches while searching.
+    fn render_explorer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = cx.theme().colors;
         let searching = !self.files_search.read(cx).value().trim().is_empty();
-        let contents = self.files.contents_mode;
         v_flex()
-            .w(px(560.))
-            .h_full()
-            .border_l_1()
-            .border_color(c.border)
+            .flex_1()
+            .min_h_0()
             .child(
                 h_flex()
-                    .p_1()
+                    .h(px(36.))
+                    .px_3()
                     .gap_1()
-                    .border_b_1()
-                    .border_color(c.border)
-                    .child(div().flex_1().child(Input::new(&self.files_search).small()))
                     .child(
-                        Button::new("files-search-mode")
-                            .xsmall()
-                            .ghost()
-                            .label(if contents { t("Contents") } else { t("Names") })
-                            .tooltip(t("Search file names or contents"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.files.contents_mode = !this.files.contents_mode;
-                                this.search_files(cx);
-                            })),
+                        crate::ui::icon_button("files-refresh", "refresh-cw", cx).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.files.children.clear();
+                                let open: Vec<String> =
+                                    this.files.expanded.iter().cloned().collect();
+                                this.load_dir(String::new(), cx);
+                                for dir in open {
+                                    this.load_dir(dir, cx);
+                                }
+                            }),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.files_search).appearance(false)),
+                    )
+                    .child(
+                        crate::ui::icon_button(
+                            "files-search-mode",
+                            if self.files.contents_mode {
+                                "text-search"
+                            } else {
+                                "file-search"
+                            },
+                            cx,
+                        )
+                        .tooltip(|window, cx| {
+                            Tooltip::new(t("Search file names or contents")).build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.files.contents_mode = !this.files.contents_mode;
+                            this.search_files(cx);
+                        })),
+                    )
+                    .child(
+                        crate::ui::icon_button("files-collapse", "chevrons-down-up", cx).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.files.expanded.clear();
+                                cx.notify();
+                            }),
+                        ),
                     ),
             )
             .when(searching, |col| {
                 col.child(
                     v_flex()
                         .id("file-results")
-                        .max_h(relative(0.4))
+                        .flex_1()
+                        .min_h_0()
                         .overflow_y_scroll()
-                        .border_b_1()
-                        .border_color(c.border)
-                        .py_1()
+                        .px_3()
                         .children(
                             self.files
                                 .status
@@ -421,20 +548,29 @@ impl T3App {
                                 .map(|s| {
                                     div()
                                         .px_2()
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(c.muted_foreground)
                                         .child(s)
                                 }),
                         )
                         .children(self.files.results.iter().enumerate().map(|(i, hit)| {
                             let (path, line) = (hit.path.clone(), hit.line);
+                            let name = hit.path.rsplit('/').next().unwrap_or(&hit.path).to_owned();
                             h_flex()
                                 .id(("file-hit", i))
+                                .h(px(24.))
                                 .px_2()
-                                .gap_2()
-                                .text_xs()
+                                .gap(px(6.))
+                                .rounded_md()
+                                .text_sm()
                                 .cursor_pointer()
                                 .hover(|r| r.bg(c.list_hover))
+                                .child(
+                                    crate::ui::icon(file_icon(&name))
+                                        .size(px(16.))
+                                        .flex_none()
+                                        .text_color(c.muted_foreground),
+                                )
                                 .child(div().flex_none().max_w(px(260.)).truncate().child(
                                     match line {
                                         Some(n) => format!("{}:{n}", hit.path),
@@ -454,128 +590,145 @@ impl T3App {
                         })),
                 )
             })
-            .when(!searching, |col| {
-                col.child(
-                    v_flex()
-                        .id("file-tree")
-                        .max_h(relative(0.4))
-                        .overflow_y_scroll()
-                        .border_b_1()
-                        .border_color(c.border)
-                        .py_1()
-                        .children(rows.into_iter().enumerate().map(
-                            |(i, (path, is_dir, depth))| {
-                                let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
-                                let expanded = self.files.expanded.contains(&path);
-                                let selected = open_path.as_deref() == Some(path.as_str());
-                                h_flex()
-                                    .id(("file-row", i))
-                                    .pl(px(8. + 14. * depth as f32))
-                                    .pr_2()
-                                    .text_xs()
-                                    .cursor_pointer()
-                                    .when(selected, |r| r.bg(c.list_active))
-                                    .hover(|r| r.bg(c.list_hover))
-                                    .child(if is_dir {
-                                        format!("{} {name}", if expanded { "▾" } else { "▸" })
-                                    } else {
-                                        format!("  {name}")
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if is_dir {
-                                            if !this.files.expanded.remove(&path) {
-                                                this.files.expanded.insert(path.clone());
-                                                if !this.files.children.contains_key(&path) {
-                                                    this.load_dir(path.clone(), cx);
-                                                }
-                                            }
-                                            cx.notify();
-                                        } else {
-                                            this.open_file(path.clone(), None, window, cx);
-                                        }
-                                    }))
-                            },
-                        )),
+            .when(!searching, |col| col.child(self.render_tree(cx)))
+    }
+
+    /// The open file or image: a breadcrumb with its actions, then the editor or picture.
+    fn render_open_file(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let c = cx.theme().colors;
+        let (path, editable) = match (&self.files.preview, &self.files.image) {
+            (Some((path, _, editable)), _) => (path.clone(), *editable),
+            (None, Some((path, _))) => (path.clone(), false),
+            (None, None) => return None,
+        };
+        let project = self
+            .thread_cwd()
+            .and_then(|cwd| cwd.rsplit('/').next().map(str::to_owned))
+            .unwrap_or_default();
+        let crumb = h_flex()
+            .h(px(40.))
+            .px_3()
+            .gap_1()
+            .text_sm()
+            .child(div().text_color(c.muted_foreground).child(project))
+            .children(path.split('/').map(|part| {
+                h_flex()
+                    .gap_1()
+                    .child(
+                        crate::ui::icon("chevron-right")
+                            .size(px(14.))
+                            .text_color(c.muted_foreground),
+                    )
+                    .child(part.to_owned())
+            }))
+            .child(div().flex_1())
+            .children(
+                self.files
+                    .status
+                    .clone()
+                    .map(|s| div().text_xs().text_color(c.muted_foreground).child(s)),
+            )
+            .when(editable, |row| {
+                row.child(
+                    crate::ui::icon_button("file-save", "save", cx)
+                        .tooltip(|window, cx| Tooltip::new(t("Save")).build(window, cx))
+                        .on_click(cx.listener(|this, _, _, cx| this.save_file(cx))),
                 )
             })
-            .children(self.files.image.as_ref().map(|(path, url)| {
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        h_flex()
-                            .px_2()
-                            .py_1()
-                            .gap_2()
-                            .text_xs()
-                            .child(div().flex_1().truncate().child(path.clone()))
-                            .children(
-                                self.files
-                                    .status
-                                    .clone()
-                                    .map(|s| div().text_color(c.muted_foreground).child(s)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .p_2()
-                            .flex()
-                            .justify_center()
-                            .children(url.clone().map(|url| {
-                                let source = SharedString::from(url.clone());
-                                img(source)
-                                    .id("file-image")
-                                    .max_w_full()
-                                    .max_h_full()
-                                    .object_fit(ObjectFit::Contain)
-                                    .cursor_pointer()
-                                    .on_click(move |_, window, cx| {
-                                        crate::media::open_expanded(
-                                            SharedString::from(url.clone()).into(),
-                                            window,
-                                            cx,
-                                        )
-                                    })
-                            })),
-                    )
-            }))
-            .children(self.files.preview.as_ref().map(|(path, editor, editable)| {
-                let editable = *editable;
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        h_flex()
-                            .px_2()
-                            .py_1()
-                            .gap_2()
-                            .text_xs()
-                            .child(div().flex_1().truncate().child(path.clone()))
-                            .children(
-                                self.files
-                                    .status
-                                    .clone()
-                                    .map(|s| div().text_color(c.muted_foreground).child(s)),
+            .child({
+                let copy = path.clone();
+                crate::ui::icon_button("file-copy-path", "copy", cx)
+                    .tooltip(|window, cx| Tooltip::new(t("Copy path")).build(window, cx))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                    })
+            })
+            .child(
+                crate::ui::icon_button("file-close", "x", cx).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.files.preview = None;
+                        this.files.image = None;
+                        this.files.status = None;
+                        cx.notify();
+                    },
+                )),
+            );
+        let body = if let Some((_, editor, editable)) = &self.files.preview {
+            div()
+                .size_full()
+                .child(Editor::new(editor).readonly(!*editable))
+                .into_any_element()
+        } else {
+            let url = self.files.image.as_ref().and_then(|(_, u)| u.clone());
+            div()
+                .size_full()
+                .p_2()
+                .flex()
+                .justify_center()
+                .children(url.map(|url| {
+                    img(SharedString::from(url.clone()))
+                        .id("file-image")
+                        .max_w_full()
+                        .max_h_full()
+                        .object_fit(ObjectFit::Contain)
+                        .cursor_pointer()
+                        .on_click(move |_, window, cx| {
+                            crate::media::open_expanded(
+                                SharedString::from(url.clone()).into(),
+                                window,
+                                cx,
                             )
-                            .when(editable, |row| {
-                                row.child(
-                                    Button::new("file-save")
-                                        .xsmall()
-                                        .outline()
-                                        .label(t("Save"))
-                                        .on_click(cx.listener(|this, _, _, cx| this.save_file(cx))),
-                                )
-                            }),
-                    )
+                        })
+                }))
+                .into_any_element()
+        };
+        Some(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(crumb)
+                .child(div().flex_1().min_h_0().child(body))
+                .into_any_element(),
+        )
+    }
+
+    /// The Files surface of the right panel (web: `FileBrowserPanel`): the explorer alone, or
+    /// beside an open file as a narrow column.
+    pub(crate) fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = cx.theme().colors;
+        let title = self
+            .files
+            .preview
+            .as_ref()
+            .map(|(p, ..)| p.clone())
+            .or_else(|| self.files.image.as_ref().map(|(p, _)| p.clone()))
+            .map(|p| p.rsplit('/').next().unwrap_or(&p).to_owned());
+        let icon = title.as_deref().map_or("files", file_icon);
+        let open = self.render_open_file(cx);
+        crate::header::right_panel(
+            icon,
+            Some(title.unwrap_or_else(|| t("Files"))),
+            match open {
+                Some(file) => h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(file)
                     .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .child(Editor::new(editor).readonly(!editable)),
+                        v_flex()
+                            .w(px(256.))
+                            .h_full()
+                            .flex_none()
+                            .border_l_1()
+                            .border_color(c.border)
+                            .child(self.render_explorer(cx)),
                     )
-            }))
+                    .into_any_element(),
+                None => self.render_explorer(cx).into_any_element(),
+            },
+            self,
+            cx,
+        )
     }
 }
 
@@ -619,7 +772,7 @@ mod tests {
         ];
         let sorted: Vec<_> = sorted_entries(&entries)
             .into_iter()
-            .map(|(p, _)| p)
+            .map(|(p, ..)| p)
             .collect();
         assert_eq!(sorted, ["src/A", "src/a.rs", "src/b.rs"]);
         assert_eq!(language_for("main.RS"), "rust");

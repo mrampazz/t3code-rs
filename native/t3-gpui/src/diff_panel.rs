@@ -32,8 +32,11 @@ impl T3App {
     pub(crate) fn toggle_diff(&mut self, cx: &mut Context<Self>) {
         self.diff_open = !self.diff_open;
         if self.diff_open {
+            self.files.open = false;
+            self.surfaces_open = false;
             self.load_diff(None, cx);
         }
+        self.remember_panel();
         cx.notify();
     }
 
