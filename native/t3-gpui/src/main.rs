@@ -18,6 +18,7 @@ mod issues;
 mod keybindings;
 mod limits;
 mod linked;
+mod local_server;
 mod media;
 mod menus;
 mod mermaid;
@@ -334,6 +335,7 @@ impl T3App {
             cx.on_app_quit(|this, cx| {
                 settings::save_prefs(&this.prefs);
                 this.save_drafts(cx);
+                local_server::stop();
                 async {}
             }),
             cx.subscribe_in(
@@ -505,10 +507,52 @@ impl T3App {
             _subscriptions,
         };
         app.listen_for_notification_clicks(cx);
-        for session in auth::load_all() {
+        let saved = auth::load_all();
+        for session in saved.clone() {
             app.connect(session, cx);
         }
+        if local_server::enabled() {
+            app.start_local_server(saved, cx);
+        }
         app
+    }
+
+    /// Connects this machine's server, starting it when nothing runs (see `local_server`).
+    fn start_local_server(&mut self, saved: Vec<auth::Session>, cx: &mut Context<Self>) {
+        if self.envs.is_empty() {
+            self.screen = Screen::Connecting;
+        }
+        cx.spawn(async move |this, cx| {
+            let result = on_tokio(async move { local_server::session(&saved).await }).await;
+            this.update(cx, |app, cx| {
+                match result {
+                    Ok(Ok(session)) => {
+                        let key = session.base_url.clone();
+                        if app.env_by(&key).is_none() {
+                            auth::save(&session);
+                            app.connect(session, cx);
+                        }
+                        if app.active.is_none() || matches!(app.screen, Screen::Connecting) {
+                            app.activate(&key, cx);
+                            app.screen = Screen::Connected;
+                        }
+                    }
+                    Ok(Err(e)) => app.local_server_failed(e.to_string(), cx),
+                    Err(e) => app.local_server_failed(e.to_string(), cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn local_server_failed(&mut self, error: String, cx: &mut Context<Self>) {
+        if matches!(self.screen, Screen::Connecting) && self.envs.is_empty() {
+            self.fail(format!("Could not start the local server: {error}"), cx);
+        } else {
+            self.error = Some(format!("Could not start the local server: {error}").into());
+        }
     }
 
     fn pair(&mut self, cx: &mut Context<Self>) {

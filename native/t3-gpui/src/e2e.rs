@@ -2026,6 +2026,32 @@ async fn e2e_files_search_and_image() {
     assert!(body.text().await.unwrap().contains("<svg"));
 }
 
+/// Needs `T3_GPUI_HOME` (a throwaway home) and `T3_GPUI_CLI`; starts, reuses and stops a server.
+#[tokio::test]
+#[ignore]
+async fn e2e_local_server() {
+    let session = crate::local_server::session(&[]).await.unwrap();
+    let again = crate::local_server::session(std::slice::from_ref(&session))
+        .await
+        .unwrap();
+    assert_eq!(
+        again.access_token, session.access_token,
+        "reuses the running server"
+    );
+    let client = RpcClient::connect(&auth::socket_url(&session).await.unwrap())
+        .await
+        .unwrap();
+    let config = client.call("server.getConfig", json!({})).await;
+    println!("{}", config.is_ok());
+    client.close();
+    crate::local_server::stop();
+    let home = crate::local_server::home().unwrap();
+    assert!(
+        crate::local_server::recorded_origin(&home).is_none(),
+        "a stopped server clears its record"
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn e2e_source_control_discovery() {

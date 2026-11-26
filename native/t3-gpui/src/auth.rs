@@ -29,7 +29,7 @@ fn rejected(res: reqwest::Response) -> anyhow::Error {
     Rejected(res.status().as_u16(), reason).into()
 }
 
-fn bearer() -> String {
+pub(crate) fn bearer() -> String {
     "Bearer".into()
 }
 
@@ -297,7 +297,7 @@ pub async fn post_json(
     Ok(res.json().await.unwrap_or(serde_json::Value::Null))
 }
 
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("HOME")?).join(".config/t3-gpui"))
 }
 
