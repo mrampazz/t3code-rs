@@ -141,6 +141,11 @@ impl T3App {
                 let label = t(if pr { "Copy PR link" } else { "Copy thread" });
                 commands.push((label, PaletteAction::Command("thread.copyReference")));
             }
+            commands.push((t("Go to file"), PaletteAction::Command("filePicker.toggle")));
+            commands.push((
+                t("Search project contents"),
+                PaletteAction::Command("projectSearch.toggle"),
+            ));
             commands.push((t("Link pull request to thread"), PaletteAction::LinkPr));
             if let Some(editor) = self.favorite_editor() {
                 let label = crate::editors::label(&editor);

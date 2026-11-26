@@ -178,6 +178,13 @@ pub fn defaults() -> Vec<Value> {
         rule("k", &["mod"], "commandPalette.toggle", Some(&not_terminal)),
         rule("n", &["mod"], "chat.new", Some(&not_terminal)),
         rule("f", &["mod"], "chat.find", Some(&not_terminal)),
+        rule("p", &["mod"], "filePicker.toggle", Some(&not_terminal)),
+        rule(
+            "f",
+            &["mod", "shift"],
+            "projectSearch.toggle",
+            Some(&not_terminal),
+        ),
         rule("o", &["mod"], "editor.openFavorite", None),
         rule("[", &["mod"], "navigation.back", Some(&not_terminal)),
         rule("]", &["mod"], "navigation.forward", Some(&not_terminal)),

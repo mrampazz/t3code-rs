@@ -1961,6 +1961,73 @@ async fn e2e_checkout_pull_request_thread() {
 
 #[tokio::test]
 #[ignore]
+async fn e2e_files_search_and_image() {
+    let env = connect().await;
+    let (thread_id, _view) = launch(&env, "multi-turn", "files").await;
+    let cwd = env
+        .shell
+        .until("project root", |s| {
+            s.projects
+                .iter()
+                .find(|p| p.id == env.project_id)
+                .map(|p| p.workspace_root.clone())
+        })
+        .await;
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>"#;
+    for (path, contents) in [
+        ("src/needle.rs", "fn main() {\n    let haystack = 1;\n}\n"),
+        ("logo.svg", svg),
+    ] {
+        env.client
+            .call(
+                "projects.writeFile",
+                json!({ "cwd": cwd, "relativePath": path, "contents": contents }),
+            )
+            .await
+            .unwrap();
+    }
+    let names = env
+        .client
+        .call(
+            "projects.searchEntries",
+            json!({ "cwd": cwd, "query": "needle", "limit": 100, "kind": "file" }),
+        )
+        .await
+        .unwrap();
+    let hits = crate::files::search_hits(&names);
+    assert!(hits.iter().any(|h| h.path == "src/needle.rs"), "{names}");
+    let found = env
+        .client
+        .call(
+            "projects.searchContents",
+            json!({ "cwd": cwd, "query": "haystack", "limit": 200,
+            "caseSensitive": false, "wholeWord": false, "useRegex": false }),
+        )
+        .await
+        .unwrap();
+    let hits = crate::files::search_hits(&found);
+    assert_eq!(hits.first().and_then(|h| h.line), Some(2), "{found}");
+    let minted = env
+        .client
+        .call(
+            "assets.createUrl",
+            json!({ "resource": { "_tag": "workspace-file",
+            "threadId": thread_id, "path": format!("{cwd}/logo.svg") } }),
+        )
+        .await
+        .unwrap();
+    let url = format!(
+        "{}{}",
+        env.base_url,
+        minted["relativeUrl"].as_str().unwrap()
+    );
+    let body = reqwest::get(&url).await.unwrap();
+    assert!(body.status().is_success(), "{}", body.status());
+    assert!(body.text().await.unwrap().contains("<svg"));
+}
+
+#[tokio::test]
+#[ignore]
 async fn e2e_source_control_discovery() {
     let env = connect().await;
     let found = env

@@ -220,6 +220,7 @@ struct T3App {
     setup_sub: Option<String>,
     palette_open: bool,
     palette_input: Entity<InputState>,
+    files_search: Entity<InputState>,
     /// Server message matches for the current palette query.
     palette_matches: Vec<serde_json::Value>,
     /// Drops search responses for an older query.
@@ -317,6 +318,7 @@ impl T3App {
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder(t("Find in thread")));
         let palette_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t("Search threads and commands…")));
+        let files_search = cx.new(|cx| InputState::new(window, cx).placeholder(t("Search files")));
         let _subscriptions = vec![
             cx.observe_window_bounds(window, |this, window, _| this.remember_bounds(window)),
             // Coming back to the app is a good moment to retry (web: supervisor wakeups).
@@ -352,6 +354,11 @@ impl T3App {
                     _ => {}
                 },
             ),
+            cx.subscribe_in(&files_search, window, |this, _, e: &InputEvent, _, cx| {
+                if matches!(e, InputEvent::Change) {
+                    this.search_files(cx);
+                }
+            }),
             cx.subscribe_in(
                 &palette_input,
                 window,
@@ -449,6 +456,7 @@ impl T3App {
             setup_sub: None,
             palette_open: false,
             palette_input,
+            files_search,
             palette_matches: Vec::new(),
             palette_generation: 0,
             palette_index: 0,
@@ -1198,6 +1206,9 @@ impl T3App {
                 self.new_thread(env, project, window, cx);
             }
             "chat.find" if thread.is_some() => self.open_find(window, cx),
+            "filePicker.toggle" | "projectSearch.toggle" if thread.is_some() => {
+                self.focus_file_search(command == "projectSearch.toggle", window, cx)
+            }
             "editor.openFavorite" if thread.is_some() => self.open_in_editor(None, cx),
             c if thread.is_some() && c.starts_with("script.") && c.ends_with(".run") => {
                 return self.run_script(&c["script.".len()..c.len() - ".run".len()], cx);
