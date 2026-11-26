@@ -148,7 +148,10 @@ impl T3App {
                 let label = title.unwrap_or_else(|| chip_label(&link));
                 details_row_with(
                     ("pr-row", i),
-                    crate::ui::icon("git-pull-request").text_color(color),
+                    crate::ui::icon("git-pull-request")
+                        .size(px(16.))
+                        .flex_none()
+                        .text_color(color),
                     details_label(label),
                     cx,
                 )

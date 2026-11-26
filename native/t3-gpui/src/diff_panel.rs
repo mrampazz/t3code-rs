@@ -280,7 +280,7 @@ impl T3App {
     }
 
     /// This session's choice, else the client's `diffIgnoreWhitespace` preference.
-    fn diff_ignore_whitespace(&self) -> bool {
+    pub(crate) fn diff_ignore_whitespace(&self) -> bool {
         self.diff_whitespace
             .unwrap_or(self.prefs["diffIgnoreWhitespace"] == true)
     }

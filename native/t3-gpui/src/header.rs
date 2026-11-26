@@ -23,7 +23,7 @@ fn toggle(id: &'static str, icon: &str, pressed: bool, cx: &App) -> Stateful<Div
 }
 
 /// A details card row's icon and label (web: `THREAD_DETAILS_PANEL_ROW_CONTENT_CLASS`).
-pub(crate) fn details_content(icon: Icon, label: impl IntoElement, cx: &App) -> Div {
+pub(crate) fn details_content(icon: impl IntoElement, label: impl IntoElement, cx: &App) -> Div {
     let c = cx.theme().colors;
     h_flex()
         .w_full()
@@ -32,13 +32,16 @@ pub(crate) fn details_content(icon: Icon, label: impl IntoElement, cx: &App) -> 
         .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(c.foreground.opacity(0.8))
-        .child(icon.size(px(16.)).flex_none())
+        .child(icon)
         .child(label)
 }
 
 /// A row icon in the muted tone (web: `THREAD_DETAILS_PANEL_ICON_CLASS`).
 pub(crate) fn details_icon(name: &str, cx: &App) -> Icon {
-    ui::icon(name).text_color(cx.theme().colors.muted_foreground)
+    ui::icon(name)
+        .size(px(16.))
+        .flex_none()
+        .text_color(cx.theme().colors.muted_foreground)
 }
 
 /// A truncating row label.
@@ -59,7 +62,7 @@ pub(crate) fn details_row(
 /// [`details_row`] with its own icon, e.g. a pull request's state color.
 pub(crate) fn details_row_with(
     id: impl Into<ElementId>,
-    icon: Icon,
+    icon: impl IntoElement,
     label: impl IntoElement,
     cx: &App,
 ) -> Button {
@@ -348,6 +351,7 @@ impl T3App {
                         toggle("thread-details", "square-menu", self.details_open, cx).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.details_open = !this.details_open;
+                                this.refresh_changes_preview(cx);
                                 cx.notify();
                             }),
                         ),

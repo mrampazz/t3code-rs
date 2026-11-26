@@ -229,6 +229,10 @@ struct T3App {
     git_sub: Option<String>,
     /// Latest git action phase or outcome.
     git_progress: Option<SharedString>,
+    /// A git action, pull or branch switch is running; the git row locks until it ends.
+    git_busy: bool,
+    /// The Changes row's branch-range totals, keyed by the status revision they were read for.
+    changes_preview: Option<(String, Option<git::ChangesTotals>)>,
     /// The open thread's local branches (`vcs.listRefs`).
     thread_refs: Vec<serde_json::Value>,
     /// The open thread's `WorktreeSetupSnapshot`, if it has one.
@@ -479,6 +483,8 @@ impl T3App {
             git: Default::default(),
             git_sub: None,
             git_progress: None,
+            git_busy: false,
+            changes_preview: None,
             thread_refs: Vec::new(),
             worktree_setup: None,
             setup_sub: None,
@@ -1337,6 +1343,7 @@ impl T3App {
             }
             "threadPanel.toggle" if thread.is_some() => {
                 self.details_open = !self.details_open;
+                self.refresh_changes_preview(cx);
                 cx.notify();
             }
             "appearance.cycle" => {

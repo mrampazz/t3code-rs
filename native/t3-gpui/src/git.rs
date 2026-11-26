@@ -40,8 +40,7 @@ impl GitStatus {
 
     /// (insertions, deletions, base ref) for the Changes row (web: `resolveChangesTotals` from
     /// status alone): the branch's changes against its base when it has any, else the working tree.
-    /// shortcut: skips the web's `diffPreview` branch-range read, so it shows the server's counts.
-    pub fn changes_totals(&self) -> (u64, u64, Option<String>) {
+    pub fn changes_totals(&self) -> ChangesTotals {
         let n = |v: &Value, k: &str| v[k].as_u64().unwrap_or(0);
         let (branch, tree) = (&self.local["branchChanges"], &self.local["workingTree"]);
         let pick_branch = branch.is_object()
@@ -63,6 +62,13 @@ impl GitStatus {
         )
     }
 
+    /// `sourceControlProvider.kind` ("github", "gitlab", …), or "" when unknown.
+    pub fn host_kind(&self) -> &str {
+        self.local["sourceControlProvider"]["kind"]
+            .as_str()
+            .unwrap_or("")
+    }
+
     pub fn pr(&self) -> Option<(u64, String)> {
         let pr = &self.remote["pr"];
         Some((pr["number"].as_u64()?, pr["url"].as_str()?.to_owned()))
@@ -73,9 +79,9 @@ impl GitStatus {
 const ACTIONS: [(&str, &str); 5] = [
     ("commit", "Commit"),
     ("commit_push", "Commit & push"),
-    ("commit_push_pr", "Commit, push & create PR"),
+    ("commit_push_pr", "Commit, push & create"),
     ("push", "Push"),
-    ("create_pr", "Create PR"),
+    ("create_pr", "Create"),
 ];
 
 impl T3App {
@@ -127,6 +133,10 @@ impl T3App {
             update["worktreePath"] = json!(path);
             return self.dispatch(update, cx);
         }
+        if self.git_busy {
+            return;
+        }
+        self.git_busy = true;
         self.git_progress = Some(format!("Switching to {branch}…").into());
         cx.notify();
         let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
@@ -134,6 +144,7 @@ impl T3App {
             let payload = json!({ "cwd": cwd, "refName": branch });
             let result = on_tokio(async move { client.call("vcs.switchRef", payload).await }).await;
             this.update(cx, |app, cx| {
+                app.git_busy = false;
                 match result {
                     Ok(Ok(_)) => {
                         app.git_progress = None;
@@ -195,6 +206,7 @@ impl T3App {
                         return false;
                     }
                     app.git.apply(&event);
+                    app.refresh_changes_preview(cx);
                     cx.notify();
                     true
                 });
@@ -220,6 +232,10 @@ impl T3App {
             payload["threadId"] = json!(thread.id);
             payload["projectId"] = json!(thread.project_id);
         }
+        if self.git_busy {
+            return;
+        }
+        self.git_busy = true;
         self.git_progress = Some("Starting…".into());
         cx.notify();
         let (_, mut rx) = client.request("git.runStackedAction", payload);
@@ -257,6 +273,7 @@ impl T3App {
                 }
             }
             this.update(cx, |app, cx| {
+                app.git_busy = false;
                 app.git_progress = outcome.map(Into::into);
                 cx.notify();
             })
@@ -269,17 +286,88 @@ impl T3App {
         let (Some(client), Some(cwd)) = (self.client(), self.thread_cwd()) else {
             return;
         };
+        if self.git_busy {
+            return;
+        }
+        self.git_busy = true;
         self.git_progress = Some("Pulling…".into());
         cx.spawn(async move |this, cx| {
             let result =
                 on_tokio(async move { client.call("vcs.pull", json!({ "cwd": cwd })).await }).await;
             this.update(cx, |app, cx| {
+                app.git_busy = false;
                 app.git_progress = Some(match result {
                     Ok(Ok(_)) => "Pulled".into(),
                     Ok(Err(e)) => format!("Pull failed: {e}").into(),
                     Err(e) => format!("Pull failed: {e}").into(),
                 });
                 cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The Changes row's totals: the branch-range preview for the current status when it has
+    /// arrived, else the status's own counts.
+    fn changes_totals(&self) -> ChangesTotals {
+        match &self.changes_preview {
+            Some((key, Some(totals))) if Some(key) == self.changes_key().as_ref() => totals.clone(),
+            _ => self.git.changes_totals(),
+        }
+    }
+
+    /// The preview read's input, changing whenever the status totals do (web: `changesStatusRevision`).
+    fn changes_key(&self) -> Option<String> {
+        let (local, cwd) = (&self.git.local, self.thread_cwd()?);
+        let (tree, branch) = (&local["workingTree"], &local["branchChanges"]);
+        Some(
+            json!([
+                cwd,
+                self.diff_ignore_whitespace(),
+                local["refName"],
+                tree["insertions"],
+                tree["deletions"],
+                branch["baseRef"],
+                branch["insertions"],
+                branch["deletions"]
+            ])
+            .to_string(),
+        )
+    }
+
+    /// Reads the branch-range totals (web: `GitActionsControl`'s `diffPreview` query), only while
+    /// the details card shows them and only once per status revision.
+    pub(crate) fn refresh_changes_preview(&mut self, cx: &mut Context<Self>) {
+        if !self.details_open || !self.git.is_repo() {
+            return;
+        }
+        let (Some(client), Some(cwd), Some(key)) =
+            (self.client(), self.thread_cwd(), self.changes_key())
+        else {
+            return;
+        };
+        if self
+            .changes_preview
+            .as_ref()
+            .is_some_and(|(k, _)| *k == key)
+        {
+            return;
+        }
+        self.changes_preview = Some((key.clone(), None));
+        let payload = json!({ "cwd": cwd, "metadataOnly": true, "sourceKind": "branch-range",
+            "ignoreWhitespace": self.diff_ignore_whitespace() });
+        cx.spawn(async move |this, cx| {
+            let result =
+                on_tokio(async move { client.call("review.getDiffPreview", payload).await }).await;
+            let Ok(Ok(result)) = result else { return };
+            this.update(cx, |app, cx| {
+                if let Some((k, slot)) = &mut app.changes_preview
+                    && *k == key
+                {
+                    *slot = preview_totals(&result);
+                    cx.notify();
+                }
             })
             .ok();
         })
@@ -356,18 +444,40 @@ impl T3App {
             return div().into_any_element();
         }
         let c = cx.theme().colors;
-        let quick = quick_action(&self.git);
+        // While a run is going the row shows its progress and offers nothing else, as on the web.
+        if self.git_busy {
+            let progress = self
+                .git_progress
+                .clone()
+                .unwrap_or_else(|| t("Working…").into());
+            return div()
+                .rounded(px(8.))
+                .bg(c.foreground.opacity(0.055))
+                .child(
+                    details_row(
+                        "git-quick-action",
+                        "loader-circle",
+                        details_label(progress),
+                        cx,
+                    )
+                    .disabled(true),
+                )
+                .into_any_element();
+        }
+        let quick = quick_action(&self.git, false);
+        let (short, _) = change_request_terms(&self.git);
         let (_, behind) = self.git.ahead_behind();
         let app = cx.entity().downgrade();
+        let step = quick.step;
         let primary = details_row(
             "git-quick-action",
-            quick.icon(),
-            details_label(t(quick.label)),
+            quick.icon(&self.git),
+            details_label(quick.label.clone()),
             cx,
         )
-        .disabled(quick.step.is_none())
-        .when_some(quick.hint, |b, hint| b.tooltip(t(hint)))
-        .on_click(cx.listener(move |this, _, _, cx| match quick.step {
+        .disabled(step.is_none())
+        .when_some(quick.hint, |b, hint| b.tooltip(hint))
+        .on_click(cx.listener(move |this, _, _, cx| match step {
             Some(Step::Pull) => this.git_pull(cx),
             Some(Step::Run(action)) => this.run_git_action(action, cx),
             None => {}
@@ -379,7 +489,12 @@ impl T3App {
                 move |mut menu, _, _| {
                     for (action, label) in ACTIONS {
                         let app = app.clone();
-                        menu = menu.item(PopupMenuItem::new(t(label)).on_click(move |_, _, cx| {
+                        let label = match action {
+                            "commit_push_pr" => format!("{} {short}", t("Commit, push & create")),
+                            "create_pr" => format!("{} {short}", t("Create")),
+                            _ => t(label),
+                        };
+                        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
                             app.update(cx, |this, cx| this.run_git_action(action, cx))
                                 .ok();
                         }));
@@ -408,7 +523,7 @@ impl T3App {
                 },
                 cx,
             ))
-            .children(self.git_progress.clone().map(|progress| {
+            .children(self.git_progress.clone().map(|outcome| {
                 div()
                     .h(px(20.))
                     .pl(px(36.))
@@ -416,7 +531,7 @@ impl T3App {
                     .truncate()
                     .text_xs()
                     .text_color(c.muted_foreground)
-                    .child(progress)
+                    .child(outcome)
             }))
             .into_any_element()
     }
@@ -427,7 +542,7 @@ impl T3App {
             return div().into_any_element();
         }
         let c = cx.theme().colors;
-        let (insertions, deletions, base) = self.git.changes_totals();
+        let (insertions, deletions, base) = self.changes_totals();
         let count = |n: u64, sign: &str, color: Hsla| {
             div()
                 .text_color(if n > 0 { color } else { c.muted_foreground })
@@ -472,6 +587,9 @@ impl T3App {
     }
 }
 
+/// (insertions, deletions, base ref) shown on the Changes row.
+pub type ChangesTotals = (u64, u64, Option<String>);
+
 /// What the git row's primary half does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Step {
@@ -480,44 +598,65 @@ enum Step {
 }
 
 /// The suggested git step (web: `resolveQuickAction`); `step` is None when there is nothing to do.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct QuickAction {
-    label: &'static str,
+    label: String,
     step: Option<Step>,
-    hint: Option<&'static str>,
+    hint: Option<String>,
 }
 
 impl QuickAction {
-    fn icon(&self) -> &'static str {
+    /// web: `GitQuickActionIcon`; opening a change request shows the host's mark.
+    fn icon(&self, git: &GitStatus) -> &'static str {
         match self.step {
             Some(Step::Pull) => "cloud-download",
             Some(Step::Run("commit")) => "git-commit-horizontal",
             Some(Step::Run("push" | "commit_push")) => "cloud-upload",
-            Some(Step::Run(_)) => "github",
-            None if self.label == "Push" => "cloud-upload",
+            Some(Step::Run(_)) => match git.host_kind() {
+                "github" => "github",
+                "gitlab" => "gitlab",
+                _ => "git-pull-request",
+            },
+            None if self.label == t("Push") => "cloud-upload",
             None => "git-commit-horizontal",
         }
     }
 }
 
-/// shortcut: always says PR; the web names MRs and change requests by host. Add with GitLab support.
-/// shortcut: no "in progress" state; a second click starts another run, as the old toolbar did.
-fn quick_action(git: &GitStatus) -> QuickAction {
-    let run = |label, action| QuickAction {
+/// The host's word for a pull request (web: `changeRequestTerminologyFor`): (short, singular).
+/// Hosts the web does not know, or a repository without one, say "change request".
+fn change_request_terms(git: &GitStatus) -> (&'static str, &'static str) {
+    match git.host_kind() {
+        "gitlab" => ("MR", "merge request"),
+        "github" | "bitbucket" | "azure-devops" | "forgejo" | "cursor-origin" | "gitcafe"
+        | "tanstack-source" => ("PR", "pull request"),
+        _ => ("change request", "change request"),
+    }
+}
+
+fn quick_action(git: &GitStatus, busy: bool) -> QuickAction {
+    let run = |label: String, action| QuickAction {
         label,
         step: Some(Step::Run(action)),
         hint: None,
     };
-    let hint = |label, hint| QuickAction {
-        label,
+    let hint = |label: &str, hint: String| QuickAction {
+        label: t(label),
         step: None,
         hint: Some(hint),
     };
+    if busy {
+        return hint("Commit", t("Git action in progress."));
+    }
+    let (short, singular) = change_request_terms(git);
     let (local, remote) = (&git.local, &git.remote);
     if local["refName"].is_null() {
         return hint(
             "Commit",
-            "Create and checkout a ref before pushing or opening a pull request.",
+            format!(
+                "{} {singular}.",
+                t("Create and checkout a ref before pushing or opening a")
+            ),
         );
     }
     let has_upstream = remote["hasUpstream"] == true;
@@ -526,59 +665,76 @@ fn quick_action(git: &GitStatus) -> QuickAction {
     let open_pr = remote["pr"]["state"] == "open";
     let (ahead, behind) = git.ahead_behind();
     let ahead_of_default = remote["aheadOfDefaultCount"].as_u64().unwrap_or(ahead);
+    let push_and_create = || run(format!("{} {short}", t("Push & create")), "create_pr");
     if local["hasWorkingTreeChanges"] == true {
         if behind > 0 || (!has_upstream && !has_primary_remote) {
-            return run("Commit", "commit");
+            return run(t("Commit"), "commit");
         }
         if open_pr || is_default {
-            return run("Commit & push", "commit_push");
+            return run(t("Commit & push"), "commit_push");
         }
-        return run("Commit, push & PR", "commit_push_pr");
+        return run(format!("{} {short}", t("Commit, push &")), "commit_push_pr");
     }
     if !has_upstream {
         if !has_primary_remote {
             return hint(
                 "Publish repository",
-                "Add a remote to publish this repository.",
+                t("Add a remote to publish this repository."),
             );
         }
         if ahead == 0 {
             return if open_pr {
-                hint("Commit", "Branch is up to date. No action needed.")
+                hint("Commit", t("Branch is up to date. No action needed."))
             } else {
-                hint("Push", "No local commits to push.")
+                hint("Push", t("No local commits to push."))
             };
         }
         return if open_pr || is_default {
-            run("Push", "push")
+            run(t("Push"), "push")
         } else {
-            run("Push & create PR", "create_pr")
+            push_and_create()
         };
     }
     if ahead > 0 && behind > 0 {
         return hint(
             "Sync ref",
-            "Branch has diverged from upstream. Rebase/merge first.",
+            t("Branch has diverged from upstream. Rebase/merge first."),
         );
     }
     if behind > 0 {
         return QuickAction {
-            label: "Pull",
+            label: t("Pull"),
             step: Some(Step::Pull),
             hint: None,
         };
     }
     if ahead > 0 {
         return if open_pr || is_default {
-            run("Push", "push")
+            run(t("Push"), "push")
         } else {
-            run("Push & create PR", "create_pr")
+            push_and_create()
         };
     }
     if !open_pr && ahead_of_default > 0 && !is_default {
-        return run("Create PR", "create_pr");
+        return run(format!("{} {short}", t("Create")), "create_pr");
     }
-    hint("Commit", "Branch is up to date. No action needed.")
+    hint("Commit", t("Branch is up to date. No action needed."))
+}
+
+/// (insertions, deletions, base ref) of a diff preview's branch-range source with file stats
+/// (web: `resolveChangesTotals`); None leaves the status counts in place.
+fn preview_totals(result: &Value) -> Option<ChangesTotals> {
+    let source = result["sources"]
+        .as_array()?
+        .iter()
+        .find(|s| s["kind"] == "branch-range")?;
+    let files = source["files"].as_array()?;
+    let sum = |k: &str| files.iter().filter_map(|f| f[k].as_u64()).sum();
+    Some((
+        sum("additions"),
+        sum("deletions"),
+        source["baseRef"].as_str().map(str::to_owned),
+    ))
 }
 
 /// 34604 → "34,604" (web: `formatDiffCount`).
@@ -674,38 +830,67 @@ mod tests {
     #[test]
     fn suggests_the_next_git_step_like_the_web() {
         let step = |local: serde_json::Value, remote: serde_json::Value| {
-            let q = quick_action(&status(local, remote));
+            let q = quick_action(&status(local, remote), false);
             (q.label, q.step)
         };
-        let base = |dirty: bool| json!({"refName": "feat", "hasWorkingTreeChanges": dirty, "hasPrimaryRemote": true, "isDefaultRef": false});
+        let base = |dirty: bool| {
+            json!({"refName": "feat", "hasWorkingTreeChanges": dirty, "hasPrimaryRemote": true,
+            "isDefaultRef": false, "sourceControlProvider": {"kind": "github"}})
+        };
         let up = |ahead: u64, behind: u64| json!({"hasUpstream": true, "aheadCount": ahead, "behindCount": behind, "pr": null});
+        let s = |l: &str| l.to_owned();
         assert_eq!(
             step(base(true), up(0, 0)),
-            ("Commit, push & PR", Some(Step::Run("commit_push_pr")))
+            (s("Commit, push & PR"), Some(Step::Run("commit_push_pr")))
         );
         assert_eq!(
             step(base(true), up(0, 1)),
-            ("Commit", Some(Step::Run("commit")))
+            (s("Commit"), Some(Step::Run("commit")))
         );
-        assert_eq!(step(base(false), up(0, 2)), ("Pull", Some(Step::Pull)));
+        assert_eq!(step(base(false), up(0, 2)), (s("Pull"), Some(Step::Pull)));
         assert_eq!(step(base(false), up(1, 1)).1, None);
         assert_eq!(
             step(base(false), up(3, 0)),
-            ("Push & create PR", Some(Step::Run("create_pr")))
+            (s("Push & create PR"), Some(Step::Run("create_pr")))
         );
         let no_upstream = json!({"hasUpstream": false, "aheadCount": 0, "behindCount": 0, "aheadOfDefaultCount": 2, "pr": null});
-        assert_eq!(step(base(false), no_upstream), ("Push", None));
+        assert_eq!(step(base(false), no_upstream), (s("Push"), None));
         let ahead_of_default = json!({"hasUpstream": true, "aheadCount": 0, "behindCount": 0, "aheadOfDefaultCount": 2, "pr": null});
         assert_eq!(
-            step(base(false), ahead_of_default),
-            ("Create PR", Some(Step::Run("create_pr")))
+            step(base(false), ahead_of_default.clone()),
+            (s("Create PR"), Some(Step::Run("create_pr")))
         );
         let open_pr = json!({"hasUpstream": true, "aheadCount": 1, "behindCount": 0, "pr": {"state": "open"}});
         assert_eq!(
             step(base(false), open_pr),
-            ("Push", Some(Step::Run("push")))
+            (s("Push"), Some(Step::Run("push")))
         );
         assert_eq!(step(json!({"refName": null}), json!(null)).1, None);
+
+        let gitlab = json!({"refName": "feat", "hasWorkingTreeChanges": false, "hasPrimaryRemote": true,
+            "sourceControlProvider": {"kind": "gitlab"}});
+        assert_eq!(step(gitlab, ahead_of_default.clone()).0, "Create MR");
+        let unknown =
+            json!({"refName": "feat", "hasWorkingTreeChanges": true, "hasPrimaryRemote": true});
+        assert_eq!(step(unknown, up(0, 0)).0, "Commit, push & change request");
+        let busy = quick_action(&status(base(true), up(0, 0)), true);
+        assert_eq!(
+            (busy.step, busy.hint.as_deref()),
+            (None, Some("Git action in progress."))
+        );
+    }
+
+    #[test]
+    fn reads_branch_range_preview_totals() {
+        let result = json!({"sources": [
+            {"kind": "working-tree", "baseRef": null, "files": [{"additions": 9, "deletions": 9}]},
+            {"kind": "branch-range", "baseRef": "origin/main", "files": [{"additions": 30, "deletions": 1}, {"additions": 4, "deletions": 0}]}]});
+        assert_eq!(
+            super::preview_totals(&result),
+            Some((34, 1, Some("origin/main".into())))
+        );
+        let no_files = json!({"sources": [{"kind": "branch-range", "baseRef": "origin/main"}]});
+        assert_eq!(super::preview_totals(&no_files), None);
     }
 
     #[test]

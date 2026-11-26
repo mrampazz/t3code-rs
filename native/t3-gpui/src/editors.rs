@@ -4,12 +4,12 @@
 //! shortcut: remote opens offer only VS Code (the web's fallback for browsers) and ignore saved
 //! SSH profiles, which this client has none of; probe local editors if users ask for more.
 
-use gpui_kit::component::Disableable;
 use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::{ActiveTheme, Disableable, h_flex};
 use gpui_kit::*;
 use serde_json::{Value, json};
 
-use crate::header::{details_label, details_row, details_split};
+use crate::header::{details_label, details_row_with, details_split};
 use crate::i18n::{t, tc, tv};
 use crate::{T3App, on_tokio};
 
@@ -88,6 +88,54 @@ pub fn label(id: &str) -> String {
         || tc("Editor", "noun, a code editor app"),
         |(_, l)| (*l).to_owned(),
     )
+}
+
+/// An editor's mark (web: `editorIconOptions`), from the web's own SVGs; 16px like the rows.
+pub(crate) fn editor_logo(id: &str, cx: &App) -> AnyElement {
+    let svg = match id {
+        "antigravity" => include_str!("../assets/editors/antigravity.svg"),
+        "aqua" => include_str!("../assets/editors/aqua.svg"),
+        "clion" => include_str!("../assets/editors/clion.svg"),
+        "cursor" => include_str!("../assets/editors/cursor.svg"),
+        "datagrip" => include_str!("../assets/editors/datagrip.svg"),
+        "dataspell" => include_str!("../assets/editors/dataspell.svg"),
+        "goland" => include_str!("../assets/editors/goland.svg"),
+        "idea" => include_str!("../assets/editors/idea.svg"),
+        "kiro" => include_str!("../assets/editors/kiro.svg"),
+        "phpstorm" => include_str!("../assets/editors/phpstorm.svg"),
+        "pycharm" => include_str!("../assets/editors/pycharm.svg"),
+        "rider" => include_str!("../assets/editors/rider.svg"),
+        "rubymine" => include_str!("../assets/editors/rubymine.svg"),
+        "rustrover" => include_str!("../assets/editors/rustrover.svg"),
+        "trae" => include_str!("../assets/editors/trae.svg"),
+        "vscode-insiders" => include_str!("../assets/editors/vscode-insiders.svg"),
+        "vscode" => include_str!("../assets/editors/vscode.svg"),
+        "vscodium" => include_str!("../assets/editors/vscodium.svg"),
+        "webstorm" => include_str!("../assets/editors/webstorm.svg"),
+        "zed" => include_str!("../assets/editors/zed.svg"),
+        "file-manager" if cfg!(target_os = "macos") => include_str!("../assets/editors/finder.svg"),
+        "file-manager" if cfg!(windows) => include_str!("../assets/editors/explorer.svg"),
+        "file-manager" => {
+            return crate::header::details_icon("folder-closed", cx).into_any_element();
+        }
+        _ => return crate::header::details_icon("square-code", cx).into_any_element(),
+    };
+    // Monochrome marks (Zed, Trae) draw in the text color, as `currentColor` does on the web.
+    let ink = Rgba::from(cx.theme().colors.foreground.opacity(0.8));
+    let ink = format!(
+        "#{:02x}{:02x}{:02x}",
+        (ink.r * 255.) as u8,
+        (ink.g * 255.) as u8,
+        (ink.b * 255.) as u8
+    );
+    let bytes = svg.replace("currentColor", &ink).into_bytes();
+    img(ImageSource::Image(std::sync::Arc::new(Image::from_bytes(
+        ImageFormat::Svg,
+        bytes,
+    ))))
+    .size(px(16.))
+    .flex_none()
+    .into_any_element()
 }
 
 /// The saved editor when still offered, else the first offered in `EDITORS` order.
@@ -463,10 +511,9 @@ impl T3App {
             OpenMode::Local => None,
         };
         let app = cx.entity().downgrade();
-        // shortcut: a generic code icon; the web shows each editor's brand mark. Needs bundled SVGs.
-        let primary = details_row(
+        let primary = details_row_with(
             "open-in",
-            "square-code",
+            editor_logo(current.as_deref().unwrap_or(""), cx),
             details_label(current.as_deref().map_or_else(
                 || t("Open in editor"),
                 |id| tv("Open in {editor}", &[("editor", &label(id))]),
@@ -481,13 +528,20 @@ impl T3App {
             move |mut menu, _, _| {
                 for id in &offered {
                     let (app, id) = (app.clone(), id.clone());
+                    let name = label(&id);
+                    let logo_id = id.clone();
                     menu = menu.item(
-                        PopupMenuItem::new(label(&id))
-                            .checked(current.as_ref() == Some(&id))
-                            .on_click(move |_, _, cx| {
-                                app.update(cx, |this, cx| this.set_preferred_editor(&id, cx))
-                                    .ok();
-                            }),
+                        PopupMenuItem::element(move |_, cx| {
+                            h_flex()
+                                .gap_2()
+                                .child(editor_logo(&logo_id, cx))
+                                .child(name.clone())
+                        })
+                        .checked(current.as_ref() == Some(&id))
+                        .on_click(move |_, _, cx| {
+                            app.update(cx, |this, cx| this.set_preferred_editor(&id, cx))
+                                .ok();
+                        }),
                     );
                 }
                 if let Some(note) = &note {
