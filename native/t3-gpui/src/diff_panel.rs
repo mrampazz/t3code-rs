@@ -29,17 +29,6 @@ const TRUNCATED_MARKER: &str = "\n\n[truncated]";
 const MAX_PR_DIFF_PAGES: usize = 20;
 
 impl T3App {
-    pub(crate) fn toggle_diff(&mut self, cx: &mut Context<Self>) {
-        self.diff_open = !self.diff_open;
-        if self.diff_open {
-            self.files.open = false;
-            self.surfaces_open = false;
-            self.load_diff(None, cx);
-        }
-        self.remember_panel();
-        cx.notify();
-    }
-
     /// `None` diffs the whole thread up to its latest turn; `Some(n)` diffs turn `n` alone.
     pub(crate) fn load_diff(&mut self, target: Option<u64>, cx: &mut Context<Self>) {
         self.diff_target = target;
@@ -344,10 +333,8 @@ impl T3App {
             ));
         }
         v_flex()
-            .w(px(560.))
-            .h_full()
-            .border_l_1()
-            .border_color(c.border)
+            .flex_1()
+            .min_h_0()
             .child(turns)
             .children(self.diff_note.clone().map(|note| {
                 div()

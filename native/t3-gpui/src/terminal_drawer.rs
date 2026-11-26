@@ -318,7 +318,12 @@ impl T3App {
         self.add_composer_context(record, window, cx);
     }
 
-    pub(crate) fn render_terminal(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The terminal: the bottom drawer, or (`in_panel`) a right panel tab filling its body.
+    pub(crate) fn render_terminal(
+        &self,
+        in_panel: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let c = cx.theme().colors;
         let mono = cx.theme().mono_font_family.clone();
         let mono_family = mono.clone();
@@ -329,9 +334,13 @@ impl T3App {
             gpui_kit::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32).into()
         };
         v_flex()
-            .h(px(320.))
-            .border_t_1()
-            .border_color(c.border)
+            .map(|v| {
+                if in_panel {
+                    v.flex_1().min_h_0()
+                } else {
+                    v.h(px(320.)).border_t_1().border_color(c.border)
+                }
+            })
             .child(
                 h_flex()
                     .px_3()
@@ -418,7 +427,13 @@ impl T3App {
                             .xsmall()
                             .ghost()
                             .label(t("Hide"))
-                            .on_click(cx.listener(|this, _, _, cx| this.close_terminal(cx))),
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if in_panel {
+                                    this.toggle_terminal_place(window, cx)
+                                } else {
+                                    this.close_terminal(cx)
+                                }
+                            })),
                     ),
             )
             .child(

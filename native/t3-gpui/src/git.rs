@@ -1,6 +1,6 @@
 //! Branch toolbar and git actions (web: `BranchToolbar.tsx`, `GitActionsControl.tsx`).
 
-use crate::header::{details_label, details_row, details_split};
+use crate::header::{details_icon, details_label, details_row, details_row_with, details_split};
 use crate::i18n::{t, tv};
 use crate::ui;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -469,9 +469,9 @@ impl T3App {
         let (_, behind) = self.git.ahead_behind();
         let app = cx.entity().downgrade();
         let step = quick.step;
-        let primary = details_row(
+        let primary = details_row_with(
             "git-quick-action",
-            quick.icon(&self.git),
+            quick.icon(&self.git, cx),
             details_label(quick.label.clone()),
             cx,
         )
@@ -579,9 +579,7 @@ impl T3App {
         )
         .on_click(cx.listener(|this, _, _, cx| {
             this.details_open = false;
-            if !this.diff_open {
-                this.toggle_diff(cx);
-            }
+            this.open_surface(crate::panel::Surface::Diff, cx);
         }))
         .into_any_element()
     }
@@ -607,20 +605,34 @@ struct QuickAction {
 
 impl QuickAction {
     /// web: `GitQuickActionIcon`; opening a change request shows the host's mark.
-    fn icon(&self, git: &GitStatus) -> &'static str {
-        match self.step {
+    fn icon(&self, git: &GitStatus, cx: &App) -> AnyElement {
+        let name = match self.step {
             Some(Step::Pull) => "cloud-download",
             Some(Step::Run("commit")) => "git-commit-horizontal",
             Some(Step::Run("push" | "commit_push")) => "cloud-upload",
-            Some(Step::Run(_)) => match git.host_kind() {
-                "github" => "github",
-                "gitlab" => "gitlab",
-                _ => "git-pull-request",
-            },
+            Some(Step::Run(_)) => return host_mark(git.host_kind(), cx),
             None if self.label == t("Push") => "cloud-upload",
             None => "git-commit-horizontal",
-        }
+        };
+        details_icon(name, cx).into_any_element()
     }
+}
+
+/// A source control host's mark (web: `sourceControlIcon`), from the hosts' own artwork;
+/// hosts without one get the pull request glyph.
+fn host_mark(kind: &str, cx: &App) -> AnyElement {
+    let svg = match kind {
+        "github" => include_str!("../assets/hosts/github.svg"),
+        "gitlab" => include_str!("../assets/hosts/gitlab.svg"),
+        "bitbucket" => include_str!("../assets/hosts/bitbucket.svg"),
+        "azure-devops" => include_str!("../assets/hosts/azure-devops.svg"),
+        "forgejo" => include_str!("../assets/hosts/forgejo.svg"),
+        "cursor-origin" => include_str!("../assets/hosts/cursor-origin.svg"),
+        "gitcafe" => include_str!("../assets/hosts/gitcafe.svg"),
+        "tanstack-source" => include_str!("../assets/hosts/tanstack-source.svg"),
+        _ => return details_icon("git-pull-request", cx).into_any_element(),
+    };
+    ui::svg_image(svg, cx).into_any_element()
 }
 
 /// The host's word for a pull request (web: `changeRequestTerminologyFor`): (short, singular).

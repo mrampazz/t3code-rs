@@ -26,6 +26,7 @@ mod mermaid;
 mod model;
 mod notify;
 mod palette;
+mod panel;
 mod plans;
 mod project_settings;
 mod projects;
@@ -33,6 +34,7 @@ mod provider_banner;
 mod provider_setup;
 mod pull_requests;
 mod queue;
+mod right_panel;
 mod rpc;
 pub(crate) mod scheduled;
 mod scripts;
@@ -264,8 +266,15 @@ struct T3App {
     sidebar_hidden: bool,
     /// The thread details card under the header.
     details_open: bool,
-    /// The right panel with no surface open yet: its picker.
-    surfaces_open: bool,
+    /// The right panel's tabs for the selected thread.
+    panel: panel::Panel,
+    /// The surface whose content was last loaded, so a tab change loads the new one once.
+    panel_synced: Option<panel::Surface>,
+    /// The empty panel's "Open a surface" list, focused so its single-key picks work.
+    picker_focus: FocusHandle,
+    picker_highlight: Option<usize>,
+    /// The `+` surface menu beside the panel tabs.
+    add_menu_open: bool,
     /// The last open thread was offered back once (`restore_last_thread`).
     restored: bool,
     /// A one-second re-render is scheduled for the working timer.
@@ -287,7 +296,6 @@ struct T3App {
     prefs: serde_json::Value,
     /// Wake time a re-render is already scheduled for.
     snooze_wake_at: Option<i64>,
-    diff_open: bool,
     /// `None` = whole thread, `Some(turn)` = one turn.
     diff_target: Option<u64>,
     /// The linked pull request (repository, number) the diff panel shows instead of turns.
@@ -507,7 +515,11 @@ impl T3App {
             browse_generation: 0,
             sidebar_hidden: false,
             details_open: false,
-            surfaces_open: false,
+            panel: Default::default(),
+            panel_synced: None,
+            picker_focus: cx.focus_handle(),
+            picker_highlight: None,
+            add_menu_open: false,
             restored: false,
             working_tick: Default::default(),
             visit_open_pending: false,
@@ -523,7 +535,6 @@ impl T3App {
             new_pairing_url: None,
             prefs: settings::load_prefs(),
             snooze_wake_at: None,
-            diff_open: false,
             diff_target: None,
             diff_pr: None,
             pr_drafts: Default::default(),
@@ -868,7 +879,7 @@ impl T3App {
                         Ok(item) => {
                             let before = app.thread.latest_turn();
                             app.thread.apply(&item);
-                            if app.diff_open
+                            if app.panel.shows(&panel::Surface::Diff)
                                 && app.diff_target.is_none()
                                 && app.diff_pr.is_none()
                                 && app.thread.latest_turn() != before
@@ -1249,10 +1260,7 @@ impl T3App {
             ("terminalOpen", self.term.is_some()),
             ("composerFocus", composer_focus),
             ("editableFocus", composer_focus || self.palette_open),
-            (
-                "rightPanelOpen",
-                self.diff_open || self.files.open || self.surfaces_open,
-            ),
+            ("rightPanelOpen", self.panel.open),
             ("draftThreadRoute", self.draft_project.is_some()),
             ("isDesktop", true),
         ]);
@@ -1293,7 +1301,7 @@ impl T3App {
                 self.sidebar_hidden = !self.sidebar_hidden;
                 cx.notify();
             }
-            "terminal.toggle" if thread.is_some() => self.toggle_terminal(window, cx),
+            "terminal.toggle" if thread.is_some() => self.toggle_terminal_place(window, cx),
             "diff.toggle" if thread.is_some() => self.toggle_diff(cx),
             "chat.new" => {
                 let env = self.env().map(|e| e.key.clone());
@@ -1338,9 +1346,9 @@ impl T3App {
                 return self.navigate(command == "navigation.back", window, cx);
             }
             "rightPanel.toggle" if thread.is_some() => self.toggle_right_panel(cx),
-            "rightPanel.close" if self.diff_open || self.files.open || self.surfaces_open => {
-                self.toggle_right_panel(cx)
-            }
+            "rightPanel.close" if self.panel_visible() => self.close_active_surface(cx),
+            "rightPanel.new" if thread.is_some() => self.open_add_surface_menu(cx),
+            "rightPanel.toggleMaximized" if self.panel_visible() => self.toggle_panel_maximized(cx),
             "threadPanel.toggle" if thread.is_some() => {
                 self.details_open = !self.details_open;
                 self.refresh_changes_preview(cx);
@@ -2547,8 +2555,8 @@ impl T3App {
                     .child(self.render_attachments(cx))
                     .child(self.render_composer_card(thread.is_running(), cx)),
             )
-            .when(self.term.is_some(), |col| {
-                col.child(self.render_terminal(cx))
+            .when(self.term.is_some() && !self.terminal_in_panel(), |col| {
+                col.child(self.render_terminal(false, cx))
             })
             .when(self.details_open, |col| {
                 col.child(self.render_thread_details(cx))
@@ -2560,6 +2568,7 @@ impl T3App {
 impl Render for T3App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_picker(window, cx);
+        self.sync_panel(window, cx);
         self.sync_composer_draft(window, cx);
         self.sync_transcript();
         self.flush_toasts(window, cx);
@@ -2583,6 +2592,11 @@ impl Render for T3App {
                 this.select_thread(open.env.to_string(), open.id.to_string(), cx)
             }))
             .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                // The open `+` menu takes its keys first, as the web's menu does.
+                if this.add_menu_open && this.surface_pick_key(e, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if matches!(this.screen, Screen::Connected) && this.run_shortcut(e, window, cx) {
                     cx.stop_propagation();
                 }
@@ -2595,22 +2609,14 @@ impl Render for T3App {
                 .when(self.adding_project, |root| {
                     root.child(self.render_add_project(cx))
                 })
-                .when(!self.adding_project, |root| {
-                    root.child(self.render_thread(cx))
-                })
-                .when(self.diff_open && self.selected.is_some(), |root| {
-                    root.child(self.render_diff_panel(cx))
-                })
-                .when(self.files.open && self.selected.is_some(), |root| {
-                    root.child(self.render_files(cx))
-                })
+                // A maximized panel takes the thread's place (web: the chat column goes to w-0).
                 .when(
-                    self.surfaces_open
-                        && self.selected.is_some()
-                        && !self.diff_open
-                        && !self.files.open,
-                    |root| root.child(self.render_surface_picker(cx)),
+                    !self.adding_project && !(self.panel.maximized && self.panel_visible()),
+                    |root| root.child(self.render_thread(cx)),
                 )
+                .when(!self.adding_project && self.panel_visible(), |root| {
+                    root.child(self.render_right_panel(cx))
+                })
                 .when(self.settings_open, |root| {
                     root.child(self.render_settings(cx))
                 })

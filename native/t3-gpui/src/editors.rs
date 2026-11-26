@@ -5,7 +5,7 @@
 //! SSH profiles, which this client has none of; probe local editors if users ask for more.
 
 use gpui_kit::component::menu::PopupMenuItem;
-use gpui_kit::component::{ActiveTheme, Disableable, h_flex};
+use gpui_kit::component::{Disableable, h_flex};
 use gpui_kit::*;
 use serde_json::{Value, json};
 
@@ -121,21 +121,7 @@ pub(crate) fn editor_logo(id: &str, cx: &App) -> AnyElement {
         _ => return crate::header::details_icon("square-code", cx).into_any_element(),
     };
     // Monochrome marks (Zed, Trae) draw in the text color, as `currentColor` does on the web.
-    let ink = Rgba::from(cx.theme().colors.foreground.opacity(0.8));
-    let ink = format!(
-        "#{:02x}{:02x}{:02x}",
-        (ink.r * 255.) as u8,
-        (ink.g * 255.) as u8,
-        (ink.b * 255.) as u8
-    );
-    let bytes = svg.replace("currentColor", &ink).into_bytes();
-    img(ImageSource::Image(std::sync::Arc::new(Image::from_bytes(
-        ImageFormat::Svg,
-        bytes,
-    ))))
-    .size(px(16.))
-    .flex_none()
-    .into_any_element()
+    crate::ui::svg_image(svg, cx).into_any_element()
 }
 
 /// The saved editor when still offered, else the first offered in `EDITORS` order.

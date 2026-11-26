@@ -89,11 +89,11 @@ pub fn search_hits(result: &Value) -> Vec<SearchHit> {
 
 /// A Lucide icon for a file by its extension.
 /// shortcut: generic Lucide glyphs, not the web's per-language colored file icons.
-fn file_icon(name: &str) -> &'static str {
+pub(crate) fn file_icon(name: &str) -> &'static str {
     let ext = name.rsplit_once('.').map_or("", |(_, e)| e).to_lowercase();
     match ext.as_str() {
         _ if is_image(name) => "file-image",
-        "json" | "jsonc" | "toml" | "yml" | "yaml" => "file-json",
+        "json" | "jsonc" | "toml" | "yml" | "yaml" => "file-braces",
         "md" | "mdx" | "txt" => "file-text",
         "" => "file",
         _ => "file-code",
@@ -127,14 +127,13 @@ pub fn sorted_entries(entries: &[Value]) -> Vec<Entry> {
 
 #[derive(Default)]
 pub struct FilesState {
-    pub open: bool,
     /// Entries per loaded directory ("" is the root).
     children: HashMap<String, Vec<Entry>>,
     expanded: HashSet<String>,
-    /// (path, editor, editable) of the open file.
-    preview: Option<(String, Entity<EditorState>, bool)>,
-    /// (path, signed URL once minted) of an open image.
-    image: Option<(String, Option<String>)>,
+    /// (editor, editable) per open file tab, so switching tabs keeps unsaved edits.
+    editors: HashMap<String, (Entity<EditorState>, bool)>,
+    /// Signed URL, once minted, per open image tab.
+    images: HashMap<String, Option<String>>,
     status: Option<SharedString>,
     /// Search file contents instead of names.
     contents_mode: bool,
@@ -142,18 +141,59 @@ pub struct FilesState {
     search_generation: u64,
 }
 
+impl FilesState {
+    /// Forgets the tree and open files, for another thread's folder.
+    pub fn reset(&mut self) {
+        *self = FilesState {
+            contents_mode: self.contents_mode,
+            ..Default::default()
+        };
+    }
+
+    /// Whether a file tab's content is loaded (or loading).
+    pub fn has(&self, path: &str) -> bool {
+        self.editors.contains_key(path) || self.images.contains_key(path)
+    }
+
+    /// Drops a closed file tab's editor.
+    pub fn forget(&mut self, path: &str) {
+        self.editors.remove(path);
+        self.images.remove(path);
+    }
+}
+
 impl T3App {
-    pub(crate) fn toggle_files(&mut self, cx: &mut Context<Self>) {
-        self.files.open = !self.files.open;
-        if self.files.open {
-            self.diff_open = false;
-            self.surfaces_open = false;
-            self.files.children.clear();
-            self.files.expanded.clear();
+    /// Loads the explorer's root once for the thread's folder.
+    pub(crate) fn ensure_file_tree(&mut self, cx: &mut Context<Self>) {
+        if !self.files.children.contains_key("") {
             self.load_dir(String::new(), cx);
         }
-        self.remember_panel();
-        cx.notify();
+    }
+
+    /// The file tab on screen, if any.
+    fn active_file(&self) -> Option<&str> {
+        match self.panel.shown() {
+            Some(crate::panel::Surface::File(path)) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Opens a file as a tab (web: `openFile`), jumping to `line` when given.
+    fn show_file(
+        &mut self,
+        path: String,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match (self.files.editors.get(&path), line) {
+            (Some((editor, _)), Some(line)) => editor.update(cx, |e, cx| {
+                e.set_cursor_position(Position::new(line.saturating_sub(1), 0), window, cx)
+            }),
+            (None, _) if !self.files.has(&path) => self.open_file(path.clone(), line, window, cx),
+            _ => {}
+        }
+        self.open_surface(crate::panel::Surface::File(path), cx);
     }
 
     fn load_dir(&mut self, dir: String, cx: &mut Context<Self>) {
@@ -185,7 +225,8 @@ impl T3App {
         .detach();
     }
 
-    fn open_file(
+    /// Reads a file into an editor for its tab.
+    pub(crate) fn open_file(
         &mut self,
         path: String,
         line: Option<u32>,
@@ -239,8 +280,7 @@ impl T3App {
                     this.update(cx, |app, cx| {
                         app.files.status =
                             (!editable).then(|| t("This file is too large to edit here.").into());
-                        app.files.image = None;
-                        app.files.preview = Some((path, editor, editable));
+                        app.files.editors.insert(path, (editor, editable));
                         cx.notify();
                     })
                     .ok();
@@ -260,9 +300,8 @@ impl T3App {
         ) else {
             return;
         };
-        self.files.preview = None;
         self.files.status = None;
-        self.files.image = Some((path.clone(), None));
+        self.files.images.insert(path.clone(), None);
         cx.notify();
         let absolute = format!("{}/{path}", cwd.trim_end_matches('/'));
         let resource = json!({ "_tag": "workspace-file", "threadId": thread_id, "path": absolute });
@@ -274,13 +313,13 @@ impl T3App {
             })
             .await;
             this.update(cx, |app, cx| {
-                if app.files.image.as_ref().map(|(p, ..)| p) != Some(&path) {
+                if !app.files.images.contains_key(&path) {
                     return;
                 }
                 match minted {
                     Ok(Ok(r)) => {
                         let url = r["relativeUrl"].as_str().map(|u| format!("{base}{u}"));
-                        app.files.image = Some((path, url));
+                        app.files.images.insert(path, url);
                     }
                     Ok(Err(e)) => app.files.status = Some(e.to_string().into()),
                     Err(e) => app.files.status = Some(e.to_string().into()),
@@ -300,8 +339,11 @@ impl T3App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.files.open {
-            self.toggle_files(cx);
+        if !matches!(
+            self.panel.shown(),
+            Some(crate::panel::Surface::Files | crate::panel::Surface::File(_))
+        ) {
+            self.open_surface(crate::panel::Surface::Files, cx);
         }
         if self.files.contents_mode != contents {
             self.files.contents_mode = contents;
@@ -368,7 +410,10 @@ impl T3App {
         let (Some(client), Some(cwd)) = (self.client(), self.thread_cwd()) else {
             return;
         };
-        let Some((path, editor, true)) = self.files.preview.clone() else {
+        let Some(path) = self.active_file().map(str::to_owned) else {
+            return;
+        };
+        let Some((editor, true)) = self.files.editors.get(&path).cloned() else {
             return;
         };
         let contents = editor.read(cx).value().to_string();
@@ -408,8 +453,7 @@ impl T3App {
             rows.len(),
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                 let c = cx.theme().colors;
-                let open = this.files.preview.as_ref().map(|(p, ..)| p.clone());
-                let open = open.or_else(|| this.files.image.as_ref().map(|(p, _)| p.clone()));
+                let open = this.active_file().map(str::to_owned);
                 let mut rows = vec![];
                 this.tree_rows("", 0, &mut rows);
                 rows[range.clone()]
@@ -462,7 +506,7 @@ impl T3App {
                                     }
                                     cx.notify();
                                 } else {
-                                    this.open_file(path.clone(), None, window, cx);
+                                    this.show_file(path.clone(), None, window, cx);
                                 }
                             }))
                             .into_any_element()
@@ -585,7 +629,7 @@ impl T3App {
                                         .child(hit.detail.clone()),
                                 )
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_file(path.clone(), line, window, cx)
+                                    this.show_file(path.clone(), line, window, cx)
                                 }))
                         })),
                 )
@@ -596,15 +640,14 @@ impl T3App {
     /// The open file or image: a breadcrumb with its actions, then the editor or picture.
     fn render_open_file(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let c = cx.theme().colors;
-        let (path, editable) = match (&self.files.preview, &self.files.image) {
-            (Some((path, _, editable)), _) => (path.clone(), *editable),
-            (None, Some((path, _))) => (path.clone(), false),
-            (None, None) => return None,
-        };
+        let path = self.active_file()?.to_owned();
+        let editor = self.files.editors.get(&path).cloned();
+        let editable = editor.as_ref().is_some_and(|(_, e)| *e);
         let project = self
             .thread_cwd()
             .and_then(|cwd| cwd.rsplit('/').next().map(str::to_owned))
             .unwrap_or_default();
+        let close = path.clone();
         let crumb = h_flex()
             .h(px(40.))
             .px_3()
@@ -645,21 +688,19 @@ impl T3App {
             })
             .child(
                 crate::ui::icon_button("file-close", "x", cx).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.files.preview = None;
-                        this.files.image = None;
+                    move |this, _, _, cx| {
                         this.files.status = None;
-                        cx.notify();
+                        this.close_file_tab(&close, cx);
                     },
                 )),
             );
-        let body = if let Some((_, editor, editable)) = &self.files.preview {
+        let body = if let Some((editor, editable)) = &editor {
             div()
                 .size_full()
-                .child(Editor::new(editor).readonly(!*editable))
+                .child(Editor::new(editor).size_full().readonly(!*editable))
                 .into_any_element()
         } else {
-            let url = self.files.image.as_ref().and_then(|(_, u)| u.clone());
+            let url = self.files.images.get(&path).cloned().flatten();
             div()
                 .size_full()
                 .p_2()
@@ -693,42 +734,27 @@ impl T3App {
         )
     }
 
-    /// The Files surface of the right panel (web: `FileBrowserPanel`): the explorer alone, or
-    /// beside an open file as a narrow column.
+    /// The Files and file tabs' content (web: `FileBrowserPanel`): the explorer alone, or beside
+    /// the tab's file as a narrow column.
     pub(crate) fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors;
-        let title = self
-            .files
-            .preview
-            .as_ref()
-            .map(|(p, ..)| p.clone())
-            .or_else(|| self.files.image.as_ref().map(|(p, _)| p.clone()))
-            .map(|p| p.rsplit('/').next().unwrap_or(&p).to_owned());
-        let icon = title.as_deref().map_or("files", file_icon);
-        let open = self.render_open_file(cx);
-        crate::header::right_panel(
-            icon,
-            Some(title.unwrap_or_else(|| t("Files"))),
-            match open {
-                Some(file) => h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(file)
-                    .child(
-                        v_flex()
-                            .w(px(256.))
-                            .h_full()
-                            .flex_none()
-                            .border_l_1()
-                            .border_color(c.border)
-                            .child(self.render_explorer(cx)),
-                    )
-                    .into_any_element(),
-                None => self.render_explorer(cx).into_any_element(),
-            },
-            self,
-            cx,
-        )
+        match self.render_open_file(cx) {
+            Some(file) => h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(file)
+                .child(
+                    v_flex()
+                        .w(px(256.))
+                        .h_full()
+                        .flex_none()
+                        .border_l_1()
+                        .border_color(c.border)
+                        .child(self.render_explorer(cx)),
+                )
+                .into_any_element(),
+            None => self.render_explorer(cx).into_any_element(),
+        }
     }
 }
 

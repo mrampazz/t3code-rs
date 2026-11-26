@@ -9,6 +9,25 @@ pub fn icon(name: &str) -> Icon {
     Icon::empty().path(format!("icons/{name}.svg"))
 }
 
+/// A multicolor mark (a brand logo) from SVG source at 16px; `currentColor` takes the text color,
+/// as on the web. The image id hashes the bytes, so each mark rasterizes once.
+pub fn svg_image(svg: &str, cx: &App) -> Img {
+    let ink = Rgba::from(cx.theme().colors.foreground.opacity(0.8));
+    let ink = format!(
+        "#{:02x}{:02x}{:02x}",
+        (ink.r * 255.) as u8,
+        (ink.g * 255.) as u8,
+        (ink.b * 255.) as u8
+    );
+    let bytes = svg.replace("currentColor", &ink).into_bytes();
+    img(ImageSource::Image(std::sync::Arc::new(Image::from_bytes(
+        ImageFormat::Svg,
+        bytes,
+    ))))
+    .size(px(16.))
+    .flex_none()
+}
+
 /// A square ghost icon button (web: `Button size="icon-xs" variant="ghost"`), 28px with a 16px icon.
 pub fn icon_button(id: impl Into<ElementId>, name: &str, cx: &App) -> Stateful<Div> {
     let c = cx.theme().colors;
