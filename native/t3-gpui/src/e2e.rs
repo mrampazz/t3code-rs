@@ -1819,6 +1819,15 @@ async fn e2e_pull_request_checks_shape() {
             p["action"] = json!("ready");
             p
         }),
+        ("pullRequests.submitReview", {
+            let mut p = pr_ref.clone();
+            p["verdict"] = json!("comment");
+            p["body"] = json!("");
+            p["comments"] = json!([{ "path": "f", "body": "x",
+                "position": crate::diff_panel::review_position(
+                    &crate::diff_panel::review_rows(&["diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n".to_owned()], "f")[1]) }]);
+            p
+        }),
     ] {
         match env.client.call(method, payload).await {
             Ok(v) => println!("{method}: {v}"),
@@ -1826,7 +1835,12 @@ async fn e2e_pull_request_checks_shape() {
             Err(e) => {
                 let e = e.to_string();
                 println!("{method}: {e}");
-                assert!(e.contains("PullRequestUnavailableError"), "{e}");
+                assert!(
+                    ["PullRequestUnavailableError", "PullRequestOperationError"]
+                        .iter()
+                        .any(|tag| e.contains(tag)),
+                    "{e}"
+                );
             }
         }
     }

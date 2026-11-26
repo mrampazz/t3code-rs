@@ -85,24 +85,15 @@ impl T3App {
     /// A linked pull request's diff (web: `PullRequestCodeTab`), every page of it.
     /// shortcut: files the server withholds as too large are listed, not readable one by one.
     pub(crate) fn load_pr_diff(&mut self, link: &Value, cx: &mut Context<Self>) {
-        let (Some(session), Some(project), Some(repository), Some(number)) = (
-            self.env().map(|e| e.session.clone()),
-            self.selected
-                .as_ref()
-                .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
-                .map(|t| t.project_id.clone()),
-            link["repository"].as_str().map(str::to_owned),
-            link["number"].as_u64(),
-        ) else {
+        let (Some(session), Some(input)) =
+            (self.env().map(|e| e.session.clone()), self.pr_ref(link))
+        else {
             return;
         };
-        self.diff_pr = Some((repository.clone(), number));
+        self.diff_pr = Some(input.clone());
         self.diff_generation += 1;
         let generation = self.diff_generation;
-        let mut input = json!({ "projectId": project, "repository": repository, "number": number });
-        if let Some(host) = link["host"].as_str() {
-            input["host"] = json!(host);
-        }
+        let mut input = input;
         self.diff_note = Some("Loading…".into());
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -133,6 +124,108 @@ impl T3App {
             .ok();
         })
         .detach();
+    }
+
+    /// A linked pull request as a `PullRequestRef` in the selected thread's project.
+    fn pr_ref(&self, link: &Value) -> Option<Value> {
+        let project = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))?
+            .project_id
+            .clone();
+        let mut pr = json!({ "projectId": project, "repository": link["repository"].as_str()?,
+            "number": link["number"].as_u64()? });
+        if let Some(host) = link["host"].as_str() {
+            pr["host"] = json!(host);
+        }
+        Some(pr)
+    }
+
+    /// Asks for the review's summary, then submits it with the pending line comments
+    /// (web: `PullRequestReviewForm`). A refused review keeps its comments to try again.
+    /// shortcut: every verdict is offered; the host refuses ones the viewer may not give.
+    fn submit_review(
+        &mut self,
+        verdict: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::WindowExt;
+        use gpui_kit::component::dialog::DialogButtonProps;
+        use gpui_kit::component::input::{Textarea, TextareaState};
+        let Some(pr) = self.diff_pr.clone() else {
+            return;
+        };
+        let input = cx.new(|cx| {
+            let mut state =
+                TextareaState::new(window, cx).placeholder(t("Summarize your review (optional)"));
+            state.set_auto_grow(3, 10, cx);
+            state
+        });
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input, pr) = (app.clone(), input.clone(), pr.clone());
+            dialog
+                .title(verdict_label(verdict))
+                .child(Textarea::new(&input))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t("Submit review"))
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx: &mut App| {
+                    let body = input.read(cx).value().to_string();
+                    app.update(cx, |this, cx| {
+                        let comments = this
+                            .pr_drafts
+                            .get(&pr_key(&pr))
+                            .cloned()
+                            .unwrap_or_default();
+                        if verdict != "approve" && body.trim().is_empty() && comments.is_empty() {
+                            return false;
+                        }
+                        let Some(client) = this.client() else {
+                            return true;
+                        };
+                        let mut payload = pr.clone();
+                        payload["verdict"] = json!(verdict);
+                        payload["body"] = json!(body);
+                        payload["comments"] = json!(comments);
+                        let sent = comments.len();
+                        this.diff_note = Some(t("Submitting review…").into());
+                        cx.notify();
+                        let pr = pr.clone();
+                        cx.spawn(async move |this, cx| {
+                            let result = on_tokio(async move {
+                                client.call("pullRequests.submitReview", payload).await
+                            })
+                            .await;
+                            this.update(cx, |app, cx| {
+                                app.diff_note = Some(match result {
+                                    Ok(Ok(_)) => {
+                                        // Comments added while it was sending stay pending.
+                                        if let Some(d) = app.pr_drafts.get_mut(&pr_key(&pr)) {
+                                            d.drain(..sent.min(d.len()));
+                                        }
+                                        t("Review submitted").into()
+                                    }
+                                    Ok(Err(e)) => {
+                                        format!("{}: {e}", t("The review could not be submitted"))
+                                            .into()
+                                    }
+                                    Err(e) => e.to_string().into(),
+                                });
+                                cx.notify();
+                            })
+                            .ok();
+                        })
+                        .detach();
+                        true
+                    })
+                    .unwrap_or(true)
+                })
+        });
     }
 
     fn show_diff(
@@ -215,16 +308,13 @@ impl T3App {
             )
             .child(self.turn_button("diff-all", "All turns".into(), None, cx));
         for (i, link) in self.thread_pull_requests().into_iter().enumerate() {
-            let key = (
-                link["repository"].as_str().unwrap_or("").to_owned(),
-                link["number"].as_u64().unwrap_or(0),
-            );
+            let key = pr_key(&link);
             let button = Button::new(("diff-pr", i))
                 .xsmall()
-                .label(format!("PR #{}", key.1))
+                .label(format!("PR #{}", link["number"]))
                 .tooltip(link["repository"].as_str().unwrap_or("").to_owned())
                 .on_click(cx.listener(move |this, _, _, cx| this.load_pr_diff(&link, cx)));
-            turns = turns.child(if self.diff_pr.as_ref() == Some(&key) {
+            turns = turns.child(if self.diff_pr.as_ref().map(pr_key) == Some(key) {
                 button.primary()
             } else {
                 button.ghost()
@@ -448,6 +538,7 @@ impl T3App {
                             })),
                     )
             }))
+            .children(self.render_review_bar(cx))
     }
 
     /// Asks for the comment, then adds it to the composer as a `review-comment` context link
@@ -471,6 +562,9 @@ impl T3App {
             self.diff_note = Some(t("Could not find those lines in the diff.").into());
             return cx.notify();
         };
+        if let Some(pr) = self.diff_pr.clone() {
+            return self.comment_on_pr(pr, path, &rows, bounds, window, cx);
+        }
         let section = match self.diff_target {
             Some(turn) => (format!("turn:{turn}"), format!("Turn {turn}")),
             None => ("thread".to_owned(), "All turns".to_owned()),
@@ -514,6 +608,115 @@ impl T3App {
                     true
                 })
         });
+    }
+
+    /// Asks for a line comment and keeps it pending for the next review (web: review drafts).
+    /// shortcut: a multi-line selection anchors on its last line; `startPosition` needs the host's
+    /// `review.rangeComment` capability, which this client does not read.
+    fn comment_on_pr(
+        &mut self,
+        pr: Value,
+        path: String,
+        rows: &[ReviewRow],
+        (start, end): (usize, usize),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::WindowExt;
+        use gpui_kit::component::dialog::DialogButtonProps;
+        use gpui_kit::component::input::{Textarea, TextareaState};
+        let Some(position) = rows.get(start.max(end)).map(review_position) else {
+            return;
+        };
+        let input = cx.new(|cx| {
+            let mut state = TextareaState::new(window, cx).placeholder(t("Leave a comment"));
+            state.set_auto_grow(3, 10, cx);
+            state
+        });
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (app, input, pr, path, position) = (
+                app.clone(),
+                input.clone(),
+                pr.clone(),
+                path.clone(),
+                position.clone(),
+            );
+            dialog
+                .title(t("Comment"))
+                .child(Textarea::new(&input))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t("Add to review"))
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx: &mut App| {
+                    let body = input.read(cx).value().to_string();
+                    if body.trim().is_empty() {
+                        return false;
+                    }
+                    let draft = json!({ "path": path, "position": position, "body": body });
+                    app.update(cx, |this, cx| {
+                        this.pr_drafts.entry(pr_key(&pr)).or_default().push(draft);
+                        this.diff_review.selection = None;
+                        if let Some(state) = &this.diff_state {
+                            state.update(cx, |s, cx| s.set_selected_lines(None, cx));
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    true
+                })
+        });
+    }
+
+    /// Pending line comments and the verdict buttons, while a pull request's diff is open.
+    fn render_review_bar(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let pr = self.diff_pr.as_ref()?;
+        let c = cx.theme().colors;
+        let pending = self.pr_drafts.get(&pr_key(pr)).map_or(0, Vec::len);
+        Some(
+            h_flex()
+                .px_3()
+                .py_1p5()
+                .gap_1()
+                .text_xs()
+                .border_t_1()
+                .border_color(c.border)
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(c.muted_foreground)
+                        .child(match pending {
+                            0 => t("Select lines to comment"),
+                            1 => t("1 pending comment"),
+                            n => format!("{n} {}", t("pending comments")),
+                        }),
+                )
+                .when(pending > 0, |bar| {
+                    bar.child(
+                        Button::new("review-discard")
+                            .xsmall()
+                            .ghost()
+                            .label(t("Discard"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(pr) = &this.diff_pr {
+                                    this.pr_drafts.remove(&pr_key(pr));
+                                }
+                                cx.notify();
+                            })),
+                    )
+                })
+                .children(["comment", "approve", "request-changes"].map(|verdict| {
+                    Button::new(verdict)
+                        .xsmall()
+                        .outline()
+                        .label(verdict_label(verdict))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.submit_review(verdict, window, cx)
+                        }))
+                })),
+        )
     }
 
     /// Appends a context link for `record` to the composer and keeps the record for sending.
@@ -577,6 +780,33 @@ pub(crate) fn patch_texts(value: &Value) -> Vec<String> {
         .filter_map(Value::as_str)
         .map(|p| p.strip_suffix(TRUNCATED_MARKER).unwrap_or(p).to_owned())
         .collect()
+}
+
+/// (repository, number): which pull request a link, ref or draft list is about.
+pub(crate) fn pr_key(pr: &Value) -> (String, u64) {
+    (
+        pr["repository"].as_str().unwrap_or("").to_owned(),
+        pr["number"].as_u64().unwrap_or(0),
+    )
+}
+
+fn verdict_label(verdict: &str) -> String {
+    match verdict {
+        "approve" => crate::i18n::tc("Approve", "review verdict"),
+        "request-changes" => t("Request changes"),
+        _ => crate::i18n::tc("Comment", "review verdict"),
+    }
+}
+
+/// A diff row as a `PullRequestReviewPosition`.
+pub(crate) fn review_position(row: &ReviewRow) -> Value {
+    match (row.change, row.old, row.new) {
+        ('+', _, Some(new)) => json!({ "kind": "added", "newLine": new }),
+        ('-', Some(old), _) => json!({ "kind": "deleted", "oldLine": old }),
+        (_, old, new) => {
+            json!({ "kind": "context", "oldLine": old, "newLine": new, "side": "right" })
+        }
+    }
 }
 
 /// Parses `PullRequestDiffResult` pages into one diff, noting what the server left out.
@@ -812,6 +1042,21 @@ mod tests {
         assert!(truncated);
         let (files, truncated) = parse_turn_diff(&json!({"diff": ""})).unwrap();
         assert!(files.is_empty() && !truncated);
+    }
+
+    #[test]
+    fn review_positions_follow_the_row() {
+        let patch = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -3,2 +3,2 @@\n ctx\n-old\n+new\n";
+        let rows = review_rows(&[patch.to_owned()], "f");
+        let positions: Vec<_> = rows.iter().map(super::review_position).collect();
+        assert_eq!(
+            positions,
+            [
+                json!({"kind": "context", "oldLine": 3, "newLine": 3, "side": "right"}),
+                json!({"kind": "deleted", "oldLine": 4}),
+                json!({"kind": "added", "newLine": 4}),
+            ]
+        );
     }
 
     #[test]

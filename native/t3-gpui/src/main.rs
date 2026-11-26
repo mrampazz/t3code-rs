@@ -257,7 +257,9 @@ struct T3App {
     /// `None` = whole thread, `Some(turn)` = one turn.
     diff_target: Option<u64>,
     /// The linked pull request (repository, number) the diff panel shows instead of turns.
-    diff_pr: Option<(String, u64)>,
+    diff_pr: Option<serde_json::Value>,
+    /// Pending review line comments per pull request (repository, number), kept until submitted.
+    pr_drafts: std::collections::HashMap<(String, u64), Vec<serde_json::Value>>,
     diff_state: Option<Entity<gpui_kit::component::diff::DiffState>>,
     diff_note: Option<SharedString>,
     /// Drops responses for a diff the user has since replaced.
@@ -472,6 +474,7 @@ impl T3App {
             diff_open: false,
             diff_target: None,
             diff_pr: None,
+            pr_drafts: Default::default(),
             diff_state: None,
             diff_note: None,
             diff_generation: 0,
