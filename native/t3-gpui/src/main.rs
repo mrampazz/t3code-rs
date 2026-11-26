@@ -45,6 +45,7 @@ mod terminal;
 mod terminal_drawer;
 mod thread_chips;
 mod timeline;
+mod web_theme;
 mod workflows;
 mod workspace;
 
@@ -2532,6 +2533,8 @@ fn main() {
         .set(tokio::runtime::Runtime::new().expect("tokio runtime"))
         .ok();
     gpui_kit::application()
+        // The whole Lucide catalog, as the web has (`lucide-react`); the default set has 101.
+        .with_assets(gpui_kit::assets::AllAssets)
         .with_http_client(media::ImageHttp::new())
         .run(|cx| {
             gpui_kit::init(cx);
@@ -2543,7 +2546,7 @@ fn main() {
                     .map_or_else(i18n::system_locale, str::to_owned)
                     .as_str(),
             );
-            gpui_kit::component::Theme::change(settings::theme_mode(&prefs), None, cx);
+            web_theme::change(settings::theme_mode(&prefs), None, cx);
             menus::install(cx);
             let options = WindowOptions {
                 window_bounds: Some(menus::bounds_from_json(&prefs["window"]).unwrap_or_else(

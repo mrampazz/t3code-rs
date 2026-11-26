@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, Theme, ThemeMode, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, ThemeMode, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -511,7 +511,7 @@ impl T3App {
     pub(crate) fn set_theme(&mut self, light: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.prefs["theme"] = json!(if light { "light" } else { "dark" });
         save_prefs(&self.prefs);
-        Theme::change(theme_mode(&self.prefs), Some(window), cx);
+        crate::web_theme::change(theme_mode(&self.prefs), Some(window), cx);
         cx.notify();
     }
 
