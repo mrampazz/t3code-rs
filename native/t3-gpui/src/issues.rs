@@ -3,9 +3,10 @@
 //! shortcut: no issue detail panel, comments, creation or tracker setup; open the issue in the
 //! browser for those.
 
+use crate::header::{details_label, details_row};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{Sizable, WindowExt, v_flex};
 use gpui_kit::*;
 use serde_json::{Value, json};
 
@@ -20,6 +21,7 @@ pub fn link_command(thread_id: &str, entry: &Value) -> Value {
 }
 
 impl T3App {
+    /// The thread's linked issues as rows (web: `ThreadDetailsIssueRows`); each opens a menu.
     pub(crate) fn render_issues(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let thread = self
             .selected
@@ -28,36 +30,28 @@ impl T3App {
         let links = thread.map(|t| t.issues.clone()).unwrap_or_default();
         let thread_id = thread.map(|t| t.id.clone()).unwrap_or_default();
         let app = cx.entity().downgrade();
-        h_flex()
-            .gap_1()
-            .children(links.into_iter().enumerate().map(|(i, link)| {
-                let (app, thread_id) = (app.clone(), thread_id.clone());
-                Button::new(("issue-chip", i))
-                    .xsmall()
-                    .ghost()
-                    .label(link["displayKey"].as_str().unwrap_or("Issue").to_owned())
-                    .tooltip(link["title"].as_str().unwrap_or("").to_owned())
-                    .dropdown_menu(move |menu, _, _| {
-                        let url = link["url"].as_str().unwrap_or("").to_owned();
-                        let unlink = json!({ "type": "thread.issue.unlink", "threadId": thread_id, "tracker": link["tracker"],
-                            "host": link["host"], "scope": link["scope"], "key": link["key"] });
-                        let app = app.clone();
-                        menu.item(PopupMenuItem::new(t("Open in browser")).on_click(move |_, _, cx| cx.open_url(&url)))
-                            .item(PopupMenuItem::new(t("Unlink")).on_click(move |_, _, cx| {
-                                app.update(cx, |this, cx| this.dispatch(unlink.clone(), cx)).ok();
-                            }))
-                    })
-            }))
-            .child(
-                Button::new("link-issue")
-                    .xsmall()
-                    .ghost()
-                    .label(t("Link issue…"))
-                    .on_click(cx.listener(|this, _, window, cx| this.open_link_issue(window, cx))),
-            )
+        v_flex().children(links.into_iter().enumerate().map(|(i, link)| {
+            let (app, thread_id) = (app.clone(), thread_id.clone());
+            let key = link["displayKey"].as_str().unwrap_or("Issue").to_owned();
+            let label = match link["title"].as_str() {
+                Some(title) => format!("{key} {title}"),
+                None => key,
+            };
+            details_row(("issue-row", i), "circle-dot", details_label(label), cx)
+                .dropdown_menu(move |menu, _, _| {
+                    let url = link["url"].as_str().unwrap_or("").to_owned();
+                    let unlink = json!({ "type": "thread.issue.unlink", "threadId": thread_id, "tracker": link["tracker"],
+                        "host": link["host"], "scope": link["scope"], "key": link["key"] });
+                    let app = app.clone();
+                    menu.item(PopupMenuItem::new(t("Open in browser")).on_click(move |_, _, cx| cx.open_url(&url)))
+                        .item(PopupMenuItem::new(t("Unlink")).on_click(move |_, _, cx| {
+                            app.update(cx, |this, cx| this.dispatch(unlink.clone(), cx)).ok();
+                        }))
+                })
+        }))
     }
 
-    fn open_link_issue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_link_issue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(thread) = self
             .selected
             .as_ref()

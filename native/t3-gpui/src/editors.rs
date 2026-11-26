@@ -4,12 +4,12 @@
 //! shortcut: remote opens offer only VS Code (the web's fallback for browsers) and ignore saved
 //! SSH profiles, which this client has none of; probe local editors if users ask for more.
 
-use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{Disableable, Sizable, h_flex};
+use gpui_kit::component::Disableable;
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::*;
 use serde_json::{Value, json};
 
+use crate::header::{details_label, details_row, details_split};
 use crate::i18n::{t, tc, tv};
 use crate::{T3App, on_tokio};
 
@@ -463,44 +463,40 @@ impl T3App {
             OpenMode::Local => None,
         };
         let app = cx.entity().downgrade();
-        h_flex()
-            .child(
-                Button::new("open-in")
-                    .xsmall()
-                    .ghost()
-                    .label(current.as_deref().map_or_else(
-                        || t("Open in editor"),
-                        |id| tv("Open in {editor}", &[("editor", &label(id))]),
-                    ))
-                    .disabled(current.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| this.open_in_editor(None, cx))),
-            )
-            .child(
-                Button::new("open-in-choose")
-                    .xsmall()
-                    .ghost()
-                    .label("▾")
-                    .tooltip(t("Choose editor"))
-                    .dropdown_menu(move |mut menu, _, _| {
-                        for id in &offered {
-                            let (app, id) = (app.clone(), id.clone());
-                            menu = menu.item(
-                                PopupMenuItem::new(label(&id))
-                                    .checked(current.as_ref() == Some(&id))
-                                    .on_click(move |_, _, cx| {
-                                        app.update(cx, |this, cx| {
-                                            this.set_preferred_editor(&id, cx)
-                                        })
-                                        .ok();
-                                    }),
-                            );
-                        }
-                        if let Some(note) = &note {
-                            menu = menu.item(PopupMenuItem::new(note.clone()).disabled(true));
-                        }
-                        menu
-                    }),
-            )
+        // shortcut: a generic code icon; the web shows each editor's brand mark. Needs bundled SVGs.
+        let primary = details_row(
+            "open-in",
+            "square-code",
+            details_label(current.as_deref().map_or_else(
+                || t("Open in editor"),
+                |id| tv("Open in {editor}", &[("editor", &label(id))]),
+            )),
+            cx,
+        )
+        .disabled(current.is_none())
+        .on_click(cx.listener(|this, _, _, cx| this.open_in_editor(None, cx)));
+        details_split(
+            "open-in-choose",
+            primary,
+            move |mut menu, _, _| {
+                for id in &offered {
+                    let (app, id) = (app.clone(), id.clone());
+                    menu = menu.item(
+                        PopupMenuItem::new(label(&id))
+                            .checked(current.as_ref() == Some(&id))
+                            .on_click(move |_, _, cx| {
+                                app.update(cx, |this, cx| this.set_preferred_editor(&id, cx))
+                                    .ok();
+                            }),
+                    );
+                }
+                if let Some(note) = &note {
+                    menu = menu.item(PopupMenuItem::new(note.clone()).disabled(true));
+                }
+                menu
+            },
+            cx,
+        )
     }
 }
 

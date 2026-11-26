@@ -715,7 +715,7 @@ async fn e2e_git_status_and_commit() {
         .client
         .call("vcs.refreshStatus", json!({ "cwd": cwd }))
         .await;
-    git.until("file change", |g| (g.changes().0 >= 1).then_some(()))
+    git.until("file change", |g| (g.local["hasWorkingTreeChanges"] == true).then_some(()))
         .await;
 
     let (_, mut rx) = env.client.request(
@@ -741,7 +741,7 @@ async fn e2e_git_status_and_commit() {
         .client
         .call("vcs.refreshStatus", json!({ "cwd": cwd }))
         .await;
-    git.until("clean tree", |g| (g.changes().0 == 0).then_some(()))
+    git.until("clean tree", |g| (g.local["hasWorkingTreeChanges"] == false).then_some(()))
         .await;
     env.client
         .call("terminal.close", json!({ "threadId": thread_id, "terminalId": crate::terminal::TERMINAL_ID, "deleteHistory": true }))

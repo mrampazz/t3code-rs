@@ -6,10 +6,13 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Sizable, WindowExt, dialog::DialogButtonProps, h_flex};
+use gpui_kit::component::{
+    ActiveTheme, Sizable, WindowExt, dialog::DialogButtonProps, h_flex, v_flex,
+};
 use gpui_kit::*;
 use serde_json::{Value, json};
 
+use crate::header::{details_label, details_row, details_row_with};
 use crate::i18n::t;
 use crate::{T3App, on_tokio};
 
@@ -121,8 +124,16 @@ impl T3App {
         let thread_id = thread.map(|t| t.id.clone()).unwrap_or_default();
         let project_id = thread.map(|t| t.project_id.clone()).unwrap_or_default();
         let app = cx.entity().downgrade();
-        h_flex()
-            .gap_1()
+        // A branch PR the thread has not linked still gets a row, as the old toolbar's chip did.
+        let branch_pr = self
+            .git
+            .pr()
+            .filter(|(n, _)| !links.iter().any(|l| l["number"].as_u64() == Some(*n)));
+        v_flex()
+            .children(branch_pr.map(|(number, url)| {
+                details_row("git-pr", "git-pull-request", details_label(format!("#{number}")), cx)
+                    .on_click(move |_, _, cx| cx.open_url(&url))
+            }))
             .children(links.into_iter().enumerate().map(|(i, link)| {
                 let color = match (link["snapshot"]["state"].as_str(), link["snapshot"]["checksState"].as_str()) {
                     (Some("merged"), _) => c.magenta,
@@ -133,12 +144,16 @@ impl T3App {
                 };
                 let (app, thread_id, project_id) = (app.clone(), thread_id.clone(), project_id.clone());
                 let watching = link["watch"].is_object();
-                Button::new(("pr-chip", i))
-                    .xsmall()
-                    .ghost()
-                    .label(chip_label(&link))
-                    .text_color(color)
-                    .dropdown_menu(move |menu, _, _| {
+                let title = link["snapshot"]["title"].as_str().map(str::to_owned);
+                let label = title.unwrap_or_else(|| chip_label(&link));
+                details_row_with(
+                    ("pr-row", i),
+                    crate::ui::icon("git-pull-request").text_color(color),
+                    details_label(label),
+                    cx,
+                )
+                .tooltip(chip_label(&link))
+                .dropdown_menu(move |menu, _, _| {
                         let key = json!({ "threadId": thread_id, "host": link["host"], "repository": link["repository"], "number": link["number"] });
                         let command = |kind: &str, extra: Value| {
                             let mut c = key.clone();
@@ -186,13 +201,6 @@ impl T3App {
                         menu.separator().item(item(t("Unlink"), command("thread.pull-request.unlink", json!({}))))
                     })
             }))
-            .child(
-                Button::new("link-pr")
-                    .xsmall()
-                    .ghost()
-                    .label(t("Link PR…"))
-                    .on_click(cx.listener(|this, _, window, cx| this.open_link_pr(window, cx))),
-            )
     }
 
     /// `pullRequests.checks` in a dialog; each check opens its page.

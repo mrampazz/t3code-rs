@@ -4,15 +4,15 @@
 //! shortcut: every run opens a new terminal (the web reuses an idle one), and the editor leaves
 //! out keybindings, icons, preview URLs and wait-for-setup; existing values are kept on save.
 
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{Sizable, WindowExt, dialog::DialogButtonProps, h_flex, v_flex};
+use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::{WindowExt, dialog::DialogButtonProps, v_flex};
 use gpui_kit::*;
 use serde_json::{Value, json};
 
 use crate::T3App;
+use crate::header::{details_label, details_row, details_split};
 use crate::i18n::{t, tv};
 
 const MAX_SCRIPT_ID_LENGTH: usize = 24;
@@ -268,6 +268,7 @@ impl T3App {
         });
     }
 
+    /// The project scripts row (web: `ProjectScriptsControl displayMode="panel"`).
     pub(crate) fn render_scripts(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some((project, scripts)) = self.project_scripts() else {
             return div().into_any_element();
@@ -279,105 +280,108 @@ impl T3App {
             .or_else(|| primary(&scripts))
             .cloned();
         let app = cx.entity().downgrade();
-        h_flex()
-            .children(current.map(|script| {
-                let id = script["id"].as_str().unwrap_or("").to_owned();
-                Button::new("run-script")
-                    .xsmall()
-                    .ghost()
-                    .label(format!("▶ {}", script["name"].as_str().unwrap_or("")))
-                    .tooltip(tv(
-                        "Run {name}",
-                        &[("name", script["name"].as_str().unwrap_or(""))],
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.run_script(&id, cx);
-                    }))
-            }))
-            .child(
-                Button::new("script-actions")
-                    .xsmall()
-                    .ghost()
-                    .label(if scripts.is_empty() {
-                        t("Add action")
-                    } else {
-                        "▾".into()
-                    })
-                    .tooltip(t("Project actions"))
-                    .dropdown_menu(move |mut menu, window, cx| {
-                        let click = |app: &WeakEntity<T3App>, f: AppAction| {
-                            let app = app.clone();
-                            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                app.update(cx, |this, cx| f(this, window, cx)).ok();
-                            }
-                        };
-                        for script in &scripts {
-                            let name = script["name"].as_str().unwrap_or("").to_owned();
-                            let id = script["id"].as_str().unwrap_or("").to_owned();
-                            let run = click(
-                                &app,
-                                Box::new(move |this, _, cx| {
-                                    this.run_script(&id, cx);
-                                }),
-                            );
-                            menu = menu.item(
-                                PopupMenuItem::new(tv("Run {name}", &[("name", &name)]))
-                                    .on_click(run),
-                            );
-                        }
-                        if !scripts.is_empty() {
-                            menu = menu.separator();
-                            for script in &scripts {
-                                let name = script["name"].as_str().unwrap_or("").to_owned();
-                                let (app, scripts, script) =
-                                    (app.clone(), scripts.clone(), script.clone());
-                                menu = menu.submenu(
-                                    tv("Edit {name}", &[("name", &name)]),
-                                    window,
-                                    cx,
-                                    move |sub, _, _| {
-                                        let edit = {
-                                            let s = script.clone();
-                                            click(
-                                                &app,
-                                                Box::new(move |this, window, cx| {
-                                                    this.open_script_editor(
-                                                        Some(s.clone()),
-                                                        window,
-                                                        cx,
-                                                    )
-                                                }),
-                                            )
-                                        };
-                                        let remaining: Vec<Value> = scripts
-                                            .iter()
-                                            .filter(|s| s["id"] != script["id"])
-                                            .cloned()
-                                            .collect();
-                                        let delete = click(
-                                            &app,
-                                            Box::new(move |this, _, cx| {
-                                                this.save_scripts(remaining.clone(), cx)
-                                            }),
-                                        );
-                                        sub.item(
-                                            PopupMenuItem::new(t("Edit Action")).on_click(edit),
-                                        )
-                                        .item(
-                                            PopupMenuItem::new(t("Delete action")).on_click(delete),
-                                        )
-                                    },
-                                );
-                            }
-                            menu = menu.separator();
-                        }
-                        menu.item(PopupMenuItem::new(t("Add project action…")).on_click(click(
-                            &app,
-                            Box::new(|this, window, cx| this.open_script_editor(None, window, cx)),
-                        )))
-                    }),
+        let Some(script) = current else {
+            return details_row(
+                "add-script",
+                "plus",
+                details_label(t("Add project script")),
+                cx,
             )
-            .into_any_element()
+            .on_click(cx.listener(|this, _, window, cx| this.open_script_editor(None, window, cx)))
+            .into_any_element();
+        };
+        let id = script["id"].as_str().unwrap_or("").to_owned();
+        let name = script["name"].as_str().unwrap_or("").to_owned();
+        let run = details_row(
+            "run-script",
+            script_icon(&script),
+            details_label(name.clone()),
+            cx,
+        )
+        .tooltip(tv("Run {name}", &[("name", &name)]))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.run_script(&id, cx);
+        }));
+        details_split(
+            "script-actions",
+            run,
+            move |mut menu, window, cx| {
+                let click = |app: &WeakEntity<T3App>, f: AppAction| {
+                    let app = app.clone();
+                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        app.update(cx, |this, cx| f(this, window, cx)).ok();
+                    }
+                };
+                for script in &scripts {
+                    let name = script["name"].as_str().unwrap_or("").to_owned();
+                    let id = script["id"].as_str().unwrap_or("").to_owned();
+                    let run = click(
+                        &app,
+                        Box::new(move |this, _, cx| {
+                            this.run_script(&id, cx);
+                        }),
+                    );
+                    menu = menu.item(
+                        PopupMenuItem::new(tv("Run {name}", &[("name", &name)])).on_click(run),
+                    );
+                }
+                if !scripts.is_empty() {
+                    menu = menu.separator();
+                    for script in &scripts {
+                        let name = script["name"].as_str().unwrap_or("").to_owned();
+                        let (app, scripts, script) = (app.clone(), scripts.clone(), script.clone());
+                        menu = menu.submenu(
+                            tv("Edit {name}", &[("name", &name)]),
+                            window,
+                            cx,
+                            move |sub, _, _| {
+                                let edit = {
+                                    let s = script.clone();
+                                    click(
+                                        &app,
+                                        Box::new(move |this, window, cx| {
+                                            this.open_script_editor(Some(s.clone()), window, cx)
+                                        }),
+                                    )
+                                };
+                                let remaining: Vec<Value> = scripts
+                                    .iter()
+                                    .filter(|s| s["id"] != script["id"])
+                                    .cloned()
+                                    .collect();
+                                let delete = click(
+                                    &app,
+                                    Box::new(move |this, _, cx| {
+                                        this.save_scripts(remaining.clone(), cx)
+                                    }),
+                                );
+                                sub.item(PopupMenuItem::new(t("Edit Action")).on_click(edit))
+                                    .item(PopupMenuItem::new(t("Delete action")).on_click(delete))
+                            },
+                        );
+                    }
+                    menu = menu.separator();
+                }
+                menu.item(PopupMenuItem::new(t("Add project action…")).on_click(click(
+                    &app,
+                    Box::new(|this, window, cx| this.open_script_editor(None, window, cx)),
+                )))
+            },
+            cx,
+        )
+        .into_any_element()
+    }
+}
+
+/// A script's Lucide icon (web: `ScriptIcon`).
+fn script_icon(script: &Value) -> &'static str {
+    match script["icon"].as_str() {
+        Some("test") => "flask-conical",
+        Some("lint") => "list-checks",
+        Some("configure") => "wrench",
+        Some("build") => "hammer",
+        Some("debug") => "bug",
+        _ => "play",
     }
 }
 
