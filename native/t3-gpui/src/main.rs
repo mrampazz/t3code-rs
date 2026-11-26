@@ -271,6 +271,8 @@ struct T3App {
     visit_sent_at: Option<std::time::Instant>,
     visit_timer: bool,
     settings_open: bool,
+    settings_page: settings::SettingsPage,
+    settings_search: Entity<InputState>,
     settings_status: Option<SharedString>,
     access: access::Access,
     provider_setup: provider_setup::ProviderSetup,
@@ -343,6 +345,7 @@ impl T3App {
         let palette_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t("Search threads and commands…")));
         let files_search = cx.new(|cx| InputState::new(window, cx).placeholder(t("Search files")));
+        let settings_search = cx.new(|cx| InputState::new(window, cx).placeholder(t("Search")));
         let _subscriptions = vec![
             cx.observe_window_bounds(window, |this, window, _| this.remember_bounds(window)),
             // Coming back to the app is a good moment to retry (web: supervisor wakeups).
@@ -505,6 +508,8 @@ impl T3App {
             visit_sent_at: None,
             visit_timer: false,
             settings_open: false,
+            settings_page: settings::SettingsPage::default(),
+            settings_search,
             settings_status: None,
             access: Default::default(),
             provider_setup: Default::default(),
@@ -2580,13 +2585,10 @@ impl Render for T3App {
                 .when(!self.sidebar_hidden, |root| {
                     root.child(self.render_sidebar(cx))
                 })
-                .when(self.settings_open, |root| {
-                    root.child(self.render_settings(cx))
-                })
-                .when(!self.settings_open && self.adding_project, |root| {
+                .when(self.adding_project, |root| {
                     root.child(self.render_add_project(cx))
                 })
-                .when(!self.settings_open && !self.adding_project, |root| {
+                .when(!self.adding_project, |root| {
                     root.child(self.render_thread(cx))
                 })
                 .when(self.diff_open && self.selected.is_some(), |root| {
@@ -2602,6 +2604,9 @@ impl Render for T3App {
                         && !self.files.open,
                     |root| root.child(self.render_surface_picker(cx)),
                 )
+                .when(self.settings_open, |root| {
+                    root.child(self.render_settings(cx))
+                })
                 .when(self.palette_open, |root| {
                     root.child(self.render_palette(cx))
                 }),

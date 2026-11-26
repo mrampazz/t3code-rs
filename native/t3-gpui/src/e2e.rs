@@ -1525,7 +1525,10 @@ async fn e2e_files_browse_and_edit() {
         .await
         .unwrap();
     let rows = crate::files::sorted_entries(root["entries"].as_array().unwrap());
-    assert!(rows.iter().any(|(p, dir, _)| p == "dir" && *dir), "{rows:?}");
+    assert!(
+        rows.iter().any(|(p, dir, _)| p == "dir" && *dir),
+        "{rows:?}"
+    );
     let inner = env
         .client
         .call(

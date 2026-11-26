@@ -5,7 +5,10 @@ use crate::i18n::{t, tv};
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, ThemeMode, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -515,555 +518,870 @@ impl T3App {
         cx.notify();
     }
 
+    /// Settings as the web shows them (`SettingsDialog`): a modal over the app with the grouped
+    /// page list on the left and one page of cards on the right. Only the open page is built.
     pub(crate) fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors;
-        let section = |title: &str| {
-            let title = t(title);
-            div()
-                .pt_6()
-                .pb_2()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(title.to_string())
-        };
-        let row = || {
-            h_flex()
-                .py_2()
-                .gap_3()
-                .border_b_1()
-                .border_color(c.border)
-                .text_sm()
-        };
-        let settings = self.config().settings.clone();
-
-        let mut providers = v_flex();
-        for p in &self.config().providers {
-            let enabled = p.enabled;
-            let (id, driver) = (p.instance_id.clone(), p.driver.clone());
-            let detail = [
-                p.version.as_deref().map(|v| format!("v{v}")),
-                Some(p.status.clone()),
-                p.message.clone(),
-            ]
-            .into_iter()
-            .flatten()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" · ");
-            let settings = settings.clone();
-            let usage = usage_windows(&p.usage_limits);
-            let unavailable = p.usage_limits["unavailable"]["message"]
-                .as_str()
-                .map(str::to_owned);
-            let usage_rows = v_flex()
-                .gap_1()
-                .pb_2()
-                .children(usage.into_iter().map(|(label, used, resets)| {
-                    let color = if used >= 90. {
-                        c.danger
-                    } else if used >= 70. {
-                        c.warning
-                    } else {
-                        c.primary
-                    };
-                    let resets = resets.map(|r| {
-                        let local = r.to_zoned(jiff::tz::TimeZone::system());
-                        tv(
-                            "Resets {resetsAt}",
-                            &[("resetsAt", &local.strftime("%b %-d, %H:%M").to_string())],
-                        )
-                    });
-                    h_flex()
-                        .gap_2()
-                        .text_xs()
-                        .child(div().w(px(140.)).truncate().child(label))
-                        .child(
-                            div()
-                                .w(px(160.))
-                                .h(px(6.))
-                                .rounded_full()
-                                .bg(c.secondary)
-                                .child(
+        let page = self.settings_page;
+        let query = self.settings_search.read(cx).value().trim().to_lowercase();
+        let nav = v_flex()
+            .w(px(240.))
+            .h_full()
+            .flex_none()
+            .bg(c.popover)
+            .border_r_1()
+            .border_color(c.border)
+            .child(
+                h_flex()
+                    .h(px(48.))
+                    .px_3()
+                    .gap_2()
+                    .child(
+                        crate::ui::icon("search")
+                            .size(px(16.))
+                            .text_color(c.muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.settings_search).appearance(false)),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("settings-nav")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .px_2()
+                    .pb_3()
+                    .children(SettingsPage::GROUPS.iter().filter_map(|(heading, pages)| {
+                        let pages: Vec<SettingsPage> = pages
+                            .iter()
+                            .copied()
+                            .filter(|p| {
+                                query.is_empty() || t(p.label()).to_lowercase().contains(&query)
+                            })
+                            .collect();
+                        (!pages.is_empty()).then(|| {
+                            v_flex()
+                                .pt_3()
+                                .children(heading.map(|h| {
                                     div()
-                                        .h_full()
-                                        .rounded_full()
-                                        .bg(color)
-                                        .w(relative(used as f32 / 100.)),
-                                ),
-                        )
-                        .child(format!("{used:.0}%"))
-                        .children(resets.map(|r| div().text_color(c.muted_foreground).child(r)))
-                }))
-                .children(
-                    unavailable.map(|m| div().text_xs().text_color(c.muted_foreground).child(m)),
-                );
-            providers = providers.child(
-                row()
+                                        .px_3()
+                                        .pb_1()
+                                        .text_sm()
+                                        .text_color(c.muted_foreground)
+                                        .child(t(h))
+                                }))
+                                .children(pages.into_iter().map(|p| {
+                                    h_flex()
+                                        .id(SharedString::from(format!(
+                                            "settings-nav-{}",
+                                            p.label()
+                                        )))
+                                        .h(px(36.))
+                                        .px_3()
+                                        .gap_3()
+                                        .rounded(px(10.))
+                                        .cursor_pointer()
+                                        .when(p == page, |r| {
+                                            r.bg(c.accent).text_color(c.foreground)
+                                        })
+                                        .when(p != page, |r| {
+                                            r.text_color(c.foreground.opacity(0.85))
+                                        })
+                                        .hover(|r| r.bg(c.accent))
+                                        .child(
+                                            crate::ui::icon(p.icon())
+                                                .size(px(16.))
+                                                .text_color(c.muted_foreground),
+                                        )
+                                        .child(t(p.label()))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.settings_page = p;
+                                            cx.notify();
+                                        }))
+                                }))
+                        })
+                    })),
+            );
+        let header = h_flex()
+            .h(px(48.))
+            .flex_none()
+            .px_5()
+            .gap_3()
+            .border_b_1()
+            .border_color(c.border)
+            .child(div().text_color(c.muted_foreground).child(t("Settings")))
+            .child(div().text_color(c.muted_foreground).child("/"))
+            .child(div().flex_1().child(t(page.label())))
+            .children(
+                self.settings_status
+                    .clone()
+                    .map(|s| div().text_sm().text_color(c.muted_foreground).child(s)),
+            )
+            .child(
+                crate::ui::icon_button("settings-close", "x", cx)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
+            );
+        let body = v_flex()
+            .id("settings-page")
+            .flex_1()
+            .overflow_y_scroll()
+            .px_8()
+            .pb_8()
+            .children(self.settings_sections(page, cx));
+        div()
+            .absolute()
+            .inset_0()
+            .bg(gpui_kit::black().opacity(0.85))
+            .occlude()
+            .p(px(40.))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.toggle_settings(cx)),
+            )
+            .child(
+                h_flex()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .size_full()
+                    .rounded(px(16.))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(c.border)
+                    .bg(c.background)
+                    .shadow_lg()
+                    .child(nav)
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .child(
-                                p.display_name
-                                    .clone()
-                                    .unwrap_or_else(|| p.instance_id.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(c.muted_foreground)
-                                    .truncate()
-                                    .child(detail),
-                            ),
-                    )
-                    .when(p.instance_id != p.driver, |row| {
-                        let id = p.instance_id.clone();
-                        row.child(
-                            Button::new(SharedString::from(format!("provider-remove-{id}")))
-                                .small()
-                                .ghost()
-                                .label("✕")
-                                .tooltip(t("Remove"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let mutation = json!({ "operation": "remove", "instanceId": id });
-                                    this.update_settings(json!({ "patch": {}, "providerInstanceMutation": mutation }), cx);
-                                })),
-                        )
-                    })
-                    .child(
-                        Button::new(SharedString::from(format!("provider-{}", p.instance_id)))
-                            .small()
-                            .label(if enabled { "Enabled" } else { "Disabled" })
-                            .when(enabled, |b| b.primary())
-                            .when(!enabled, |b| b.outline())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let mutation = toggle_instance(&settings, &id, &driver, !enabled);
-                                this.update_settings(
-                                    json!({ "patch": {}, "providerInstanceMutation": mutation }),
-                                    cx,
-                                );
-                            })),
+                            .h_full()
+                            .child(header)
+                            .child(body),
                     ),
-            );
-            providers = providers
-                .child(usage_rows)
-                .child(self.render_provider_setup(p, cx));
-        }
-        let mut drivers: Vec<String> = self
-            .config()
-            .providers
-            .iter()
-            .map(|p| p.driver.clone())
-            .collect();
-        drivers.sort();
-        drivers.dedup();
-        let add_app = cx.entity().downgrade();
-        providers = providers.child(
-            div().py_2().child(
-                Button::new("provider-add")
-                    .small()
-                    .outline()
-                    .label(t("Add provider instance"))
-                    .dropdown_menu(move |mut menu, _, _| {
-                        for driver in &drivers {
-                            let (app, driver) = (add_app.clone(), driver.clone());
-                            menu = menu.item(PopupMenuItem::new(driver.clone()).on_click(
-                                move |_, window, cx| {
+            )
+    }
+
+    /// The sections of one settings page.
+    fn settings_sections(&self, page: SettingsPage, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let c = cx.theme().colors;
+        let settings = self.config().settings.clone();
+        let app = cx.entity().downgrade();
+        // A dropdown of labelled values that applies the pick with `apply`.
+        let choice = |id: &'static str,
+                      current: String,
+                      options: Vec<(String, String)>,
+                      apply: ApplyChoice| {
+            let label = options
+                .iter()
+                .find(|(v, _)| *v == current)
+                .map_or(current.clone(), |(_, l)| l.clone());
+            let app = app.clone();
+            Button::new(id)
+                .outline()
+                .h(px(36.))
+                .min_w(px(220.))
+                .dropdown_caret(true)
+                .label(label)
+                .dropdown_menu(move |mut menu, _, _| {
+                    for (value, label) in options.clone() {
+                        let (app, apply) = (app.clone(), apply.clone());
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(value == current)
+                                .on_click(move |_, window, cx| {
                                     app.update(cx, |this, cx| {
-                                        this.add_provider_instance(driver.clone(), window, cx)
+                                        apply(this, value.clone(), window, cx)
                                     })
                                     .ok();
-                                },
-                            ));
-                        }
-                        menu
-                    }),
-            ),
-        );
-
-        let runtime = settings["defaultRuntimeMode"]
-            .as_str()
-            .unwrap_or("full-access")
-            .to_string();
-        let runtime_label = RUNTIME_MODES
-            .iter()
-            .find(|(m, _)| *m == runtime)
-            .map_or(runtime.clone(), |(_, l)| l.to_string());
-        let app = cx.entity().downgrade();
-        let presets =
-            crate::sidebar::snooze_presets(&jiff::Zoned::now(), settings.get("snoozePresets"));
-        let light = theme_mode(&self.prefs) == ThemeMode::Light;
-        let server = self.env().map(|e| e.key.clone()).unwrap_or_default();
-
-        div().id("settings").flex_1().h_full().overflow_y_scroll().child(
-            v_flex()
-                .mx_auto()
-                .max_w(px(720.))
-                .w_full()
-                .p_6()
-                .child(
-                    h_flex()
-                        .child(div().flex_1().text_xl().font_weight(FontWeight::SEMIBOLD).child(t("Settings")))
-                        .children(self.settings_status.clone().map(|s| div().text_sm().text_color(c.muted_foreground).child(s)))
-                        .child(
-                            Button::new("settings-close")
-                                .small()
-                                .ghost()
-                                .label(t("Close"))
-                                .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
-                        ),
-                )
-                .child(section("Providers"))
-                .child(providers)
-                .child(section("New threads"))
-                .child(
-                    row().child(div().flex_1().child(t("Default permission mode"))).child(
-                        Button::new("default-runtime").small().outline().label(t(&runtime_label)).dropdown_menu(
-                            move |mut menu, _, _| {
-                                for (mode, label) in RUNTIME_MODES {
-                                    let app = app.clone();
-                                    menu = menu.item(PopupMenuItem::new(t(label)).checked(mode == runtime).on_click(
-                                        move |_, _, cx| {
-                                            app.update(cx, |this, cx| {
-                                                this.update_settings(json!({ "patch": { "defaultRuntimeMode": mode } }), cx)
-                                            })
-                                            .ok();
-                                        },
-                                    ));
-                                }
-                                menu
-                            },
-                        ),
-                    ),
-                )
-                .child({
-                    let stored: Vec<Value> = settings["snoozePresets"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_else(crate::sidebar::default_presets);
-                    let resolved = presets.iter().map(|p| p.label.split(" · ").next().unwrap_or("").to_string()).collect::<Vec<_>>().join(", ");
-                    let full = stored.len() >= 8;
-                    v_flex()
-                        .child(
-                            row()
-                                .child(v_flex().flex_1().child(t("Snooze options")).child(div().text_xs().text_color(c.muted_foreground).child(resolved)))
-                                .child({
-                                    let stored = stored.clone();
-                                    Button::new("snooze-add").small().outline().label(t("Add")).disabled(full).on_click(cx.listener(
-                                        move |this, _, window, cx| this.add_snooze_preset(stored.clone(), window, cx),
-                                    ))
                                 }),
-                        )
-                        .child(h_flex().flex_wrap().gap_1().py_1().children(stored.iter().enumerate().map(|(i, p)| {
-                            let remaining: Vec<Value> = stored.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, v)| v.clone()).collect();
-                            Button::new(("snooze-preset", i))
-                                .xsmall()
-                                .ghost()
-                                .label(format!("{} ✕", crate::sidebar::preset_text(p)))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.update_settings(json!({ "patch": { "snoozePresets": remaining } }), cx)
-                                }))
-                        })))
+                        );
+                    }
+                    menu
                 })
-                .child(section("Appearance"))
-                .child(row().child(div().flex_1().child(t("Language"))).child({
-                    let app = cx.entity().downgrade();
-                    let current = crate::i18n::locale();
-                    let name = crate::i18n::LOCALES.iter().find(|(c, _)| *c == current).map_or("English", |(_, n)| n);
-                    Button::new("language").small().outline().label(name.to_string()).dropdown_menu(move |mut menu, _, _| {
-                        for (code, name) in crate::i18n::LOCALES {
-                            let app = app.clone();
-                            menu = menu.item(PopupMenuItem::new(name).checked(code == current).on_click(move |_, _, cx| {
-                                app.update(cx, |this, cx| this.set_language(code, cx)).ok();
-                            }));
-                        }
-                        menu
-                    })
-                }))
-                .child(
-                    row()
-                        .child(div().flex_1().child(t("Theme")))
-                        .child(
-                            Button::new("theme-dark")
-                                .small()
-                                .label(t("Dark"))
-                                .when(!light, |b| b.primary())
-                                .when(light, |b| b.ghost())
-                                .on_click(cx.listener(|this, _, window, cx| this.set_theme(false, window, cx))),
-                        )
-                        .child(
-                            Button::new("theme-light")
-                                .small()
-                                .label(t("Light"))
-                                .when(light, |b| b.primary())
-                                .when(!light, |b| b.ghost())
-                                .on_click(cx.listener(|this, _, window, cx| this.set_theme(true, window, cx))),
-                        ),
-                )
-                .child({
-                    let on = self.prefs["workingShelf"] != false;
-                    row().child(div().flex_1().child(t("Working section"))).child(
-                        Button::new("working-shelf")
-                            .small()
-                            .label(if on { t("On") } else { t("Off") })
-                            .when(on, |b| b.primary())
-                            .when(!on, |b| b.outline())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.prefs["workingShelf"] = json!(!on);
-                                save_prefs(&this.prefs);
-                                cx.notify();
+                .into_any_element()
+        };
+        let pref_switch =
+            |id: &'static str, key: &'static str, on: bool, cx: &mut Context<Self>| {
+                Switch::new(id)
+                    .checked(on)
+                    .color(cx.theme().colors.primary)
+                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                        this.prefs[key] = json!(*checked);
+                        save_prefs(&this.prefs);
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            };
+        let server_switches = |group: &str, cx: &mut Context<Self>| -> Vec<AnyElement> {
+            SERVER_TOGGLES
+                .iter()
+                .filter(|(title, _)| *title == group)
+                .flat_map(|(_, rows)| rows.iter())
+                .filter_map(|(key, label)| {
+                    // Absent keys come from servers that predate the setting.
+                    let on = settings.get(*key).and_then(Value::as_bool)?;
+                    let key = *key;
+                    Some(setting_row(
+                        t(label),
+                        None,
+                        Switch::new(SharedString::from(format!("setting-{key}")))
+                            .checked(on)
+                            .color(cx.theme().colors.primary)
+                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                this.update_settings(json!({ "patch": { key: *checked } }), cx)
                             })),
-                    )
+                        cx,
+                    ))
                 })
-                .child({
-                    let queue = self.prefs["followUpBehavior"] == "queue";
-                    row().child(div().flex_1().child(t("Follow-up behavior"))).child(
-                        Button::new("follow-up")
-                            .small()
-                            .outline()
-                            .label(if queue { t("Queue") } else { t("Steer") })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.prefs["followUpBehavior"] = json!(if queue { "steer" } else { "queue" });
-                                save_prefs(&this.prefs);
-                                cx.notify();
-                            })),
-                    )
-                })
-                .child({
-                    let on = self.prefs["projectFolders"] == true;
-                    row().child(div().flex_1().child(t("Boring sidebar (group by project)"))).child(
-                        Button::new("project-folders")
-                            .small()
-                            .label(if on { t("On") } else { t("Off") })
-                            .when(on, |b| b.primary())
-                            .when(!on, |b| b.outline())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.prefs["projectFolders"] = json!(!on);
-                                save_prefs(&this.prefs);
-                                cx.notify();
-                            })),
-                    )
-                })
-                .child({
-                    let on = self.prefs["inAppNotifications"] != false;
-                    row().child(div().flex_1().child(t("In-app notifications"))).child(
-                        Button::new("in-app-notifications")
-                            .small()
-                            .label(if on { t("On") } else { t("Off") })
-                            .when(on, |b| b.primary())
-                            .when(!on, |b| b.outline())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.prefs["inAppNotifications"] = json!(!on);
-                                save_prefs(&this.prefs);
-                                cx.notify();
-                            })),
-                    )
-                })
-                .child({
-                    let mode = self.prefs["notificationMode"].as_str().unwrap_or("off").to_owned();
-                    let label = NOTIFICATION_MODES.iter().find(|(m, _)| *m == mode).map_or("Off", |(_, l)| l);
-                    let app = cx.entity().downgrade();
-                    row().child(div().flex_1().child(t("Background notifications"))).child(
-                        Button::new("notification-mode").small().outline().label(t(label)).dropdown_menu(move |mut menu, _, _| {
-                            for (value, label) in NOTIFICATION_MODES {
-                                let app = app.clone();
-                                menu = menu.item(PopupMenuItem::new(t(label)).checked(value == mode).on_click(move |_, _, cx| {
-                                    app.update(cx, |this, cx| {
-                                        this.prefs["notificationMode"] = json!(value);
+                .collect()
+        };
+        match page {
+            SettingsPage::General => {
+                let mode = self.prefs["notificationMode"]
+                    .as_str()
+                    .unwrap_or("off")
+                    .to_owned();
+                vec![
+                    settings_section(
+                        "Notifications",
+                        vec![
+                            setting_row(
+                                t("Thread notifications"),
+                                Some(t(
+                                    "System alerts when a thread finishes, fails, or needs input or approval. Applies to this device while T3 Code is open.",
+                                )),
+                                choice(
+                                    "notification-mode",
+                                    mode,
+                                    NOTIFICATION_MODES
+                                        .iter()
+                                        .map(|(v, l)| (v.to_string(), t(l)))
+                                        .collect(),
+                                    std::rc::Rc::new(|this, v, _window, cx| {
+                                        this.prefs["notificationMode"] = json!(v);
                                         save_prefs(&this.prefs);
                                         cx.notify();
-                                    })
-                                    .ok();
-                                }));
-                            }
-                            menu
-                        }),
-                    )
-                })
-                .child(section("Thread defaults"))
-                .child({
-                    let days = settings["sidebarAutoSettleAfterDays"].as_u64();
-                    let label = days.map_or_else(|| t("Never"), |d| format!("{d} d"));
-                    let app = cx.entity().downgrade();
-                    row().child(div().flex_1().child(t("Auto-settle inactive threads"))).child(
-                        Button::new("auto-settle-days").small().outline().label(label).dropdown_menu(move |mut menu, _, _| {
-                            for option in [None, Some(1u64), Some(3), Some(7), Some(14), Some(30)] {
-                                let app = app.clone();
-                                let text = option.map_or_else(|| t("Never"), |d| format!("{d} d"));
-                                menu = menu.item(PopupMenuItem::new(text).checked(option == days).on_click(move |_, _, cx| {
-                                    app.update(cx, |this, cx| this.update_settings(json!({ "patch": { "sidebarAutoSettleAfterDays": option } }), cx)).ok();
-                                }));
-                            }
-                            menu
-                        }),
-                    )
-                })
-                .child({
-                    let mode = settings["defaultThreadEnvMode"].as_str().unwrap_or("local").to_owned();
-                    let label = |m: &str| if m == "worktree" { t("New worktree") } else { t("Local") };
-                    let app = cx.entity().downgrade();
-                    row().child(div().flex_1().child(t("New thread mode"))).child(
-                        Button::new("default-env-mode").small().outline().label(label(&mode)).dropdown_menu(move |mut menu, _, _| {
-                            for option in ["local", "worktree"] {
-                                let app = app.clone();
-                                menu = menu.item(PopupMenuItem::new(label(option)).checked(option == mode).on_click(move |_, _, cx| {
-                                    app.update(cx, |this, cx| this.update_settings(json!({ "patch": { "defaultThreadEnvMode": option } }), cx)).ok();
-                                }));
-                            }
-                            menu
-                        }),
-                    )
-                })
-                .child({
-                    let current = settings["threadTitleInstructions"].as_str().unwrap_or("").to_owned();
-                    row()
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .child(t("Thread title instructions"))
-                                .child(div().text_xs().text_color(c.muted_foreground).truncate().child(current.clone())),
+                                    }),
+                                ),
+                                cx,
+                            ),
+                            setting_row(
+                                t("In-app notifications"),
+                                Some(t(
+                                    "Show a toast when another thread finishes, fails, or needs input or approval while this app has focus.",
+                                )),
+                                pref_switch(
+                                    "in-app-notifications",
+                                    "inAppNotifications",
+                                    self.prefs["inAppNotifications"] != false,
+                                    cx,
+                                ),
+                                cx,
+                            ),
+                        ],
+                        cx,
+                    ),
+                    settings_section(
+                        "Sidebar",
+                        vec![setting_row(
+                            t("Working section"),
+                            Some(t(
+                                "Fold working and monitoring threads into a Working section. They return to the top of the inbox when they need you.",
+                            )),
+                            pref_switch(
+                                "working-shelf",
+                                "workingShelf",
+                                self.prefs["workingShelf"] != false,
+                                cx,
+                            ),
+                            cx,
+                        )],
+                        cx,
+                    ),
+                ]
+            }
+            SettingsPage::Appearance => {
+                let light = theme_mode(&self.prefs) == ThemeMode::Light;
+                let current = crate::i18n::locale();
+                vec![settings_section(
+                    "Appearance",
+                    vec![
+                        setting_row(
+                            t("Theme"),
+                            None,
+                            choice(
+                                "theme",
+                                if light { "light" } else { "dark" }.into(),
+                                vec![("dark".into(), t("Dark")), ("light".into(), t("Light"))],
+                                std::rc::Rc::new(|this, v, window, cx| {
+                                    this.set_theme(v == "light", window, cx)
+                                }),
+                            ),
+                            cx,
+                        ),
+                        setting_row(
+                            t("Language"),
+                            None,
+                            choice(
+                                "language",
+                                current,
+                                crate::i18n::LOCALES
+                                    .iter()
+                                    .map(|(c, n)| (c.to_string(), n.to_string()))
+                                    .collect(),
+                                std::rc::Rc::new(|this, v, _window, cx| this.set_language(&v, cx)),
+                            ),
+                            cx,
+                        ),
+                    ],
+                    cx,
+                )]
+            }
+            SettingsPage::Chat => {
+                let queue = self.prefs["followUpBehavior"] == "queue";
+                vec![settings_section(
+                    "Follow-ups",
+                    vec![setting_row(
+                        t("Follow-up behavior"),
+                        None,
+                        choice(
+                            "follow-up",
+                            if queue { "queue" } else { "steer" }.into(),
+                            vec![("steer".into(), t("Steer")), ("queue".into(), t("Queue"))],
+                            std::rc::Rc::new(|this, v, _window, cx| {
+                                this.prefs["followUpBehavior"] = json!(v);
+                                save_prefs(&this.prefs);
+                                cx.notify();
+                            }),
+                        ),
+                        cx,
+                    )],
+                    cx,
+                )]
+            }
+            SettingsPage::Keybindings => vec![settings_section(
+                "Keybindings",
+                self.config()
+                    .keybindings
+                    .iter()
+                    .enumerate()
+                    .map(|(i, rule)| {
+                        let target = crate::keybindings::rule_target(rule);
+                        let (change, remove) = (target.clone(), target.clone());
+                        setting_row(
+                            rule["command"].as_str().unwrap_or("").to_owned(),
+                            None,
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .rounded_md()
+                                        .bg(c.muted)
+                                        .border_1()
+                                        .border_color(c.border)
+                                        .text_sm()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .child(target["key"].as_str().unwrap_or("").to_owned()),
+                                )
+                                .child(
+                                    Button::new(("kb-change", i))
+                                        .small()
+                                        .ghost()
+                                        .label(t("Change"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.change_keybinding(change.clone(), window, cx)
+                                        })),
+                                )
+                                .child(crate::ui::icon_button(("kb-remove", i), "x", cx).on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.keybinding_call(
+                                            "server.removeKeybinding",
+                                            remove.clone(),
+                                            cx,
+                                        )
+                                    }),
+                                )),
+                            cx,
                         )
+                    })
+                    .collect(),
+                cx,
+            )],
+            SettingsPage::Providers => {
+                let mut out: Vec<AnyElement> = self
+                    .config()
+                    .providers
+                    .iter()
+                    .map(|p| self.render_provider_card(p, &settings, cx))
+                    .collect();
+                let mut drivers: Vec<String> = self
+                    .config()
+                    .providers
+                    .iter()
+                    .map(|p| p.driver.clone())
+                    .collect();
+                drivers.sort();
+                drivers.dedup();
+                let add_app = cx.entity().downgrade();
+                out.push(
+                    div()
+                        .pt_4()
                         .child(
-                            Button::new("title-instructions")
+                            Button::new("provider-add")
                                 .small()
                                 .outline()
-                                .label(t("Edit"))
-                                .on_click(cx.listener(move |this, _, window, cx| this.edit_title_instructions(current.clone(), window, cx))),
+                                .label(t("Add provider instance"))
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    for driver in &drivers {
+                                        let (app, driver) = (add_app.clone(), driver.clone());
+                                        menu =
+                                            menu.item(PopupMenuItem::new(driver.clone()).on_click(
+                                                move |_, window, cx| {
+                                                    app.update(cx, |this, cx| {
+                                                        this.add_provider_instance(
+                                                            driver.clone(),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    })
+                                                    .ok();
+                                                },
+                                            ));
+                                    }
+                                    menu
+                                }),
                         )
-                })
-                .children(SERVER_TOGGLES.iter().map(|(title, rows)| {
-                    v_flex().child(section(title)).children(rows.iter().map(|(key, label)| {
-                        // Absent keys come from servers that predate the setting.
-                        let value = settings.get(*key).and_then(Value::as_bool);
-                        row().child(div().flex_1().child(t(label))).children(value.map(|on| {
-                            Button::new(SharedString::from(format!("setting-{key}")))
-                                .small()
-                                .label(if on { t("On") } else { t("Off") })
-                                .when(on, |b| b.primary())
-                                .when(!on, |b| b.outline())
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.update_settings(json!({ "patch": { *key: !on } }), cx)
-                                }))
-                        }))
-                    }))
-                }))
-                .child({
-                    let mode = settings["branchNamingMode"].as_str().unwrap_or("static").to_owned();
-                    let label = |m: &str| match m {
-                        "semantic" => t("Semantic prefix"),
-                        "custom" => t("Custom instructions"),
-                        _ => t("Static prefix"),
-                    };
-                    let app = cx.entity().downgrade();
-                    row().child(div().flex_1().child(t("Worktree branch naming"))).child(
-                        Button::new("branch-naming").small().outline().label(label(&mode)).dropdown_menu(move |mut menu, _, _| {
-                            for option in ["static", "semantic", "custom"] {
-                                let app = app.clone();
-                                menu = menu.item(PopupMenuItem::new(label(option)).checked(option == mode).on_click(move |_, _, cx| {
-                                    app.update(cx, |this, cx| this.update_settings(json!({ "patch": { "branchNamingMode": option } }), cx)).ok();
-                                }));
-                            }
-                            menu
+                        .into_any_element(),
+                );
+                out.push(settings_section(
+                    "Provider options",
+                    server_switches("Providers", cx),
+                    cx,
+                ));
+                out
+            }
+            SettingsPage::Threads => {
+                let runtime = settings["defaultRuntimeMode"]
+                    .as_str()
+                    .unwrap_or("full-access")
+                    .to_owned();
+                let env_mode = settings["defaultThreadEnvMode"]
+                    .as_str()
+                    .unwrap_or("local")
+                    .to_owned();
+                let days = settings["sidebarAutoSettleAfterDays"].as_u64();
+                let title_instructions = settings["threadTitleInstructions"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
+                let stored: Vec<Value> = settings["snoozePresets"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(crate::sidebar::default_presets);
+                let full = stored.len() >= 8;
+                vec![
+                    settings_section(
+                        "New threads",
+                        vec![
+                            setting_row(
+                                t("Default permission mode"),
+                                None,
+                                choice(
+                                    "default-runtime",
+                                    runtime,
+                                    RUNTIME_MODES.iter().map(|(m, l)| (m.to_string(), t(l))).collect(),
+                                    std::rc::Rc::new(|this, v, _window, cx| {
+                                        this.update_settings(json!({ "patch": { "defaultRuntimeMode": v } }), cx)
+                                    }),
+                                ),
+                                cx,
+                            ),
+                            setting_row(
+                                t("New thread mode"),
+                                None,
+                                choice(
+                                    "default-env-mode",
+                                    env_mode,
+                                    vec![("local".into(), t("Local")), ("worktree".into(), t("New worktree"))],
+                                    std::rc::Rc::new(|this, v, _window, cx| {
+                                        this.update_settings(json!({ "patch": { "defaultThreadEnvMode": v } }), cx)
+                                    }),
+                                ),
+                                cx,
+                            ),
+                            setting_row(
+                                t("Thread title instructions"),
+                                (!title_instructions.is_empty()).then(|| title_instructions.clone()),
+                                Button::new("title-instructions")
+                                    .small()
+                                    .outline()
+                                    .label(t("Edit"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.edit_title_instructions(title_instructions.clone(), window, cx)
+                                    })),
+                                cx,
+                            ),
+                        ],
+                        cx,
+                    ),
+                    settings_section(
+                        "Inbox",
+                        vec![
+                            setting_row(
+                                t("Auto-settle inactive threads"),
+                                None,
+                                choice(
+                                    "auto-settle-days",
+                                    days.map_or("never".into(), |d| d.to_string()),
+                                    [None, Some(1u64), Some(3), Some(7), Some(14), Some(30)]
+                                        .into_iter()
+                                        .map(|o| {
+                                            (
+                                                o.map_or("never".into(), |d| d.to_string()),
+                                                o.map_or_else(|| t("Never"), |d| format!("{d} d")),
+                                            )
+                                        })
+                                        .collect(),
+                                    std::rc::Rc::new(|this, v, _window, cx| {
+                                        let days = v.parse::<u64>().ok();
+                                        this.update_settings(json!({ "patch": { "sidebarAutoSettleAfterDays": days } }), cx)
+                                    }),
+                                ),
+                                cx,
+                            ),
+                            setting_row(
+                                t("Snooze options"),
+                                None,
+                                h_flex()
+                                    .flex_wrap()
+                                    .justify_end()
+                                    .gap_1()
+                                    .children(stored.iter().enumerate().map(|(i, p)| {
+                                        let remaining: Vec<Value> = stored
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(j, _)| *j != i)
+                                            .map(|(_, v)| v.clone())
+                                            .collect();
+                                        Button::new(("snooze-preset", i))
+                                            .xsmall()
+                                            .outline()
+                                            .label(format!("{} ✕", crate::sidebar::preset_text(p)))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.update_settings(json!({ "patch": { "snoozePresets": remaining } }), cx)
+                                            }))
+                                    }))
+                                    .child({
+                                        let stored = stored.clone();
+                                        Button::new("snooze-add")
+                                            .xsmall()
+                                            .ghost()
+                                            .label(t("Add"))
+                                            .disabled(full)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.add_snooze_preset(stored.clone(), window, cx)
+                                            }))
+                                    }),
+                                cx,
+                            ),
+                        ],
+                        cx,
+                    ),
+                    settings_section("Threads", server_switches("Threads", cx), cx),
+                ]
+            }
+            SettingsPage::ScheduledTasks => vec![{
+                let panel = self.render_scheduled(cx).into_any_element();
+                settings_panel("Scheduled tasks", panel, cx)
+            }],
+            SettingsPage::Projects => vec![{
+                let panel = self.render_project_settings(cx).into_any_element();
+                settings_panel("Projects", panel, cx)
+            }],
+            SettingsPage::SourceControl => {
+                vec![{
+                    let panel = self.render_source_control(cx).into_any_element();
+                    settings_panel("Source control & issues", panel, cx)
+                }]
+            }
+            SettingsPage::Worktrees => {
+                let mode = settings["branchNamingMode"]
+                    .as_str()
+                    .unwrap_or("static")
+                    .to_owned();
+                let prefix = settings["branchNamePrefix"]
+                    .as_str()
+                    .unwrap_or("t3")
+                    .to_owned();
+                let mut rows = vec![
+                    setting_row(
+                        t("Worktree branch naming"),
+                        None,
+                        choice(
+                            "branch-naming",
+                            mode,
+                            vec![
+                                ("static".into(), t("Static prefix")),
+                                ("semantic".into(), t("Semantic prefix")),
+                                ("custom".into(), t("Custom instructions")),
+                            ],
+                            std::rc::Rc::new(|this, v, _window, cx| {
+                                this.update_settings(
+                                    json!({ "patch": { "branchNamingMode": v } }),
+                                    cx,
+                                )
+                            }),
+                        ),
+                        cx,
+                    ),
+                    setting_row(
+                        t("Branch prefix"),
+                        Some(if prefix.is_empty() {
+                            t("No prefix")
+                        } else {
+                            prefix.clone()
                         }),
-                    )
-                })
-                .child({
-                    let prefix = settings["branchNamePrefix"].as_str().unwrap_or("t3").to_owned();
-                    row()
-                        .child(div().flex_1().child(t("Branch prefix")))
-                        .child(div().text_xs().text_color(c.muted_foreground).child(if prefix.is_empty() { t("No prefix") } else { prefix.clone() }))
-                        .child(
-                            Button::new("branch-prefix")
-                                .small()
-                                .outline()
-                                .label(t("Edit"))
-                                .on_click(cx.listener(move |this, _, window, cx| this.edit_branch_prefix(prefix.clone(), window, cx))),
-                        )
-                })
-                .child(section("Projects"))
-                .child(self.render_project_settings(cx))
-                .child(section("Keyboard shortcuts"))
-                .children(self.config().keybindings.iter().enumerate().map(|(i, rule)| {
-                    let target = crate::keybindings::rule_target(rule);
-                    let (change, remove) = (target.clone(), target.clone());
-                    row()
-                        .child(div().flex_1().truncate().child(rule["command"].as_str().unwrap_or("").to_owned()))
-                        .child(div().text_xs().text_color(c.muted_foreground).child(target["key"].as_str().unwrap_or("").to_owned()))
-                        .child(
-                            Button::new(("kb-change", i))
-                                .xsmall()
-                                .ghost()
-                                .label(t("Change"))
-                                .on_click(cx.listener(move |this, _, window, cx| this.change_keybinding(change.clone(), window, cx))),
-                        )
-                        .child(
-                            Button::new(("kb-remove", i))
-                                .xsmall()
-                                .ghost()
-                                .label("✕")
-                                .tooltip(t("Remove"))
-                                .on_click(cx.listener(move |this, _, _, cx| this.keybinding_call("server.removeKeybinding", remove.clone(), cx))),
-                        )
-                }))
-                .child(section("Scheduled tasks"))
-                .child(self.render_scheduled(cx))
-                .child(section("Source control"))
-                .child(self.render_source_control(cx))
-                .child(section("Storage"))
-                .child(self.render_storage(cx))
-                .when(settings["workflowsEnabled"] == true, |col| {
-                    col.child(section("Workflows")).child(self.render_workflows(cx))
-                })
-                .when(settings["linkedEnvironmentsEnabled"] == true, |col| {
-                    col.child(section("Linked environments")).child(self.render_peer_links(cx))
-                })
-                .child(section("Sharing & access"))
-                .child(self.render_access(cx))
-                .child(section("About"))
-                .child(
-                    row()
-                        .child(v_flex().flex_1().child(format!("t3-gpui v{}", env!("CARGO_PKG_VERSION"))).child(
-                            div().text_xs().text_color(c.muted_foreground).child(t("Native client for T3 Code servers")),
-                        ))
+                        Button::new("branch-prefix")
+                            .small()
+                            .outline()
+                            .label(t("Edit"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_branch_prefix(prefix.clone(), window, cx)
+                            })),
+                        cx,
+                    ),
+                ];
+                rows.extend(server_switches("Worktrees", cx));
+                vec![settings_section("Worktrees", rows, cx)]
+            }
+            SettingsPage::Environments => {
+                let mut out = vec![settings_section("Environments", self.server_rows(cx), cx)];
+                if settings["linkedEnvironmentsEnabled"] == true {
+                    out.push({
+                        let panel = self.render_peer_links(cx).into_any_element();
+                        settings_panel("Linked environments", panel, cx)
+                    });
+                }
+                out
+            }
+            SettingsPage::Access => vec![{
+                let panel = self.render_access(cx).into_any_element();
+                settings_panel("Sharing & access", panel, cx)
+            }],
+            SettingsPage::Maintenance => vec![{
+                let panel = self.render_storage(cx).into_any_element();
+                settings_panel("Storage", panel, cx)
+            }],
+            SettingsPage::Labs => {
+                let mut rows = server_switches("Beta", cx);
+                rows.push(setting_row(
+                    t("Boring sidebar"),
+                    Some(t("Group threads by project instead of the inbox.")),
+                    pref_switch(
+                        "project-folders",
+                        "projectFolders",
+                        self.prefs["projectFolders"] == true,
+                        cx,
+                    ),
+                    cx,
+                ));
+                let mut out = vec![settings_section("Labs", rows, cx)];
+                if settings["workflowsEnabled"] == true {
+                    out.push({
+                        let panel = self.render_workflows(cx).into_any_element();
+                        settings_panel("Workflows", panel, cx)
+                    });
+                }
+                out
+            }
+            SettingsPage::About => vec![settings_section(
+                "About",
+                vec![setting_row(
+                    format!("t3-gpui v{}", env!("CARGO_PKG_VERSION")),
+                    Some(t("Native client for T3 Code servers")),
+                    h_flex()
+                        .gap_1()
                         .child(
                             Button::new("about-source")
                                 .small()
                                 .ghost()
                                 .label(t("Source code"))
-                                .on_click(|_, _, cx| cx.open_url("https://github.com/pingdotgg/t3code")),
+                                .on_click(|_, _, cx| {
+                                    cx.open_url("https://github.com/pingdotgg/t3code")
+                                }),
                         )
                         .child(
                             Button::new("about-license")
                                 .small()
                                 .ghost()
                                 .label(t("License"))
-                                .on_click(|_, _, cx| cx.open_url("https://github.com/pingdotgg/t3code/blob/main/LICENSE")),
+                                .on_click(|_, _, cx| {
+                                    cx.open_url(
+                                        "https://github.com/pingdotgg/t3code/blob/main/LICENSE",
+                                    )
+                                }),
                         ),
-                )
-                .child(section("Servers"))
-                .children(self.envs.iter().enumerate().map(|(i, e)| {
-                    let active = e.key == server;
-                    let status = match (&e.error, &e.client) {
-                        (Some(error), _) => error.to_string(),
-                        (None, Some(_)) => "Connected".to_string(),
-                        (None, None) => "Connecting…".to_string(),
-                    };
-                    let (switch_key, remove_key) = (e.key.clone(), e.key.clone());
-                    let version = e.config.server_version.clone();
-                    let latest = self.latest_releases.get(&e.key).cloned();
-                    let newer = latest.clone().filter(|l| is_newer(l, &version));
-                    let can_update = matches!(e.config.self_update.as_deref(), Some("boot-service" | "respawn"));
-                    let (check_key, update_key) = (e.key.clone(), e.key.clone());
-                    let status = if version.is_empty() { status } else { format!("{status} · v{version}") };
-                    row()
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .child(e.label())
-                                .child(div().text_xs().text_color(c.muted_foreground).truncate().child(status)),
-                        )
+                    cx,
+                )],
+                cx,
+            )],
+        }
+    }
+
+    /// One provider instance as a card: name and status with its switch, usage, then setup.
+    fn render_provider_card(
+        &self,
+        p: &crate::model::Provider,
+        settings: &Value,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = cx.theme().colors;
+        let enabled = p.enabled;
+        let (id, driver) = (p.instance_id.clone(), p.driver.clone());
+        let detail = [
+            p.version.as_deref().map(|v| format!("v{v}")),
+            Some(p.status.clone()),
+            p.message.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let settings = settings.clone();
+        let usage = usage_windows(&p.usage_limits);
+        let unavailable = p.usage_limits["unavailable"]["message"]
+            .as_str()
+            .map(str::to_owned);
+        let has_usage = !usage.is_empty() || unavailable.is_some();
+        let usage_rows = v_flex()
+            .gap_1()
+            .children(usage.into_iter().map(|(label, used, resets)| {
+                let color = if used >= 90. {
+                    c.danger
+                } else if used >= 70. {
+                    c.warning
+                } else {
+                    c.primary
+                };
+                let resets = resets.map(|r| {
+                    let local = r.to_zoned(jiff::tz::TimeZone::system());
+                    tv(
+                        "Resets {resetsAt}",
+                        &[("resetsAt", &local.strftime("%b %-d, %H:%M").to_string())],
+                    )
+                });
+                h_flex()
+                    .gap_2()
+                    .text_sm()
+                    .child(div().w(px(140.)).truncate().child(label))
+                    .child(
+                        div()
+                            .w(px(160.))
+                            .h(px(6.))
+                            .rounded_full()
+                            .bg(c.secondary)
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded_full()
+                                    .bg(color)
+                                    .w(relative(used as f32 / 100.)),
+                            ),
+                    )
+                    .child(format!("{used:.0}%"))
+                    .children(resets.map(|r| div().text_color(c.muted_foreground).child(r)))
+            }))
+            .children(unavailable.map(|m| div().text_sm().text_color(c.muted_foreground).child(m)));
+        let remove = (p.instance_id != p.driver).then(|| {
+            let id = p.instance_id.clone();
+            crate::ui::icon_button(
+                SharedString::from(format!("provider-remove-{id}")),
+                "trash-2",
+                cx,
+            )
+            .tooltip(|window, cx| Tooltip::new(t("Remove")).build(window, cx))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let mutation = json!({ "operation": "remove", "instanceId": id });
+                this.update_settings(
+                    json!({ "patch": {}, "providerInstanceMutation": mutation }),
+                    cx,
+                );
+            }))
+        });
+        let toggle = Switch::new(SharedString::from(format!("provider-{}", p.instance_id)))
+            .checked(enabled)
+            .color(cx.theme().colors.primary)
+            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                let mutation = toggle_instance(&settings, &id, &driver, *checked);
+                this.update_settings(
+                    json!({ "patch": {}, "providerInstanceMutation": mutation }),
+                    cx,
+                );
+            }));
+        let mut rows = vec![setting_row(
+            t("Enabled"),
+            Some(detail),
+            h_flex().gap_2().children(remove).child(toggle),
+            cx,
+        )];
+        if has_usage {
+            rows.push(div().px_4().py_3().child(usage_rows).into_any_element());
+        }
+        rows.push(
+            div()
+                .px_4()
+                .py_3()
+                .child(self.render_provider_setup(p, cx))
+                .into_any_element(),
+        );
+        settings_section(
+            p.display_name
+                .clone()
+                .unwrap_or_else(|| p.instance_id.clone())
+                .as_str(),
+            rows,
+            cx,
+        )
+    }
+
+    /// The connected servers, each with its status, update and switch actions.
+    fn server_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let c = cx.theme().colors;
+        let server = self.env().map(|e| e.key.clone()).unwrap_or_default();
+        let mut rows: Vec<AnyElement> = self
+            .envs
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let active = e.key == server;
+                let status = match (&e.error, &e.client) {
+                    (Some(error), _) => error.to_string(),
+                    (None, Some(_)) => t("Connected"),
+                    (None, None) => t("Connecting…"),
+                };
+                let (switch_key, remove_key) = (e.key.clone(), e.key.clone());
+                let version = e.config.server_version.clone();
+                let latest = self.latest_releases.get(&e.key).cloned();
+                let newer = latest.clone().filter(|l| is_newer(l, &version));
+                let can_update = matches!(
+                    e.config.self_update.as_deref(),
+                    Some("boot-service" | "respawn")
+                );
+                let (check_key, update_key) = (e.key.clone(), e.key.clone());
+                let status = if version.is_empty() {
+                    status
+                } else {
+                    format!("{status} · v{version}")
+                };
+                setting_row(
+                    e.label(),
+                    Some(status),
+                    h_flex()
+                        .gap_2()
                         .child(match (&newer, can_update) {
                             (Some(target), true) => {
                                 let target = target.clone();
@@ -1071,27 +1389,35 @@ impl T3App {
                                     .small()
                                     .primary()
                                     .label(format!("{} v{target}", t("Update to")))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.update_server(update_key.clone(), target.clone(), cx)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.update_server(update_key.clone(), target.clone(), cx)
+                                    }))
                                     .into_any_element()
                             }
                             (Some(target), false) => div()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(c.warning)
                                 .child(format!("v{target} {}", t("available")))
                                 .into_any_element(),
                             (None, _) => Button::new(("server-check", i))
                                 .small()
                                 .ghost()
-                                .label(if latest.is_some() { t("Up to date") } else { t("Check for updates") })
-                                .on_click(cx.listener(move |this, _, _, cx| this.check_server_release(check_key.clone(), cx)))
+                                .label(if latest.is_some() {
+                                    t("Up to date")
+                                } else {
+                                    t("Check for updates")
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.check_server_release(check_key.clone(), cx)
+                                }))
                                 .into_any_element(),
                         })
                         .child(
                             Button::new(("server-switch", i))
                                 .small()
-                                .label(if active { "Active" } else { "Switch" })
+                                .label(if active { t("Active") } else { t("Switch") })
                                 .when(active, |b| b.primary())
-                                .when(!active, |b| b.ghost())
+                                .when(!active, |b| b.outline())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.release_access();
                                     this.release_provider_setup();
@@ -1107,20 +1433,193 @@ impl T3App {
                                 .small()
                                 .outline()
                                 .label(t("Disconnect"))
-                                .on_click(cx.listener(move |this, _, _, cx| this.remove_env(&remove_key, cx))),
-                        )
-                }))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.remove_env(&remove_key, cx)
+                                })),
+                        ),
+                    cx,
+                )
+            })
+            .collect();
+        rows.push(
+            div()
+                .px_4()
+                .py_3()
                 .child(
-                    row().child(
-                        Button::new("settings-add-server")
-                            .small()
-                            .ghost()
-                            .label(t("+ Connect another server"))
-                            .on_click(cx.listener(|this, _, _, cx| this.add_environment(cx))),
-                    ),
-                ),
-        )
+                    Button::new("settings-add-server")
+                        .small()
+                        .ghost()
+                        .label(t("+ Connect another server"))
+                        .on_click(cx.listener(|this, _, _, cx| this.add_environment(cx))),
+                )
+                .into_any_element(),
+        );
+        rows
     }
+}
+
+/// The web's settings pages that this client has, in its sidebar order.
+/// shortcut: pages for features gpui lacks (Diffs, Voice, SnapShots, Browser, Devices, Secrets,
+/// Archive) are left out rather than shown empty.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SettingsPage {
+    #[default]
+    General,
+    Appearance,
+    Chat,
+    Keybindings,
+    Providers,
+    Threads,
+    ScheduledTasks,
+    Projects,
+    SourceControl,
+    Worktrees,
+    Environments,
+    Access,
+    Maintenance,
+    Labs,
+    About,
+}
+
+impl SettingsPage {
+    /// Sidebar groups; a group without a heading is set apart by space alone.
+    const GROUPS: &[(Option<&'static str>, &'static [SettingsPage])] = &[
+        (
+            None,
+            &[
+                Self::General,
+                Self::Appearance,
+                Self::Chat,
+                Self::Keybindings,
+            ],
+        ),
+        (
+            Some("Agents"),
+            &[Self::Providers, Self::Threads, Self::ScheduledTasks],
+        ),
+        (
+            Some("Code"),
+            &[Self::Projects, Self::SourceControl, Self::Worktrees],
+        ),
+        (Some("Connections"), &[Self::Environments, Self::Access]),
+        (None, &[Self::Maintenance, Self::Labs, Self::About]),
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Appearance => "Appearance",
+            Self::Chat => "Chat",
+            Self::Keybindings => "Keybindings",
+            Self::Providers => "Providers",
+            Self::Threads => "Threads",
+            Self::ScheduledTasks => "Scheduled tasks",
+            Self::Projects => "Projects",
+            Self::SourceControl => "Source control & issues",
+            Self::Worktrees => "Worktrees",
+            Self::Environments => "Environments",
+            Self::Access => "Sharing & access",
+            Self::Maintenance => "Maintenance",
+            Self::Labs => "Labs",
+            Self::About => "About",
+        }
+    }
+
+    /// `SettingsSidebarNav`'s Lucide icons.
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => "settings-2",
+            Self::Appearance => "palette",
+            Self::Chat => "message-square-text",
+            Self::Keybindings => "keyboard",
+            Self::Providers => "bot",
+            Self::Threads => "messages-square",
+            Self::ScheduledTasks => "calendar-clock",
+            Self::Projects => "panels-top-left",
+            Self::SourceControl => "git-branch",
+            Self::Worktrees => "folder-tree",
+            Self::Environments => "server",
+            Self::Access => "shield-check",
+            Self::Maintenance => "wrench",
+            Self::Labs => "flask-conical",
+            Self::About => "info",
+        }
+    }
+}
+
+/// What a settings dropdown does with the picked value.
+type ApplyChoice = std::rc::Rc<dyn Fn(&mut T3App, String, &mut Window, &mut Context<T3App>)>;
+
+/// A settings row (web: `SettingsRow`): title and description, the control on the right.
+fn setting_row(
+    title: impl Into<SharedString>,
+    description: Option<String>,
+    control: impl IntoElement,
+    cx: &App,
+) -> AnyElement {
+    let c = cx.theme().colors;
+    h_flex()
+        .px_4()
+        .py_3()
+        .gap_4()
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title.into()),
+                )
+                .children(description.filter(|d| !d.is_empty()).map(|d| {
+                    div()
+                        .text_size(px(13.))
+                        .text_color(c.muted_foreground)
+                        .child(d)
+                })),
+        )
+        .child(div().flex_none().child(control))
+        .into_any_element()
+}
+
+/// A titled card of rows divided by rules (web: `SettingsSection`).
+fn settings_section(title: &str, rows: Vec<AnyElement>, cx: &App) -> AnyElement {
+    let c = cx.theme().colors;
+    if rows.is_empty() {
+        return div().into_any_element();
+    }
+    let last = rows.len() - 1;
+    v_flex()
+        .pt_8()
+        .gap_3()
+        .child(
+            div()
+                .px_1()
+                .text_size(px(18.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(t(title)),
+        )
+        .child(
+            v_flex()
+                .rounded(px(14.))
+                .border_1()
+                .border_color(c.border)
+                .bg(c.muted)
+                .children(rows.into_iter().enumerate().map(|(i, row)| {
+                    div()
+                        .when(i < last, |d| d.border_b_1().border_color(c.border))
+                        .child(row)
+                })),
+        )
+        .into_any_element()
+}
+
+/// A titled card around a whole existing panel.
+/// shortcut: these panels keep their own inner layout; their rows are not yet `setting_row`s.
+fn settings_panel(title: &str, panel: AnyElement, cx: &App) -> AnyElement {
+    settings_section(title, vec![div().p_4().child(panel).into_any_element()], cx)
 }
 
 #[cfg(test)]
