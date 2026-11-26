@@ -45,6 +45,7 @@ mod terminal;
 mod terminal_drawer;
 mod thread_chips;
 mod timeline;
+mod ui;
 mod web_theme;
 mod workflows;
 mod workspace;
@@ -59,9 +60,10 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::searchable_list::{SearchableListItem, SearchableVec};
 use gpui_kit::component::select::{SelectEvent, SelectState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Disableable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -230,6 +232,8 @@ struct T3App {
     /// The highlighted palette row (↑/↓, Enter).
     palette_index: usize,
     show_archived: bool,
+    /// The Settled shelf is unfolded (web: `settledShelfExpanded`).
+    settled_open: bool,
     history_loading: bool,
     find_open: bool,
     find_input: Entity<InputState>,
@@ -464,6 +468,7 @@ impl T3App {
             palette_generation: 0,
             palette_index: 0,
             show_archived: false,
+            settled_open: false,
             history_loading: false,
             find_open: false,
             find_input,
@@ -1579,39 +1584,76 @@ impl T3App {
             sidebar::Status::PlanReady => theme.magenta,
             sidebar::Status::Completed => theme.success,
         });
-        h_flex()
+        // Web: `SidebarThreadRow` card variant.
+        let project_name = env
+            .and_then(|e| e.shell.projects.iter().find(|p| p.id == thread.project_id))
+            .map(|p| p.title.clone())
+            .unwrap_or_default();
+        let age = sidebar::compact_age(&thread.updated_at, jiff::Timestamp::now().as_millisecond());
+        let machine = env.map(|e| {
+            (
+                ui::machine_icon(e.machine.as_deref()),
+                e.name.clone().unwrap_or_else(|| e.label()),
+            )
+        });
+        let web = web_theme::current(cx);
+        let muted = web.secondary_label;
+        v_flex()
             .id(SharedString::from(format!("thread-{id}")))
-            .gap_2()
-            .px_2()
-            .py_1()
+            .my(px(2.))
+            .px(px(10.))
+            .py(px(8.))
             .rounded_md()
-            .text_sm()
             .cursor_pointer()
-            .when(archived, |d| d.text_color(theme.muted_foreground))
-            .when(selected, |d| {
-                d.bg(theme.sidebar_accent)
-                    .text_color(theme.sidebar_accent_foreground)
-            })
-            .hover(|d| d.bg(theme.sidebar_accent))
+            .when(selected, |d| d.bg(web.sidebar_row_active))
+            .when(!selected, |d| d.hover(|d| d.bg(web.sidebar_row_hover)))
+            .child(
+                h_flex()
+                    .h(px(20.))
+                    .gap(px(6.))
+                    .text_xs()
+                    .child(ui::project_mark(&project_name, px(16.), cx))
+                    .when(pinned, |row| {
+                        row.child(
+                            ui::icon("pin")
+                                .size(px(12.))
+                                .text_color(muted.opacity(0.65)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(muted)
+                            .child(project.unwrap_or(project_name)),
+                    )
+                    .child(match status.zip(status_color) {
+                        Some((s, c)) => div()
+                            .flex_none()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(c)
+                            .child(t(s.label())),
+                        None => div().flex_none().text_color(muted).child(age),
+                    }),
+            )
             .child(
                 div()
-                    .size(px(6.))
-                    .rounded_full()
-                    .when_some(status_color, |d, c| d.bg(c)),
-            )
-            .child(div().flex_1().truncate().child(thread.title.clone()))
-            .children(
-                status
-                    .zip(status_color)
-                    .map(|(s, c)| div().text_xs().text_color(c).child(t(s.label()))),
-            )
-            .children(project.map(|p| {
-                div()
-                    .max_w(px(90.))
+                    .mt(px(2.))
                     .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if archived { muted } else { theme.foreground })
+                    .child(thread.title.clone()),
+            )
+            .children(machine.map(|(icon, name)| {
+                h_flex()
+                    .mt(px(2.))
+                    .gap(px(6.))
                     .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(p)
+                    .text_color(muted)
+                    .child(ui::icon(icon).size(px(14.)).text_color(muted.opacity(0.8)))
+                    .child(div().flex_1().min_w_0().truncate().child(name))
             }))
             .on_click(cx.listener({
                 let (env_key, id) = (env_key.clone(), id.clone());
@@ -1983,28 +2025,27 @@ impl T3App {
         } else {
             sections.active = active_rows;
         }
+        // Settled counts the older threads the shell left out (`olderSettled`).
+        let settled_hidden: u64 = self.envs.iter().map(|e| e.shell.older_remaining()).sum();
+        let settled_count = sections.settled.len() as u64 + settled_hidden;
         for (label, rows, section) in [
             ("Pinned", &sections.pinned, drag::Section::Pinned),
             ("Active", &sections.active, drag::Section::Active),
             ("Snoozed", &sections.snoozed, drag::Section::Snoozed),
             ("Settled", &sections.settled, drag::Section::Settled),
         ] {
-            // An empty Pinned or Settled section still takes drops through its header.
-            if rows.is_empty() && !matches!(section, drag::Section::Pinned | drag::Section::Settled)
-            {
+            // Like the web: Active has no heading, Settled opens from the footer.
+            if rows.is_empty() || (section == drag::Section::Settled && !self.settled_open) {
                 continue;
             }
-            // Settled counts the older threads the shell left out (`olderSettled`).
             let hidden = if section == drag::Section::Settled {
-                self.envs.iter().map(|e| e.shell.older_remaining()).sum()
+                settled_hidden
             } else {
                 0
             };
-            list = list.child(self.section_header(
-                format!("{} ({})", i18n::t(label), rows.len() as u64 + hidden),
-                section,
-                cx,
-            ));
+            if section != drag::Section::Active {
+                list = list.child(self.section_header(i18n::t(label), section, cx));
+            }
             for (index, thread) in rows.iter().enumerate() {
                 list = list.child(self.thread_row(thread, false, Some((section, index)), cx));
             }
@@ -2060,92 +2101,138 @@ impl T3App {
                 }
             }
         }
-        // Every environment's projects; named with their server when several are connected.
-        let many = self.envs.len() > 1;
-        let projects: Vec<(String, String, String)> = self
-            .envs
-            .iter()
-            .flat_map(|e| {
-                e.shell
-                    .projects
-                    .iter()
-                    .filter(|p| !p.is_archived())
-                    .map(move |p| {
-                        let title = if many {
-                            format!("{} · {}", p.title, e.label())
-                        } else {
-                            p.title.clone()
-                        };
-                        (e.key.clone(), p.id.clone(), title)
-                    })
-            })
-            .collect();
-        let app = cx.entity().downgrade();
+        let web = web_theme::current(cx);
+        let muted = web.secondary_label;
         v_flex()
-            .w(px(300.))
+            .w(px(256.))
             .h_full()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
             .border_r_1()
             .border_color(theme.sidebar_border)
+            // Web: `SidebarChrome` brand row.
             .child(
                 h_flex()
                     .h(px(44.))
-                    .px_3()
+                    .px_2()
                     .gap_1()
                     .child(
-                        div()
+                        ui::icon_button("sidebar-collapse", "panel-left-close", cx)
+                            .tooltip(|window, cx| {
+                                Tooltip::new(t("Toggle sidebar")).build(window, cx)
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sidebar_hidden = true;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .text_sm()
+                            .child(div().font_weight(FontWeight::BOLD).child("T3"))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(muted)
+                                    .child("Code"),
+                            ),
+                    ),
+            )
+            // Web: `SidebarThreadHeader` search row.
+            .child(
+                h_flex()
+                    .px_2()
+                    .pb_1()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .id("sidebar-search")
                             .flex_1()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("t3code-rs"),
+                            .h(px(32.))
+                            .px_2()
+                            .gap_2()
+                            .rounded_md()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(muted)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(web.sidebar_row_hover).text_color(theme.foreground))
+                            .child(ui::icon("search").size(px(16.)))
+                            .child(t("Search"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.toggle_palette(window, cx)),
+                            ),
                     )
                     .child(
-                        Button::new("new-thread")
-                            .small()
-                            .ghost()
-                            .label(t("New thread"))
-                            .dropdown_menu(move |mut menu, _, _| {
-                                for (env, id, title) in projects.clone() {
-                                    let app = app.clone();
-                                    menu = menu.item(PopupMenuItem::new(title).on_click(
-                                        move |_, window, cx| {
-                                            app.update(cx, |this, cx| {
-                                                this.new_thread(env.clone(), id.clone(), window, cx)
-                                            })
-                                            .ok();
-                                        },
-                                    ));
-                                }
-                                let app = app.clone();
-                                menu.separator().item(
-                                    PopupMenuItem::new(t("Add project…")).on_click(
-                                        move |_, window, cx| {
-                                            app.update(cx, |this, cx| {
-                                                this.open_add_project(window, cx)
-                                            })
-                                            .ok();
-                                        },
-                                    ),
-                                )
-                            }),
+                        ui::icon_button("sidebar-add-project", "folder", cx)
+                            .tooltip(|window, cx| Tooltip::new(t("Add project")).build(window, cx))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_add_project(window, cx)
+                                }),
+                            ),
                     )
                     .child(
-                        Button::new("add-server")
-                            .small()
-                            .ghost()
-                            .label(t("+ Server"))
-                            .tooltip(t("Connect another T3 Code server"))
-                            .on_click(cx.listener(|this, _, _, cx| this.add_environment(cx))),
-                    )
-                    .child(
-                        Button::new("open-settings")
-                            .small()
-                            .ghost()
-                            .label(t("Settings"))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
+                        ui::icon_button("sidebar-new-thread", "square-pen", cx)
+                            .tooltip(|window, cx| Tooltip::new(t("New thread")).build(window, cx))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.run_command("chat.new", window, cx);
+                            })),
                     ),
             )
             .child(list)
+            // Web: the Settled shelf toggle above the footer.
+            .child(
+                h_flex()
+                    .id("settled-toggle")
+                    .mx_2()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .rounded_md()
+                    .text_sm()
+                    .text_color(muted)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(web.sidebar_row_hover).text_color(theme.foreground))
+                    .child(div().flex_1().child(i18n::t("Settled")))
+                    .child(div().text_xs().child(settled_count.to_string()))
+                    .child(
+                        ui::icon(if self.settled_open {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        })
+                        .size(px(14.))
+                        .ml_1(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.settled_open = !this.settled_open;
+                        cx.notify();
+                    }))
+                    .drag_over::<drag::DraggedThread>(move |s, _, _, _| s.bg(theme.accent))
+                    .on_drop(cx.listener(|this, d: &drag::DraggedThread, _, cx| {
+                        this.drop_thread(d, drag::Section::Settled, 0, cx)
+                    })),
+            )
+            // Web: the footer's icon bar.
+            .child(
+                h_flex()
+                    .h(px(44.))
+                    .px_2()
+                    .gap_1()
+                    .child(
+                        ui::icon_button("open-settings", "settings", cx)
+                            .tooltip(|window, cx| Tooltip::new(t("Settings")).build(window, cx))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
+                    )
+                    .child(
+                        ui::icon_button("add-server", "plug", cx)
+                            .tooltip(|window, cx| {
+                                Tooltip::new(t("Connect another T3 Code server")).build(window, cx)
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.add_environment(cx))),
+                    ),
+            )
     }
 
     /// Re-renders when the next snooze ends, so the thread leaves the Snoozed section on time.

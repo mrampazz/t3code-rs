@@ -30,6 +30,9 @@ pub struct Env {
     pub renewing: bool,
     /// The server's `environmentId`: one server reached by two addresses is one environment.
     pub environment_id: Option<String>,
+    /// The descriptor's `label` and `platform.machine` (web: `EnvironmentMachineIcon`).
+    pub name: Option<String>,
+    pub machine: Option<String>,
 }
 
 impl Env {
@@ -120,6 +123,8 @@ impl T3App {
                     error: None,
                     renewing: false,
                     environment_id: None,
+                    name: None,
+                    machine: None,
                 });
                 1
             }
@@ -205,6 +210,10 @@ impl T3App {
                             let env = app.env_by_mut(&key)?;
                             env.session = renewed;
                             env.environment_id = environment_id;
+                            env.name = descriptor["label"].as_str().map(str::to_owned);
+                            env.machine = descriptor["platform"]["machine"]
+                                .as_str()
+                                .map(str::to_owned);
                             env.client = Some(client.clone());
                             env.error = None;
                             env.shell.omit_subagents = caps["shellThreadFamilies"] == true;

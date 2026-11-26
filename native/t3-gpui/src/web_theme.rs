@@ -26,7 +26,11 @@ pub struct Tokens {
     pub primary: Hsla,
     pub sidebar: Hsla,
     pub sidebar_row_hover: Hsla,
+    /// The open thread's row.
+    pub sidebar_row_active: Hsla,
     pub sidebar_row_selected: Hsla,
+    /// Row metadata, a step below titles (`--secondary-label`).
+    pub secondary_label: Hsla,
     pub error: Hsla,
     pub error_foreground: Hsla,
     pub success_foreground: Hsla,
@@ -47,9 +51,12 @@ pub fn tokens(dark: bool) -> Tokens {
             border: white(0.08),
             input: white(0.11),
             primary: rgb(0x346bf1).into(),
-            sidebar: card,
-            sidebar_row_hover: white(0.04),
-            sidebar_row_selected: white(0.03),
+            // `[data-app-sidebar]`: a black sidebar with white-mix rows.
+            sidebar: rgb(0x000000).into(),
+            sidebar_row_hover: white(0.08),
+            sidebar_row_active: white(0.11),
+            sidebar_row_selected: white(0.07),
+            secondary_label: rgb(0x8f8f8f).into(),
             error: rgb(0xf05252).into(),
             error_foreground: rgb(0xf87171).into(),
             success_foreground: rgb(0x34d399).into(),
@@ -69,7 +76,9 @@ pub fn tokens(dark: bool) -> Tokens {
             primary: rgb(0x1b4ed8).into(),
             sidebar: rgb(0xfafafa).into(),
             sidebar_row_hover: rgb(0xfcfcfc).into(),
+            sidebar_row_active: rgb(0xffffff).into(),
             sidebar_row_selected: rgb(0xffffff).into(),
+            secondary_label: rgb(0x71717a).into(),
             error: rgb(0xef4444).into(),
             error_foreground: rgb(0xb91c1c).into(),
             success_foreground: rgb(0x047857).into(),
@@ -77,6 +86,11 @@ pub fn tokens(dark: bool) -> Tokens {
             info_foreground: rgb(0x1d4ed8).into(),
         }
     }
+}
+
+/// The tokens for the current theme mode.
+pub fn current(cx: &App) -> Tokens {
+    tokens(Theme::global(cx).mode != ThemeMode::Light)
 }
 
 /// Switches light/dark, then lays the web's tokens over gpui-kit's defaults.

@@ -384,6 +384,82 @@ impl crate::T3App {
     }
 }
 
+/// The sidebar's compact age (web: `compactSidebarTimeLabel`): "now", "5m", "3h", "2d".
+pub fn compact_age(iso: &str, now_ms: i64) -> String {
+    let Some(at) = ts_ms(Some(iso)) else {
+        return String::new();
+    };
+    let seconds = (now_ms - at).max(0) / 1000;
+    match seconds {
+        s if s < 60 => crate::i18n::t("now"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
+/// Two letters for a project without an icon (web: `projectMonogram`).
+pub fn monogram(name: &str) -> String {
+    let words: Vec<Vec<char>> = name
+        .trim()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.chars().collect())
+        .collect();
+    let Some(first_word) = words.first() else {
+        return "PR".into();
+    };
+    let first = first_word[0];
+    let second = first_word[1..]
+        .iter()
+        .copied()
+        .find(|c| c.is_numeric())
+        .or_else(|| match words.len() {
+            1 => first_word.last().copied(),
+            _ => words.last().and_then(|w| w.first().copied()),
+        })
+        .unwrap_or(first);
+    format!("{first}{second}")
+        .to_uppercase()
+        .chars()
+        .take(2)
+        .collect()
+}
+
+/// The project color a name hashes to, as an index into `PROJECT_ICON_COLORS` (web: `projectColor`).
+pub fn project_color_index(name: &str) -> usize {
+    let seed = name.trim().to_lowercase();
+    let seed = if seed.is_empty() {
+        "project".to_owned()
+    } else {
+        seed
+    };
+    seed.chars()
+        .fold(0usize, |i, c| (i * 31 + c as usize) % PROJECT_COLORS.len())
+}
+
+/// `PROJECT_ICON_COLORS` in order, as (dark `-400`, light `-600`) Tailwind shades.
+pub const PROJECT_COLORS: [(u32, u32); 18] = [
+    (0x9ca3af, 0x4b5563), // gray
+    (0xf87171, 0xdc2626), // red
+    (0xfb923c, 0xea580c), // orange
+    (0xfbbf24, 0xd97706), // amber
+    (0xfacc15, 0xca8a04), // yellow
+    (0xa3e635, 0x65a30d), // lime
+    (0x4ade80, 0x16a34a), // green
+    (0x34d399, 0x059669), // emerald
+    (0x2dd4bf, 0x0d9488), // teal
+    (0x22d3ee, 0x0891b2), // cyan
+    (0x38bdf8, 0x0284c7), // sky
+    (0x60a5fa, 0x2563eb), // blue
+    (0x818cf8, 0x4f46e5), // indigo
+    (0xa78bfa, 0x7c3aed), // violet
+    (0xc084fc, 0x9333ea), // purple
+    (0xe879f9, 0xc026d3), // fuchsia
+    (0xf472b6, 0xdb2777), // pink
+    (0xfb7185, 0xe11d48), // rose
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +472,27 @@ mod tests {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn derives_project_identity_like_the_web() {
+        use super::{compact_age, monogram, project_color_index};
+        assert_eq!(monogram("server"), "SR");
+        assert_eq!(monogram("t3code rs"), "T3");
+        assert_eq!(monogram("my app"), "MA");
+        assert_eq!(monogram("  "), "PR");
+        // (('s'=115)*31 + ...) mod 18, as the web's loop computes it.
+        let expected = "server"
+            .chars()
+            .fold(0usize, |i, c| (i * 31 + c as usize) % 18);
+        assert_eq!(project_color_index("Server"), expected);
+        let now = "2026-01-01T00:10:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_millisecond();
+        assert_eq!(compact_age("2026-01-01T00:09:30Z", now), "now");
+        assert_eq!(compact_age("2026-01-01T00:05:00Z", now), "5m");
+        assert_eq!(compact_age("2025-12-30T00:10:00Z", now), "2d");
     }
 
     #[test]
