@@ -96,13 +96,11 @@ fn capitalize(s: &str) -> String {
 }
 
 impl T3App {
-    pub(crate) fn render_pull_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = cx.theme().colors;
-        let thread = self
-            .selected
+    /// The selected thread's pull requests, leaving out stack entries the user dismissed.
+    pub(crate) fn thread_pull_requests(&self) -> Vec<Value> {
+        self.selected
             .as_ref()
-            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id));
-        let links: Vec<Value> = thread
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
             .map(|t| {
                 t.pull_requests
                     .iter()
@@ -110,7 +108,16 @@ impl T3App {
                     .cloned()
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn render_pull_requests(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = cx.theme().colors;
+        let thread = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id));
+        let links = self.thread_pull_requests();
         let thread_id = thread.map(|t| t.id.clone()).unwrap_or_default();
         let project_id = thread.map(|t| t.project_id.clone()).unwrap_or_default();
         let app = cx.entity().downgrade();

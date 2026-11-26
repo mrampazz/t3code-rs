@@ -114,6 +114,7 @@ struct Env {
     shell: Live<Shell>,
     config: Live<ServerConfig>,
     project_id: String,
+    session: auth::Session,
 }
 
 async fn connect() -> Env {
@@ -159,6 +160,7 @@ async fn connect() -> Env {
         shell,
         config,
         project_id,
+        session,
     }
 }
 
@@ -1828,6 +1830,27 @@ async fn e2e_pull_request_checks_shape() {
             }
         }
     }
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_pull_request_diff() {
+    let env = connect().await;
+    let input = json!({ "projectId": env.project_id, "host": "github.com",
+        "repository": "pingdotgg/t3code", "number": 1 });
+    let page = auth::post_json(&env.session, "/api/pull-requests/diff", &input)
+        .await
+        .unwrap();
+    println!(
+        "{}",
+        serde_json::to_string(&page)
+            .unwrap()
+            .chars()
+            .take(400)
+            .collect::<String>()
+    );
+    let (_, files, note) = crate::diff_panel::parse_pr_diff(&[page]).unwrap();
+    assert!(!files.is_empty(), "{note:?}");
 }
 
 #[tokio::test]

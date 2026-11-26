@@ -256,6 +256,8 @@ struct T3App {
     diff_open: bool,
     /// `None` = whole thread, `Some(turn)` = one turn.
     diff_target: Option<u64>,
+    /// The linked pull request (repository, number) the diff panel shows instead of turns.
+    diff_pr: Option<(String, u64)>,
     diff_state: Option<Entity<gpui_kit::component::diff::DiffState>>,
     diff_note: Option<SharedString>,
     /// Drops responses for a diff the user has since replaced.
@@ -469,6 +471,7 @@ impl T3App {
             snooze_wake_at: None,
             diff_open: false,
             diff_target: None,
+            diff_pr: None,
             diff_state: None,
             diff_note: None,
             diff_generation: 0,
@@ -690,6 +693,7 @@ impl T3App {
             self.history_pos = None;
             self.diff_generation += 1;
             self.diff_target = None;
+            self.diff_pr = None;
             self.diff_state = None;
             self.diff_note = None;
         }
@@ -730,6 +734,7 @@ impl T3App {
                             app.thread.apply(&item);
                             if app.diff_open
                                 && app.diff_target.is_none()
+                                && app.diff_pr.is_none()
                                 && app.thread.latest_turn() != before
                             {
                                 app.load_diff(None, cx);
@@ -1298,20 +1303,18 @@ impl T3App {
             .collect()
     }
 
-    fn current_pull_request(&self) -> Option<&serde_json::Value> {
-        let id = self.selected.as_ref()?;
-        let thread = self.shell().threads.iter().find(|t| &t.id == id)?;
-        thread
-            .pull_requests
-            .iter()
-            .find(|l| l["source"] != "stack-dismissed")
+    fn current_pull_request(&self) -> Option<serde_json::Value> {
+        self.thread_pull_requests().into_iter().next()
     }
 
     /// What `thread.copyReference` copies (web `resolveThreadReferenceCopyTarget`): the thread's
     /// pull request link, else a hosted link that opens the thread anywhere; and whether it is a PR.
     pub(crate) fn thread_reference(&self) -> Option<(String, bool)> {
-        if let Some(url) = self.current_pull_request().and_then(|l| l["url"].as_str()) {
-            return Some((url.to_owned(), true));
+        if let Some(url) = self
+            .current_pull_request()
+            .and_then(|l| l["url"].as_str().map(str::to_owned))
+        {
+            return Some((url, true));
         }
         let env = self.env()?.environment_id.clone()?;
         let id = self.selected.as_ref()?;

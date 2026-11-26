@@ -25,6 +25,9 @@ pub struct Review {
 /// Ends a diff the server cut at its size limit (`CHECKPOINT_DIFF_TRUNCATED_MARKER`).
 const TRUNCATED_MARKER: &str = "\n\n[truncated]";
 
+/// Bounds how much of a huge pull request one open fetches.
+const MAX_PR_DIFF_PAGES: usize = 20;
+
 impl T3App {
     pub(crate) fn toggle_diff(&mut self, cx: &mut Context<Self>) {
         self.diff_open = !self.diff_open;
@@ -37,6 +40,7 @@ impl T3App {
     /// `None` diffs the whole thread up to its latest turn; `Some(n)` diffs turn `n` alone.
     pub(crate) fn load_diff(&mut self, target: Option<u64>, cx: &mut Context<Self>) {
         self.diff_target = target;
+        self.diff_pr = None;
         self.diff_generation += 1;
         let generation = self.diff_generation;
         let (Some(client), Some(thread_id), Some(latest)) = (
@@ -65,52 +69,118 @@ impl T3App {
         cx.spawn(async move |this, cx| {
             let result = on_tokio(async move { client.call(method, payload).await }).await;
             this.update(cx, |app, cx| {
-                if app.diff_generation != generation {
-                    return;
-                }
                 let result = result.map_err(anyhow::Error::from).and_then(|r| r);
-                app.diff_review = Review::default();
-                if let Ok(value) = &result {
-                    app.diff_review.patches = patch_texts(value);
-                }
-                match result.map(|value| parse_turn_diff(&value)) {
-                    Ok(Ok((files, truncated))) if !files.is_empty() => {
-                        let mode = if app.diff_split {
-                            DiffMode::Split
-                        } else {
-                            DiffMode::Unified
-                        };
-                        let state = cx.new(|cx| DiffState::new(files, cx).with_mode(mode));
-                        app.diff_review._events =
-                            Some(cx.subscribe(&state, |app, _, event: &DiffEvent, cx| {
-                                match event {
-                                    DiffEvent::SelectionEnded(range) => {
-                                        app.diff_review.selection = Some(range.clone())
-                                    }
-                                    DiffEvent::SelectionChanged(None) => {
-                                        app.diff_review.selection = None
-                                    }
-                                    _ => return,
-                                }
-                                cx.notify();
-                            }));
-                        app.diff_state = Some(state);
-                        app.diff_note = truncated.then(|| "The server truncated this diff.".into());
-                    }
-                    Ok(Ok(_)) => {
-                        app.diff_state = None;
-                        app.diff_note = Some("No changes in this range.".into());
-                    }
-                    Ok(Err(e)) | Err(e) => {
-                        app.diff_state = None;
-                        app.diff_note = Some(format!("Could not load the diff: {e}").into());
-                    }
-                }
-                cx.notify();
+                let loaded = result.and_then(|value| {
+                    let (files, truncated) = parse_turn_diff(&value)?;
+                    let note = truncated.then(|| "The server truncated this diff.".to_owned());
+                    Ok((patch_texts(&value), files, note))
+                });
+                app.show_diff(generation, loaded, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// A linked pull request's diff (web: `PullRequestCodeTab`), every page of it.
+    /// shortcut: files the server withholds as too large are listed, not readable one by one.
+    pub(crate) fn load_pr_diff(&mut self, link: &Value, cx: &mut Context<Self>) {
+        let (Some(session), Some(project), Some(repository), Some(number)) = (
+            self.env().map(|e| e.session.clone()),
+            self.selected
+                .as_ref()
+                .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
+                .map(|t| t.project_id.clone()),
+            link["repository"].as_str().map(str::to_owned),
+            link["number"].as_u64(),
+        ) else {
+            return;
+        };
+        self.diff_pr = Some((repository.clone(), number));
+        self.diff_generation += 1;
+        let generation = self.diff_generation;
+        let mut input = json!({ "projectId": project, "repository": repository, "number": number });
+        if let Some(host) = link["host"].as_str() {
+            input["host"] = json!(host);
+        }
+        self.diff_note = Some("Loading…".into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = on_tokio(async move {
+                let mut pages = Vec::new();
+                loop {
+                    let page =
+                        crate::auth::post_json(&session, "/api/pull-requests/diff", &input).await?;
+                    let next = page["nextCursor"].as_str().map(str::to_owned);
+                    pages.push(page);
+                    match next {
+                        Some(cursor) if pages.len() < MAX_PR_DIFF_PAGES => {
+                            input["cursor"] = json!(cursor)
+                        }
+                        _ => break,
+                    }
+                }
+                anyhow::Ok(pages)
+            })
+            .await;
+            this.update(cx, |app, cx| {
+                let loaded = result
+                    .map_err(anyhow::Error::from)
+                    .and_then(|r| r)
+                    .and_then(|pages| parse_pr_diff(&pages));
+                app.show_diff(generation, loaded, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn show_diff(
+        &mut self,
+        generation: u64,
+        loaded: anyhow::Result<(Vec<String>, Vec<DiffFile>, Option<String>)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.diff_generation != generation {
+            return;
+        }
+        self.diff_review = Review::default();
+        match loaded {
+            Ok((patches, files, note)) if !files.is_empty() => {
+                self.diff_review.patches = patches;
+                let mode = if self.diff_split {
+                    DiffMode::Split
+                } else {
+                    DiffMode::Unified
+                };
+                let state = cx.new(|cx| DiffState::new(files, cx).with_mode(mode));
+                self.diff_review._events =
+                    Some(cx.subscribe(&state, |app, _, event: &DiffEvent, cx| {
+                        match event {
+                            DiffEvent::SelectionEnded(range) => {
+                                app.diff_review.selection = Some(range.clone())
+                            }
+                            DiffEvent::SelectionChanged(None) => app.diff_review.selection = None,
+                            _ => return,
+                        }
+                        cx.notify();
+                    }));
+                self.diff_state = Some(state);
+                self.diff_note = note.map(Into::into);
+            }
+            Ok((_, _, note)) => {
+                self.diff_state = None;
+                self.diff_note = Some(
+                    note.unwrap_or_else(|| "No changes in this range.".into())
+                        .into(),
+                );
+            }
+            Err(e) => {
+                self.diff_state = None;
+                self.diff_note = Some(format!("Could not load the diff: {e}").into());
+            }
+        }
+        cx.notify();
     }
 
     /// This session's choice, else the client's `diffIgnoreWhitespace` preference.
@@ -138,10 +208,28 @@ impl T3App {
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.diff_whitespace = Some(!this.diff_ignore_whitespace());
-                        this.load_diff(this.diff_target, cx);
+                        if this.diff_pr.is_none() {
+                            this.load_diff(this.diff_target, cx);
+                        }
                     })),
             )
             .child(self.turn_button("diff-all", "All turns".into(), None, cx));
+        for (i, link) in self.thread_pull_requests().into_iter().enumerate() {
+            let key = (
+                link["repository"].as_str().unwrap_or("").to_owned(),
+                link["number"].as_u64().unwrap_or(0),
+            );
+            let button = Button::new(("diff-pr", i))
+                .xsmall()
+                .label(format!("PR #{}", key.1))
+                .tooltip(link["repository"].as_str().unwrap_or("").to_owned())
+                .on_click(cx.listener(move |this, _, _, cx| this.load_pr_diff(&link, cx)));
+            turns = turns.child(if self.diff_pr.as_ref() == Some(&key) {
+                button.primary()
+            } else {
+                button.ghost()
+            });
+        }
         for checkpoint in &self.thread.checkpoints {
             let label = format!(
                 "Turn {} · {} {} · +{} −{}",
@@ -469,7 +557,7 @@ impl T3App {
             .xsmall()
             .label(label)
             .on_click(cx.listener(move |this, _, _, cx| this.load_diff(target, cx)));
-        if self.diff_target == target {
+        if self.diff_pr.is_none() && self.diff_target == target {
             button.primary()
         } else {
             button.ghost()
@@ -489,6 +577,37 @@ pub(crate) fn patch_texts(value: &Value) -> Vec<String> {
         .filter_map(Value::as_str)
         .map(|p| p.strip_suffix(TRUNCATED_MARKER).unwrap_or(p).to_owned())
         .collect()
+}
+
+/// Parses `PullRequestDiffResult` pages into one diff, noting what the server left out.
+pub(crate) fn parse_pr_diff(
+    pages: &[Value],
+) -> anyhow::Result<(Vec<String>, Vec<DiffFile>, Option<String>)> {
+    let mut patches = Vec::new();
+    let mut files = Vec::new();
+    let mut omitted = Vec::new();
+    for page in pages {
+        let patch = page["patch"].as_str().unwrap_or("");
+        if !patch.trim().is_empty() {
+            files.extend(DiffFile::parse(patch).map_err(|e| anyhow::anyhow!("{e:?}"))?);
+            patches.push(patch.to_owned());
+        }
+        omitted.extend(
+            page["omittedFileStats"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|f| f["path"].as_str()),
+        );
+    }
+    let truncated = pages.iter().any(|p| p["truncated"] == true)
+        || pages.last().is_some_and(|p| p["nextCursor"].is_string());
+    let note = match (omitted.is_empty(), truncated) {
+        (false, _) => Some(format!("Too large to show: {}", omitted.join(", "))),
+        (true, true) => Some("The server truncated this diff.".to_owned()),
+        (true, false) => None,
+    };
+    Ok((patches, files, note))
 }
 
 /// Parses a `ThreadTurnDiff`: the thread folder's patch, then each tracked repository's.
@@ -693,6 +812,25 @@ mod tests {
         assert!(truncated);
         let (files, truncated) = parse_turn_diff(&json!({"diff": ""})).unwrap();
         assert!(files.is_empty() && !truncated);
+    }
+
+    #[test]
+    fn joins_pull_request_pages() {
+        let patch = |name: &str| {
+            format!(
+                "diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-a\n+b\n"
+            )
+        };
+        let pages = [
+            json!({"patch": patch("a.rs"), "truncated": false, "nextCursor": "c"}),
+            json!({"patch": patch("b.rs"), "truncated": false, "nextCursor": null,
+                   "omittedFileStats": [{"path": "big.lock", "additions": 1, "deletions": 0}]}),
+        ];
+        let (patches, files, note) = super::parse_pr_diff(&pages).unwrap();
+        assert_eq!((patches.len(), files.len()), (2, 2));
+        assert_eq!(note.as_deref(), Some("Too large to show: big.lock"));
+        let (_, _, note) = super::parse_pr_diff(&pages[..1]).unwrap();
+        assert_eq!(note.as_deref(), Some("The server truncated this diff."));
     }
 
     #[test]
