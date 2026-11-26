@@ -35,7 +35,9 @@ pub fn matching_rows(rows: &[Row<'_>], query: &str) -> Vec<usize> {
         .enumerate()
         .filter(|(_, row)| match row {
             Row::Item(item) => item_text(item).contains(&query),
-            Row::Group { items, .. } => items.iter().any(|i| item_text(i).contains(&query)),
+            Row::Group { items, .. } | Row::Fold { items, .. } => {
+                items.iter().any(|i| item_text(i).contains(&query))
+            }
         })
         .map(|(i, _)| i)
         .collect()
@@ -54,7 +56,7 @@ impl T3App {
     pub(crate) fn first_find(&mut self, cx: &mut Context<Self>) {
         self.find_index = 0;
         let query = self.find_input.read(cx).value().to_string();
-        let rows = crate::timeline::group_rows(self.thread.items());
+        let rows = self.rows();
         if let Some(&first) = matching_rows(&rows, &query).first() {
             self.transcript.scroll_to_reveal_item(first);
         }
@@ -64,7 +66,7 @@ impl T3App {
     /// Moves to the next (or previous) match and scrolls it into view.
     pub(crate) fn step_find(&mut self, forward: bool, cx: &mut Context<Self>) {
         let query = self.find_input.read(cx).value().to_string();
-        let rows = crate::timeline::group_rows(self.thread.items());
+        let rows = self.rows();
         let matches = matching_rows(&rows, &query);
         if matches.is_empty() {
             return cx.notify();

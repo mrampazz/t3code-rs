@@ -149,4 +149,10 @@ pub fn change(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
     c.info_foreground = t.info_foreground;
     c.window_border = t.border;
     c.overlay = black(0.5);
+    // Markdown tables: a bare header row, as the web's prose tables have.
+    c.table_head = black(0.);
+    c.table_head_foreground = t.foreground;
+    c.table_hover = black(0.);
+    // Text views copied the theme when `Theme::change` ran; give them these colors.
+    Theme::sync_base(cx);
 }

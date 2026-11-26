@@ -255,6 +255,7 @@ async fn e2e_chat_diff_and_model() {
                 crate::timeline::Row::Group { items, .. } => {
                     format!("[{}]", crate::timeline::summarize_group(items))
                 }
+                crate::timeline::Row::Fold { label, .. } => label.clone(),
             })
             .collect();
         println!("timeline rows: {summaries:?}");

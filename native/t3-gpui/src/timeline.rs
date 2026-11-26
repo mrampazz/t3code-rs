@@ -64,6 +64,7 @@ impl T3App {
                 self.resolve_images(&text, cx).into_owned(),
             ))
             .plugin(crate::thread_chips::ThreadChips(cx.weak_entity()))
+            .style(crate::ui::markdown_style(cx))
             .on_link_click(open_link)
             .into_any_element(),
             "proposed_plan" => {
@@ -135,6 +136,7 @@ impl T3App {
                             self.resolve_images(&crate::plans::body(&markdown), cx)
                                 .into_owned(),
                         ))
+                        .style(crate::ui::markdown_style(cx))
                         .on_link_click(open_link),
                     )
                     .into_any_element()
@@ -369,6 +371,63 @@ impl T3App {
             }
         }
         col.into_any_element()
+    }
+
+    /// A folded turn's header (web: `MessagesTimeline` work summary): label and chevron, the
+    /// answer's time, and a rule under it.
+    fn render_fold(
+        &self,
+        id: String,
+        label: &str,
+        time: &str,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = cx.theme().colors;
+        h_flex()
+            .id(SharedString::from(id.clone()))
+            .pb_2()
+            .border_b_1()
+            .border_color(c.border)
+            .cursor_pointer()
+            .text_color(c.foreground.opacity(0.85))
+            .hover(|s| s.text_color(c.foreground))
+            .child(
+                h_flex().flex_1().gap_1().child(label.to_owned()).child(
+                    crate::ui::icon(if open {
+                        "chevron-down"
+                    } else {
+                        "chevron-right"
+                    })
+                    .size(px(16.)),
+                ),
+            )
+            .when(open, |row| {
+                row.child(
+                    div()
+                        .text_sm()
+                        .text_color(c.muted_foreground)
+                        .child(time.to_owned()),
+                )
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.expanded.remove(&id) {
+                    this.expanded.insert(id.clone());
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// The thread's transcript rows as the list shows them.
+    pub(crate) fn rows(&self) -> Vec<Row<'_>> {
+        let active = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
+            .filter(|t| t.is_running())
+            .and_then(|t| t.active_run_id.as_deref());
+        timeline_rows(self.thread.items(), &self.expanded, active)
     }
 
     /// Agent questions: toggle options, then submit; composer text answers as a custom reply.
@@ -804,6 +863,14 @@ pub(crate) enum Row<'a> {
         id: String,
         items: Vec<&'a TurnItem>,
     },
+    /// A finished turn's work (web: "Worked for 5.3s"); when `open`, its rows follow it.
+    Fold {
+        id: String,
+        label: String,
+        time: String,
+        open: bool,
+        items: Vec<&'a TurnItem>,
+    },
 }
 
 pub(crate) fn group_rows<'a>(items: impl Iterator<Item = &'a TurnItem>) -> Vec<Row<'a>> {
@@ -833,9 +900,149 @@ impl Row<'_> {
     fn key(&self) -> &str {
         match self {
             Row::Item(item) => &item.id,
-            Row::Group { id, .. } => id,
+            Row::Group { id, .. } | Row::Fold { id, .. } => id,
         }
     }
+}
+
+/// Kinds a finished turn folds away before its answer (web: `deriveTurnFolds`); approvals,
+/// questions, plans, subagents and errors stay in view.
+fn foldable(item: &TurnItem) -> bool {
+    matches!(
+        item.kind.as_str(),
+        "reasoning"
+            | "command_execution"
+            | "file_change"
+            | "file_search"
+            | "web_search"
+            | "dynamic_tool"
+            | "assistant_message"
+            | "todo_list"
+            | "system_notice"
+    ) && item.str("status") != "failed"
+}
+
+/// `formatDuration` (`@t3tools/shared/orchestrationTiming`).
+pub(crate) fn format_duration(ms: i64) -> String {
+    if ms < 1_000 {
+        return format!("{}ms", ms.max(1));
+    }
+    if ms < 10_000 {
+        return format!("{}s", (ms as f64 / 100.).round() / 10.);
+    }
+    let total = (ms as f64 / 1_000.).round() as i64;
+    if total < 60 {
+        return format!("{total}s");
+    }
+    let (h, m, sec) = (total / 3_600, total % 3_600 / 60, total % 60);
+    let mut parts = Vec::new();
+    if h > 0 {
+        parts.push(format!("{h}h"));
+    }
+    if m > 0 {
+        parts.push(format!("{m}m"));
+    }
+    if sec > 0 || m > 0 {
+        parts.push(format!("{sec}s"));
+    }
+    parts.join(" ")
+}
+
+fn timestamp(item: &TurnItem, key: &str) -> Option<jiff::Timestamp> {
+    item.str(key).parse().ok()
+}
+
+/// The transcript's rows: work grouped as `group_rows` does, and each finished turn's work before
+/// its final answer folded into one "Worked for …" row that expands in place.
+pub(crate) fn timeline_rows<'a>(
+    items: impl Iterator<Item = &'a TurnItem>,
+    expanded: &std::collections::HashSet<String>,
+    active_run: Option<&str>,
+) -> Vec<Row<'a>> {
+    use std::collections::{HashMap, HashSet};
+    let items: Vec<&TurnItem> = items.collect();
+    let mut terminal: HashMap<&str, usize> = HashMap::new();
+    let mut prompt: HashMap<&str, &TurnItem> = HashMap::new();
+    let mut interrupted: HashSet<&str> = HashSet::new();
+    for (i, item) in items.iter().enumerate() {
+        let Some(run) = item.run_id.as_deref() else {
+            continue;
+        };
+        match item.kind.as_str() {
+            "assistant_message" => {
+                terminal.insert(run, i);
+            }
+            "user_message" => {
+                prompt.entry(run).or_insert(item);
+            }
+            "run_interrupt_request" | "run_interrupt_result" => {
+                interrupted.insert(run);
+            }
+            _ => {}
+        }
+    }
+    let folds = |i: usize, item: &TurnItem| {
+        item.run_id.as_deref().is_some_and(|run| {
+            Some(run) != active_run
+                && !interrupted.contains(run)
+                && terminal.get(run).is_some_and(|&end| i < end)
+                && foldable(item)
+        })
+    };
+    let mut rows = Vec::new();
+    let mut i = 0;
+    while i < items.len() {
+        let fold = folds(i, items[i]);
+        let start = i;
+        while i < items.len()
+            && folds(i, items[i]) == fold
+            && (!fold || items[i].run_id == items[start].run_id)
+        {
+            i += 1;
+        }
+        let chunk = &items[start..i];
+        if !fold {
+            rows.extend(group_rows(chunk.iter().copied()));
+            continue;
+        }
+        let run = chunk[0].run_id.as_deref().unwrap_or_default();
+        let answer = items[terminal[run]];
+        let started = prompt
+            .get(run)
+            .and_then(|p| timestamp(p, "startedAt").or_else(|| timestamp(p, "updatedAt")))
+            .or_else(|| timestamp(chunk[0], "startedAt"));
+        let ended = timestamp(answer, "completedAt").or_else(|| timestamp(answer, "updatedAt"));
+        let label = match started.zip(ended) {
+            Some((a, b)) => crate::i18n::tv(
+                "Worked for {duration}",
+                &[(
+                    "duration",
+                    &format_duration(b.duration_since(a).as_millis() as i64),
+                )],
+            ),
+            None => crate::i18n::t("Worked"),
+        };
+        let time = ended
+            .map(|t| {
+                t.to_zoned(jiff::tz::TimeZone::system())
+                    .strftime("%-I:%M %p")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let id = format!("fold:{}", chunk[0].id);
+        let open = expanded.contains(&id);
+        rows.push(Row::Fold {
+            id,
+            label,
+            time,
+            open,
+            items: chunk.to_vec(),
+        });
+        if open {
+            rows.extend(group_rows(chunk.iter().copied()));
+        }
+    }
+    rows
 }
 
 /// The list splice that turns rows `old` into `new`: the range between their common prefix and
@@ -862,10 +1069,7 @@ impl T3App {
     /// Tells the transcript list which rows changed. A new thread starts over, following the tail.
     /// Heights of rows in view are measured every layout, so only row identity is tracked here.
     pub(crate) fn sync_transcript(&mut self) {
-        let keys: Vec<String> = group_rows(self.thread.items())
-            .iter()
-            .map(|r| r.key().to_owned())
-            .collect();
+        let keys: Vec<String> = self.rows().iter().map(|r| r.key().to_owned()).collect();
         let (owner, old) = &mut self.transcript_rows;
         if *owner != self.selected {
             *owner = self.selected.clone();
@@ -888,7 +1092,7 @@ impl T3App {
     ) -> AnyElement {
         let theme = cx.theme().colors;
         let frame = div().w_full().max_w(px(768.)).px_4().py_2();
-        let rows = group_rows(self.thread.items());
+        let rows = self.rows();
         let Some(row) = rows.get(i) else {
             let thread = self
                 .selected
@@ -908,6 +1112,13 @@ impl T3App {
         let element = match row {
             Row::Item(item) => self.render_item(item, revert_turns.get(&item.id).copied(), cx),
             Row::Group { id, items } => self.render_group(id.clone(), items, cx),
+            Row::Fold {
+                id,
+                label,
+                time,
+                open,
+                ..
+            } => self.render_fold(id.clone(), label, time, *open, cx),
         };
         frame
             .when(matches.contains(&i), |d| {
@@ -1198,6 +1409,59 @@ mod tests {
             summarize_group(&thoughts.iter().collect::<Vec<_>>()),
             "Thought (×2)"
         );
+    }
+
+    #[test]
+    fn folds_a_finished_turn_before_its_answer() {
+        let mk = |id: &str, kind: &str, run: &str, at: &str| {
+            item(json!({"id": id, "ordinal": 1, "type": kind, "runId": run,
+                "startedAt": at, "updatedAt": at}))
+        };
+        let items = [
+            mk("u", "user_message", "r1", "2026-01-01T10:00:00Z"),
+            mk("t", "reasoning", "r1", "2026-01-01T10:00:01Z"),
+            mk("c", "command_execution", "r1", "2026-01-01T10:00:02Z"),
+            mk("m", "assistant_message", "r1", "2026-01-01T10:00:03Z"),
+            mk("a", "assistant_message", "r1", "2026-01-01T10:00:05.300Z"),
+            mk("u2", "user_message", "r2", "2026-01-01T10:01:00Z"),
+            mk("c2", "command_execution", "r2", "2026-01-01T10:01:01Z"),
+            mk("a2", "assistant_message", "r2", "2026-01-01T10:01:02Z"),
+        ];
+        let none = std::collections::HashSet::new();
+        let keys = |rows: &[Row]| rows.iter().map(|r| r.key().to_owned()).collect::<Vec<_>>();
+        let rows = super::timeline_rows(items.iter(), &none, Some("r2"));
+        assert_eq!(
+            keys(&rows),
+            ["u", "fold:t", "a", "u2", "c2", "a2"],
+            "a running turn stays open"
+        );
+        let Row::Fold {
+            label,
+            items: folded,
+            ..
+        } = &rows[1]
+        else {
+            panic!("expected a fold")
+        };
+        assert_eq!(label, "Worked for 5.3s");
+        assert_eq!(folded.len(), 3);
+        let open = std::collections::HashSet::from(["fold:t".to_owned()]);
+        let rows = super::timeline_rows(items.iter(), &open, None);
+        assert_eq!(
+            keys(&rows),
+            [
+                "u",
+                "fold:t",
+                "work-toggle:t",
+                "m",
+                "a",
+                "u2",
+                "fold:c2",
+                "a2"
+            ],
+            "an open fold shows its rows after it"
+        );
+        assert_eq!(super::format_duration(75_000), "1m 15s");
     }
 
     #[test]

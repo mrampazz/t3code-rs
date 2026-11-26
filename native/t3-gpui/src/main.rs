@@ -2406,7 +2406,7 @@ impl T3App {
         } else {
             Default::default()
         };
-        let rows = timeline::group_rows(self.thread.items());
+        let rows = self.rows();
         let find_query = self.find_input.read(cx).value().to_string();
         let matches = if self.find_open {
             find::matching_rows(&rows, &find_query)

@@ -1,5 +1,6 @@
 //! Small visual primitives shared across surfaces, styled like the web's (`components/ui`).
 
+use gpui_kit::component::text::TextViewStyle;
 use gpui_kit::component::{ActiveTheme, Icon, ThemeMode};
 use gpui_kit::*;
 
@@ -58,4 +59,31 @@ pub fn machine_icon(machine: Option<&str>) -> &'static str {
         Some("cloud") => "cloud",
         _ => "laptop",
     }
+}
+
+/// Chat markdown as the web's prose (`ChatMarkdown.tsx`): borderless code blocks on a raised
+/// surface, tables with only row rules and a bold header, and filled inline code.
+pub fn markdown_style(cx: &App) -> TextViewStyle {
+    let c = cx.theme().colors;
+    let clear = hsla(0., 0., 0., 0.);
+    TextViewStyle::default()
+        .code_block(StyleRefinement::default().border_0().rounded(px(12.)))
+        .table(
+            StyleRefinement::default()
+                .border_0()
+                .rounded_none()
+                .bg(clear),
+        )
+        .table_head(StyleRefinement::default().font_weight(FontWeight::SEMIBOLD))
+        .table_cell(
+            StyleRefinement::default()
+                .pl_0()
+                .pr_3()
+                .py(px(10.))
+                .border_color(clear),
+        )
+        .inline_code(HighlightStyle {
+            background_color: Some(c.foreground.opacity(0.08)),
+            ..Default::default()
+        })
 }
