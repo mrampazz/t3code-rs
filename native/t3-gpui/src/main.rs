@@ -168,6 +168,9 @@ struct T3App {
     /// The draft project's local branches (`vcs.listRefs`).
     draft_refs: Vec<serde_json::Value>,
     draft_base_ref: Option<String>,
+    /// A pull request checked out for the draft (`git.preparePullRequestThread`): branch,
+    /// worktreePath, url, host, repository, number. Linked to the thread on its first send.
+    draft_checkout: Option<serde_json::Value>,
     /// Prompt history position while Up/Down recall earlier messages.
     history_pos: Option<history::Position>,
     attachments: Vec<attachments::Attachment>,
@@ -412,6 +415,7 @@ impl T3App {
             draft_env_mode: "local".into(),
             draft_refs: Vec::new(),
             draft_base_ref: None,
+            draft_checkout: None,
             history_pos: None,
             attachments: Vec::new(),
             attachment_seq: 0,
@@ -553,6 +557,7 @@ impl T3App {
         self.thread = ThreadView::default();
         self.adding_project = false;
         self.draft_project = Some(project_id);
+        self.draft_checkout = None;
         self.draft_model = None;
         self.set_settings_open(false, cx);
         self.release_access();
@@ -592,6 +597,7 @@ impl T3App {
         let title: String = text.lines().next().unwrap_or("").chars().take(60).collect();
         let command_id = uuid::Uuid::new_v4().to_string();
         let workspace_strategy = self.draft_strategy();
+        let checkout = self.draft_checkout.take();
         let context =
             composer_menu::message_context(&text, &std::mem::take(&mut self.composer_contexts));
         let mut input = json!({
@@ -617,6 +623,15 @@ impl T3App {
             this.update(cx, |app, cx| match result {
                 Ok(Ok(launched)) => {
                     app.draft_project = None;
+                    if let (Some(id), Some(pr)) = (launched["threadId"].as_str(), &checkout) {
+                        app.dispatch_to(
+                            &env_key,
+                            json!({ "type": "thread.pull-request.link", "threadId": id,
+                                "host": pr["host"], "repository": pr["repository"],
+                                "number": pr["number"], "url": pr["url"], "source": "manual" }),
+                            cx,
+                        );
+                    }
                     if let Some(id) = launched["threadId"].as_str() {
                         app.select_thread(env_key.clone(), id.to_string(), cx);
                     }

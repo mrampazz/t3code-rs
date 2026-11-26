@@ -349,10 +349,153 @@ impl T3App {
     }
 }
 
+impl T3App {
+    /// The project a pull request checkout goes into: the draft's, else the selected thread's,
+    /// else the first one.
+    fn checkout_project(&self) -> Option<(String, String)> {
+        let shell = self.shell();
+        let id = self
+            .draft_project
+            .clone()
+            .or_else(|| {
+                let id = self.selected.as_ref()?;
+                shell
+                    .threads
+                    .iter()
+                    .find(|t| &t.id == id)
+                    .map(|t| t.project_id.clone())
+            })
+            .or_else(|| {
+                shell
+                    .projects
+                    .iter()
+                    .find(|p| !p.is_archived())
+                    .map(|p| p.id.clone())
+            })?;
+        let root = shell
+            .projects
+            .iter()
+            .find(|p| p.id == id)?
+            .workspace_root
+            .clone();
+        Some((id, root))
+    }
+
+    /// Checks a pull request out into a new thread (web: `PullRequestThreadDialog`): in the
+    /// project folder or a new worktree, then opens the project's draft on that branch.
+    pub(crate) fn open_checkout_pr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((project, cwd)) = self.checkout_project() else {
+            return;
+        };
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("https://github.com/owner/repo/pull/123  or  #123")
+        });
+        let app = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let choice = |id: &'static str, label: String, mode: &'static str| {
+                let (app, input, project, cwd) =
+                    (app.clone(), input.clone(), project.clone(), cwd.clone());
+                Button::new(id).label(label).on_click(move |_, window, cx| {
+                    let reference = input.read(cx).value().trim().to_string();
+                    if reference.is_empty() {
+                        return;
+                    }
+                    window.close_dialog(cx);
+                    app.update(cx, |this, cx| {
+                        this.checkout_pr(reference, mode, project.clone(), cwd.clone(), window, cx)
+                    })
+                    .ok();
+                })
+            };
+            dialog
+                .title(t("Check out pull request"))
+                .child(Input::new(&input))
+                .footer(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(choice("checkout-local", t("Local"), "local").outline())
+                        .child(
+                            choice("checkout-worktree", t("New worktree"), "worktree").primary(),
+                        ),
+                )
+        });
+    }
+
+    fn checkout_pr(
+        &mut self,
+        reference: String,
+        mode: &'static str,
+        project: String,
+        cwd: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(client), Some(env)) = (self.client(), self.env().map(|e| e.key.clone())) else {
+            return;
+        };
+        self.error = Some(t("Preparing pull request thread…").into());
+        cx.notify();
+        let window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let payload = json!({ "cwd": cwd, "reference": reference, "mode": mode });
+            let result =
+                on_tokio(async move { client.call("git.preparePullRequestThread", payload).await })
+                    .await;
+            cx.update_window(window_handle, |_, window, cx| {
+                this.update(cx, |app, cx| {
+                    app.error = None;
+                    let prepared = match result {
+                        Ok(Ok(prepared)) => prepared,
+                        Ok(Err(e)) => {
+                            app.error = Some(format!("Could not check out the pull request: {e}").into());
+                            return cx.notify();
+                        }
+                        Err(e) => {
+                            app.error = Some(e.to_string().into());
+                            return cx.notify();
+                        }
+                    };
+                    app.new_thread(env.clone(), project.clone(), window, cx);
+                    app.draft_checkout = Some(checkout_of(&prepared));
+                    if prepared["isOnPullRequestHead"] == false {
+                        app.error = Some(t("The worktree has local changes, so it is not on the pull request's latest commit.").into());
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// What the draft keeps from a `GitPreparePullRequestThreadResult`.
+pub fn checkout_of(prepared: &Value) -> Value {
+    let url = prepared["pullRequest"]["url"].as_str().unwrap_or("");
+    let (host, repository, number) = parse_pr_url(url).unwrap_or_default();
+    json!({ "branch": prepared["branch"], "worktreePath": prepared["worktreePath"], "url": url,
+        "host": host, "repository": repository,
+        "number": prepared["pullRequest"]["number"].as_u64().unwrap_or(number) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{chip_label, parse_pr_url, resolve_number};
     use serde_json::json;
+
+    #[test]
+    fn keeps_what_the_draft_needs_from_a_checkout() {
+        let prepared = json!({ "branch": "fix", "worktreePath": null, "isOnPullRequestHead": true,
+            "pullRequest": { "number": 9, "url": "https://github.com/o/r/pull/9" } });
+        assert_eq!(
+            super::checkout_of(&prepared),
+            json!({ "branch": "fix", "worktreePath": null, "url": "https://github.com/o/r/pull/9",
+                "host": "github.com", "repository": "o/r", "number": 9 })
+        );
+    }
 
     #[test]
     fn parses_pull_request_urls() {

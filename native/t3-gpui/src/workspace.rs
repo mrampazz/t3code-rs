@@ -35,6 +35,17 @@ pub fn strategy(mode: &str, base_ref: Option<&str>, start_from_origin: bool) -> 
     }
 }
 
+/// A prepared pull request checkout: its worktree when it made one, else the project folder,
+/// on the pull request's branch.
+pub fn checkout_strategy(checkout: &Value) -> Value {
+    match checkout["worktreePath"].as_str() {
+        Some(path) => {
+            json!({ "type": "existing_worktree", "worktreePath": path, "branch": checkout["branch"] })
+        }
+        None => json!({ "type": "root", "branch": checkout["branch"] }),
+    }
+}
+
 impl T3App {
     /// The draft's default mode: the project's, else the environment's setting, else local.
     pub(crate) fn default_env_mode(&self, project_id: &str) -> String {
@@ -82,6 +93,9 @@ impl T3App {
     }
 
     pub(crate) fn draft_strategy(&self) -> Value {
+        if let Some(checkout) = &self.draft_checkout {
+            return checkout_strategy(checkout);
+        }
         let from_origin = self.config().settings["newWorktreesStartFromOrigin"] == true;
         strategy(
             &self.draft_env_mode,
@@ -101,6 +115,30 @@ impl T3App {
             .filter_map(|r| r["name"].as_str().map(str::to_owned))
             .collect();
         let base = self.draft_base_ref.clone();
+        if let Some(checkout) = &self.draft_checkout {
+            return h_flex()
+                .gap_2()
+                .child(div().text_sm().child(format!(
+                    "PR #{} · {}{}",
+                    checkout["number"],
+                    checkout["branch"].as_str().unwrap_or(""),
+                    if checkout["worktreePath"].is_string() {
+                        " · worktree"
+                    } else {
+                        ""
+                    }
+                )))
+                .child(
+                    Button::new("checkout-clear")
+                        .xsmall()
+                        .ghost()
+                        .label("✕")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.draft_checkout = None;
+                            cx.notify();
+                        })),
+                );
+        }
         h_flex()
             .gap_2()
             .child(
@@ -291,6 +329,20 @@ impl T3App {
 mod tests {
     use super::{default_base_ref, strategy};
     use serde_json::json;
+
+    #[test]
+    fn launches_on_the_prepared_checkout() {
+        let local = json!({ "branch": "feature", "worktreePath": null });
+        assert_eq!(
+            super::checkout_strategy(&local),
+            json!({ "type": "root", "branch": "feature" })
+        );
+        let tree = json!({ "branch": "feature", "worktreePath": "/w" });
+        assert_eq!(
+            super::checkout_strategy(&tree),
+            json!({ "type": "existing_worktree", "worktreePath": "/w", "branch": "feature" })
+        );
+    }
 
     #[test]
     fn picks_the_default_branch_then_the_current_one() {

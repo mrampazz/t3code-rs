@@ -1869,6 +1869,98 @@ async fn e2e_pull_request_diff() {
 
 #[tokio::test]
 #[ignore]
+async fn e2e_prepare_pull_request_thread_shape() {
+    let env = connect().await;
+    let cwd = env
+        .shell
+        .until("project root", |s| {
+            s.projects
+                .iter()
+                .find(|p| p.id == env.project_id)
+                .map(|p| p.workspace_root.clone())
+        })
+        .await;
+    // The new project has no remote, so the server refuses; a decode failure would name the schema.
+    let e = env
+        .client
+        .call(
+            "git.preparePullRequestThread",
+            json!({ "cwd": cwd, "reference": "#1", "mode": "local" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    println!("{e}");
+    assert!(!e.contains("Schema") && !e.contains("Expected"), "{e}");
+}
+
+/// Needs `T3_PR_REPO`: a throwaway GitHub clone whose PR #1 can be checked out.
+#[tokio::test]
+#[ignore]
+async fn e2e_checkout_pull_request_thread() {
+    let repo = std::env::var("T3_PR_REPO").expect("set T3_PR_REPO to a throwaway clone");
+    let env = connect().await;
+    let project_id = uuid::Uuid::new_v4().to_string();
+    env.client
+        .call(
+            "projects.mutate",
+            json!({ "type": "project.create", "commandId": uuid::Uuid::new_v4().to_string(),
+                "projectId": project_id, "title": "pr", "workspaceRoot": repo,
+                "createWorkspaceRootIfMissing": false, "defaultModelSelection": null }),
+        )
+        .await
+        .unwrap();
+    let prepared = env
+        .client
+        .call(
+            "git.preparePullRequestThread",
+            json!({ "cwd": repo, "reference": "#1", "mode": "worktree" }),
+        )
+        .await
+        .unwrap();
+    let checkout = crate::pull_requests::checkout_of(&prepared);
+    println!("{checkout}");
+    assert!(checkout["worktreePath"].is_string(), "{prepared}");
+    let id = uuid::Uuid::new_v4().to_string();
+    let launched = env
+        .client
+        .call(
+            "orchestration.launchThread",
+            json!({ "commandId": id, "creationSource": "web", "projectId": project_id,
+                "title": "pr", "generateTitle": false,
+                "modelSelection": { "instanceId": REPLAY, "model": "multi-turn" },
+                "runtimeMode": "full-access", "interactionMode": "default",
+                "workspaceStrategy": crate::workspace::checkout_strategy(&checkout),
+                "initialMessage": { "messageId": id, "text": "hi", "attachments": [] } }),
+        )
+        .await
+        .unwrap();
+    let thread_id = launched["threadId"].as_str().unwrap().to_owned();
+    dispatch(
+        &env.client,
+        json!({ "type": "thread.pull-request.link", "threadId": thread_id,
+            "host": checkout["host"], "repository": checkout["repository"],
+            "number": checkout["number"], "url": checkout["url"], "source": "manual" }),
+    )
+    .await;
+    let (worktree, linked) = env
+        .shell
+        .until("thread on the PR worktree, linked", |s| {
+            let t = s.threads.iter().find(|t| t.id == thread_id)?;
+            (!t.pull_requests.is_empty()).then(|| {
+                (
+                    t.worktree_path.clone(),
+                    t.pull_requests[0]["number"].clone(),
+                )
+            })
+        })
+        .await;
+    assert_eq!(worktree.as_deref(), checkout["worktreePath"].as_str());
+    assert_eq!(linked, json!(1));
+}
+
+#[tokio::test]
+#[ignore]
 async fn e2e_source_control_discovery() {
     let env = connect().await;
     let found = env

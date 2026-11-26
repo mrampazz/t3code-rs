@@ -32,6 +32,7 @@ pub(crate) enum PaletteAction {
     Settings,
     AddProject,
     LinkPr,
+    CheckoutPr,
     OpenInEditor,
     RunScript(String),
     /// A keybinding command (`run_command`).
@@ -155,6 +156,9 @@ impl T3App {
                 ));
             }
         }
+        if !self.shell().projects.is_empty() {
+            commands.push((t("Check out pull request"), PaletteAction::CheckoutPr));
+        }
         commands.push((t("Add project"), PaletteAction::AddProject));
         commands.push((
             t("Change appearance"),
@@ -195,6 +199,7 @@ impl T3App {
             PaletteAction::Settings => self.toggle_settings(cx),
             PaletteAction::AddProject => self.open_add_project(window, cx),
             PaletteAction::LinkPr => self.open_link_pr(window, cx),
+            PaletteAction::CheckoutPr => self.open_checkout_pr(window, cx),
             PaletteAction::OpenInEditor => self.open_in_editor(None, cx),
             PaletteAction::RunScript(id) => {
                 self.run_script(&id, cx);
