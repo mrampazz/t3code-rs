@@ -1554,12 +1554,21 @@ impl T3App {
                 .child(self.reasoning_trace(&format!("{}-trace", items[0].id), &text, cx))
                 .into_any_element();
         }
+        // The web caps compact rows at 18rem and grows the cap by what open rows add; an open
+        // row here lifts the cap instead of measuring it.
+        let capped = !visible.iter().any(|i| self.expanded.contains(&i.id));
+        let rows_id = SharedString::from(format!("{}-rows", items[0].id));
         v_flex()
             .child(header)
-            .children(
-                visible
-                    .into_iter()
-                    .map(|item| self.render_work_row(item, false, true, cx)),
+            .child(
+                div()
+                    .id(rows_id)
+                    .when(capped, |d| d.max_h(px(288.)).overflow_y_scroll())
+                    .children(
+                        visible
+                            .into_iter()
+                            .map(|item| self.render_work_row(item, false, true, cx)),
+                    ),
             )
             .into_any_element()
     }
