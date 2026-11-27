@@ -41,7 +41,7 @@ pub fn matching_rows(rows: &[Row<'_>], query: &str) -> Vec<usize> {
             Row::Thinking { group, .. } => group
                 .as_ref()
                 .is_some_and(|(_, items)| items.iter().any(|i| item_text(i).contains(&query))),
-            Row::Working { .. } | Row::Images { .. } => false,
+            Row::Working { .. } | Row::Images { .. } | Row::Meta { .. } => false,
         })
         .map(|(i, _)| i)
         .collect()

@@ -1,6 +1,7 @@
 mod access;
 mod attachments;
 mod auth;
+mod code_block;
 mod command_label;
 mod composer;
 mod composer_menu;
@@ -9,6 +10,7 @@ mod dpop;
 mod drag;
 mod editors;
 mod env;
+mod file_icons;
 mod files;
 mod find;
 mod git;
@@ -24,6 +26,7 @@ mod local_server;
 mod media;
 mod menus;
 mod mermaid;
+mod messages;
 mod model;
 mod notify;
 mod palette;
@@ -2441,7 +2444,8 @@ impl T3App {
             .iter()
             .find(|p| thread.model_selection["instanceId"] == p.instance_id.as_str())
             .is_none_or(|p| p.supports_conversation_rollback != Some(false));
-        let revert_turns = if rollback_supported && !thread.is_running() {
+        // While a turn runs the buttons show disabled (web: `isWorking`).
+        let revert_turns = if rollback_supported {
             self.thread.revert_turns(thread.active_run_id.as_deref())
         } else {
             Default::default()
@@ -2458,11 +2462,13 @@ impl T3App {
             .copied();
         let match_count = matches.len();
         // The list lays out only the rows in view; it asks for each by index.
+        // Read before the list lays out: it holds its state while asking for rows.
+        let lane = self.transcript.viewport_bounds().size.width;
         let render_row = cx.processor(move |this, i: usize, _, cx| {
             h_flex()
                 .w_full()
                 .justify_center()
-                .child(this.render_transcript_row(i, &revert_turns, &matches, current, cx))
+                .child(this.render_transcript_row(i, &revert_turns, &matches, current, lane, cx))
                 .into_any_element()
         });
         v_flex()

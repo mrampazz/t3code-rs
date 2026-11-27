@@ -14,6 +14,7 @@
         // Run by hand to regenerate the native client's T3 tool table and provider logos.
         "native/t3-gpui/scripts/t3-tools.ts",
         "native/t3-gpui/scripts/provider-logos.ts",
+        "native/t3-gpui/scripts/file-icons.ts",
         // CodeRabbit loads its configuration by filename.
         ".coderabbit.config.ts",
         ".github/scripts/thread-transfer-report.cjs",

@@ -191,7 +191,12 @@ impl T3App {
                 };
                 if let Some(script) = self.script_launch.take() {
                     // A leading space keeps the command out of shell history (`projectScriptTerminalInput`).
-                    let input = format!(" {}\r", script["command"].as_str().unwrap_or(""));
+                    let space = if script["keepInHistory"] == true {
+                        ""
+                    } else {
+                        " "
+                    };
+                    let input = format!("{space}{}\r", script["command"].as_str().unwrap_or(""));
                     self.terminal_write(input, false, cx);
                 }
             }

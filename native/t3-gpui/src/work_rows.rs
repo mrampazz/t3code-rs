@@ -1521,7 +1521,7 @@ fn mono(cx: &App) -> SharedString {
 }
 
 /// A code fence that never closes early, whatever backticks the code holds.
-fn fenced(lang: &str, code: &str) -> String {
+pub(crate) fn fenced(lang: &str, code: &str) -> String {
     let mut longest = 0;
     let mut run = 0;
     for c in code.chars() {
@@ -1684,7 +1684,7 @@ impl T3App {
                 .find(|i| i.kind == "subagent" && i.str("childThreadId") == child)
         {
             let subagent = subagent.clone();
-            return self.render_item(&subagent, None, cx);
+            return self.render_item(&subagent, cx);
         }
         let c = cx.theme().colors;
         let tokens = crate::web_theme::current(cx);

@@ -8,62 +8,22 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::T3App;
+use crate::messages::UserRow;
 use crate::model::TurnItem;
 
-fn open_link(url: &SharedString, _: &ClickEvent, window: &mut Window, cx: &mut App) {
+pub(crate) fn open_link(url: &SharedString, _: &ClickEvent, window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(crate::editors::OpenLink { url: url.clone() }), cx);
 }
 
 impl T3App {
-    pub(crate) fn render_item(
-        &self,
-        item: &TurnItem,
-        revert_turn: Option<u64>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(crate) fn render_item(&self, item: &TurnItem, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors;
         let mono = cx.theme().mono_font_family.clone();
         let expanded = self.expanded.contains(&item.id);
-        let text = item.str("text").to_string();
         match item.kind.as_str() {
             _ if crate::work_rows::is_work_row(item) => self.render_work_row(item, true, false, cx),
-            "user_message" => h_flex()
-                .group("user-row")
-                .justify_end()
-                .gap_2()
-                .when_some(revert_turn, |row, turn| {
-                    let text = text.clone();
-                    row.child(
-                        Button::new(SharedString::from(format!("revert-{}", item.id)))
-                            .xsmall()
-                            .ghost()
-                            .label("↺")
-                            .tooltip(t("Revert to here"))
-                            .invisible()
-                            .group_hover("user-row", |s| s.visible())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.confirm_revert(turn, text.clone(), window, cx)
-                            })),
-                    )
-                })
-                .child(
-                    div()
-                        .max_w(relative(0.8))
-                        .px_3()
-                        .py_2()
-                        .rounded_lg()
-                        .bg(c.secondary)
-                        .child(text),
-                )
-                .into_any_element(),
-            "assistant_message" => crate::mermaid::with_mermaid(TextView::markdown(
-                SharedString::from(item.id.clone()),
-                self.resolve_images(&text, cx).into_owned(),
-            ))
-            .plugin(crate::thread_chips::ThreadChips(cx.weak_entity()))
-            .style(crate::ui::markdown_style(cx))
-            .on_link_click(open_link)
-            .into_any_element(),
+            "user_message" => self.render_user_message(item, UserRow::default(), cx),
+            "assistant_message" => self.render_assistant_message(item, None, cx),
             "proposed_plan" => {
                 let markdown = item.str("markdown").to_string();
                 let (copy, save) = (markdown.clone(), markdown.clone());
@@ -128,11 +88,16 @@ impl T3App {
                             ),
                     )
                     .child(
-                        crate::mermaid::with_mermaid(TextView::markdown(
-                            SharedString::from(item.id.clone()),
-                            self.resolve_images(&crate::plans::body(&markdown), cx)
-                                .into_owned(),
-                        ))
+                        crate::code_block::with_code_blocks(
+                            crate::mermaid::with_mermaid(TextView::markdown(
+                                SharedString::from(item.id.clone()),
+                                self.resolve_images(&crate::plans::body(&markdown), cx)
+                                    .into_owned(),
+                            )),
+                            item.id.clone().into(),
+                            cx.weak_entity(),
+                            false,
+                        )
                         .style(crate::ui::markdown_style(cx))
                         .on_link_click(open_link),
                     )
@@ -761,6 +726,12 @@ pub(crate) enum Row<'a> {
         id: String,
         paths: Vec<String>,
     },
+    /// A turn's last answer's copy and time, moved below the work that followed it
+    /// (web: `assistant-meta`).
+    Meta {
+        id: String,
+        item: &'a TurnItem,
+    },
 }
 
 /// The running turn as the timeline needs it (`isWorking`, the unsettled run).
@@ -790,7 +761,8 @@ impl Row<'_> {
             Row::Group { id, .. }
             | Row::Fold { id, .. }
             | Row::Live { id, .. }
-            | Row::Images { id, .. } => id,
+            | Row::Images { id, .. }
+            | Row::Meta { id, .. } => id,
             Row::Working { .. } => "working-indicator-row",
             Row::Thinking { .. } => LIVE_ACTIVITY_ROW_ID,
         }
@@ -801,7 +773,7 @@ impl Row<'_> {
         match self {
             Row::Item(item) => crate::work_rows::is_work_row(item),
             Row::Group { .. } | Row::Live { .. } | Row::Thinking { .. } => true,
-            Row::Fold { .. } | Row::Working { .. } | Row::Images { .. } => false,
+            Row::Fold { .. } | Row::Working { .. } | Row::Images { .. } | Row::Meta { .. } => false,
         }
     }
 }
@@ -875,7 +847,7 @@ fn timestamp_format() -> String {
 /// Formats `at` in the local zone from an ICU skeleton (`jmm`, `Md`, `yMd`) the way the
 /// system's locale lays it out, as the web's `Intl.DateTimeFormat` does.
 #[cfg(target_os = "macos")]
-fn system_format(at: jiff::Timestamp, skeleton: &str) -> String {
+pub(crate) fn system_format(at: jiff::Timestamp, skeleton: &str) -> String {
     use objc2_foundation::{NSDate, NSDateFormatter, NSString};
     let formatter = NSDateFormatter::new();
     formatter.setLocalizedDateFormatFromTemplate(&NSString::from_str(skeleton));
@@ -884,7 +856,7 @@ fn system_format(at: jiff::Timestamp, skeleton: &str) -> String {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn system_format(at: jiff::Timestamp, skeleton: &str) -> String {
+pub(crate) fn system_format(at: jiff::Timestamp, skeleton: &str) -> String {
     let local = at.to_zoned(jiff::tz::TimeZone::system());
     let pattern = match skeleton {
         "Hmm" => "%H:%M",
@@ -900,12 +872,7 @@ fn system_format(at: jiff::Timestamp, skeleton: &str) -> String {
 pub(crate) fn day_aware_time(at: jiff::Timestamp) -> String {
     let tz = jiff::tz::TimeZone::system();
     let (local, today) = (at.to_zoned(tz.clone()), jiff::Timestamp::now().to_zoned(tz));
-    let skeleton = match timestamp_format().as_str() {
-        "12-hour" => "hmm",
-        "24-hour" => "Hmm",
-        _ => "jmm",
-    };
-    let time = system_format(at, skeleton);
+    let time = time_of_day(at);
     let days = (today.date() - local.date()).get_days();
     match days {
         ..=0 => time,
@@ -913,6 +880,16 @@ pub(crate) fn day_aware_time(at: jiff::Timestamp) -> String {
         _ if local.year() == today.year() => format!("{} {time}", system_format(at, "Md")),
         _ => format!("{} {time}", system_format(at, "yMd")),
     }
+}
+
+/// `formatTime`: the time of day in the `timestampFormat` hour cycle.
+pub(crate) fn time_of_day(at: jiff::Timestamp) -> String {
+    let skeleton = match timestamp_format().as_str() {
+        "12-hour" => "hmm",
+        "24-hour" => "Hmm",
+        _ => "jmm",
+    };
+    system_format(at, skeleton)
 }
 
 /// `formatUpcomingTimestamp`: a time today, "tomorrow at …", else the date and time.
@@ -1179,8 +1156,9 @@ pub(crate) fn timeline_rows<'a>(
         }
     }
     flush(&mut run, &mut rows);
+    let answers: HashSet<&str> = terminal.values().map(|&i| items[i].id.as_str()).collect();
     let Some(live) = live else {
-        return rows;
+        return attach_trailing_meta(rows, &answers, active_run);
     };
     if !working_pushed {
         rows.push(Row::Working {
@@ -1229,7 +1207,59 @@ pub(crate) fn timeline_rows<'a>(
             rows.push(Row::Images { id, paths });
         }
     }
-    rows
+    attach_trailing_meta(rows, &answers, active_run)
+}
+
+/// `attachTrailingToolGroupsToAssistant`: when a settled turn's last answer is followed by more
+/// of its run's work, its meta row moves below that work and stays visible.
+fn attach_trailing_meta<'a>(
+    rows: Vec<Row<'a>>,
+    answers: &std::collections::HashSet<&str>,
+    active_run: Option<&str>,
+) -> Vec<Row<'a>> {
+    let mut after = std::collections::HashMap::new();
+    for (at, row) in rows.iter().enumerate() {
+        let Row::Item(answer) = row else { continue };
+        let Some(run) = answer.run_id.as_deref() else {
+            continue;
+        };
+        if answer.kind != "assistant_message"
+            || !answers.contains(answer.id.as_str())
+            || Some(run) == active_run
+        {
+            continue;
+        }
+        let ours = |i: &TurnItem| i.run_id.as_deref() == Some(run);
+        let mut last = None;
+        for (j, next) in rows.iter().enumerate().skip(at + 1) {
+            match next {
+                Row::Item(i) if matches!(i.kind.as_str(), "user_message" | "assistant_message") => {
+                    break;
+                }
+                Row::Group { items, .. } if items.iter().any(|i| ours(i)) => last = Some(j),
+                Row::Item(i) if is_work(i) && ours(i) => last = Some(j),
+                Row::Images { .. } if last.is_some() => last = Some(j),
+                _ => {}
+            }
+        }
+        if let Some(j) = last {
+            after.insert(j, *answer);
+        }
+    }
+    if after.is_empty() {
+        return rows;
+    }
+    let mut out = Vec::with_capacity(rows.len() + after.len());
+    for (j, row) in rows.into_iter().enumerate() {
+        out.push(row);
+        if let Some(item) = after.remove(&j) {
+            out.push(Row::Meta {
+                id: format!("assistant-meta:{}", item.id),
+                item,
+            });
+        }
+    }
+    out
 }
 
 fn inner_run_continues(run: &[&TurnItem], item: &TurnItem) -> bool {
@@ -1279,6 +1309,7 @@ impl T3App {
         revert_turns: &std::collections::HashMap<String, u64>,
         matches: &[usize],
         current: Option<usize>,
+        viewport: Pixels,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().colors;
@@ -1296,30 +1327,66 @@ impl T3App {
             } => self.expanded.contains(id),
             _ => false,
         };
-        let bottom = match row {
-            _ if row.is_work_log() && expanded_group => 4.,
-            _ if row.is_work_log() && next.is_some_and(Row::is_work_log) => 0.,
-            _ if row.is_work_log() => 8.,
-            Row::Fold { .. } | Row::Working { .. } => 6.,
-            // `showAssistantMeta`: a turn's last answer, once its run settled, gets more room.
+        // `showAssistantMeta`: a settled turn's last answer carries its copy and time, below it
+        // or, after trailing work, in a row of its own.
+        let answer_meta = match row {
             Row::Item(item) if item.kind == "assistant_message" => {
                 let settled = item.run_id.as_deref() != self.live_run();
                 let last = !rows[i + 1..].iter().any(|r| {
                     matches!(r, Row::Item(next) if next.kind == "assistant_message"
                         && next.run_id == item.run_id)
                 });
-                if settled && last { 16. } else { 8. }
+                let moved = rows[i + 1..]
+                    .iter()
+                    .any(|r| matches!(r, Row::Meta { item: m, .. } if m.id == item.id));
+                (settled && last && !moved).then_some(false)
             }
+            _ => None,
+        };
+        let is_user = |r: &Row| matches!(r, Row::Item(u) if u.kind == "user_message");
+        let bottom = match row {
+            _ if row.is_work_log() && expanded_group => 4.,
+            _ if row.is_work_log() && next.is_some_and(Row::is_work_log) => 0.,
+            _ if row.is_work_log() => 8.,
+            Row::Fold { .. } | Row::Working { .. } => 6.,
+            Row::Item(item) if item.kind == "assistant_message" => {
+                if answer_meta.is_some() {
+                    16.
+                } else {
+                    8.
+                }
+            }
+            Row::Meta { .. } => 16.,
             Row::Item(item) if item.kind == "user_message" => {
-                let grouped =
-                    next.is_some_and(|n| matches!(n, Row::Item(u) if u.kind == "user_message"));
-                if grouped { 4. } else { 16. }
+                if next.is_some_and(is_user) {
+                    4.
+                } else {
+                    16.
+                }
             }
             _ => 8.,
         };
         let frame = div().w_full().max_w(px(768.)).px_4().pb(px(bottom));
         let element = match row {
-            Row::Item(item) => self.render_item(item, revert_turns.get(&item.id).copied(), cx),
+            Row::Item(item) if item.kind == "user_message" => {
+                // The lane beside a joined bubble fits its actions from 37rem (`@min-[37rem]`).
+                let lane = viewport.min(px(768.)) - px(32.);
+                let user = crate::messages::UserRow {
+                    revert: revert_turns.get(&item.id).copied(),
+                    revert_disabled: self.live_run().is_some(),
+                    grouped_with_previous: i > 0 && rows.get(i - 1).is_some_and(is_user),
+                    grouped_with_next: next.is_some_and(is_user),
+                    wide: lane >= px(592.),
+                };
+                self.render_user_message(item, user, cx)
+            }
+            Row::Item(item) if item.kind == "assistant_message" => {
+                self.render_assistant_message(item, answer_meta, cx)
+            }
+            Row::Item(item) => self.render_item(item, cx),
+            Row::Meta { id, item } => self
+                .render_assistant_meta(item, true, &SharedString::from(id.clone()), cx)
+                .into_any_element(),
             Row::Group { id, items } => self.render_work_group(id.clone(), items, cx),
             Row::Fold {
                 id,
@@ -1523,6 +1590,28 @@ mod tests {
         assert_eq!(
             summarize_group(&thoughts.iter().collect::<Vec<_>>()),
             "Thought (×2)"
+        );
+    }
+
+    #[test]
+    fn moves_the_answer_meta_below_trailing_work() {
+        let mk = |id: &str, kind: &str, run: &str| {
+            item(json!({"id": id, "ordinal": 1, "type": kind, "runId": run, "status": "completed"}))
+        };
+        let items = [
+            mk("u", "user_message", "r1"),
+            mk("a", "assistant_message", "r1"),
+            mk("c", "command_execution", "r1"),
+            mk("d", "command_execution", "r1"),
+            mk("u2", "user_message", "r2"),
+            mk("a2", "assistant_message", "r2"),
+        ];
+        let rows = super::timeline_rows(items.iter(), &Default::default(), None);
+        let keys: Vec<&str> = rows.iter().map(|r| r.key()).collect();
+        assert_eq!(
+            keys,
+            ["u", "a", "work-toggle:c", "assistant-meta:a", "u2", "a2"],
+            "work after a settled answer takes its meta; an answer last in its turn keeps it"
         );
     }
 

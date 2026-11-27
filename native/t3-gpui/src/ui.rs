@@ -2,6 +2,7 @@
 
 use gpui_kit::component::text::TextViewStyle;
 use gpui_kit::component::{ActiveTheme, Icon, ThemeMode};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 /// A Lucide icon by its web name (`lucide-react`'s kebab-case file name).
@@ -43,6 +44,149 @@ pub fn icon_button(id: impl Into<ElementId>, name: &str, cx: &App) -> Stateful<D
         .text_color(c.muted_foreground)
         .hover(|s| s.bg(c.accent).text_color(c.foreground))
         .child(icon(name).size(px(16.)))
+}
+
+/// A button's look (web: `Button variant`).
+#[derive(Clone, Copy, PartialEq)]
+pub enum Variant {
+    /// `ghost`: the icon stays muted on hover.
+    Ghost,
+    /// `ghost-muted`: the icon brightens on hover.
+    GhostMuted,
+    /// `secondary`: a filled, pressed-looking toggle.
+    Secondary,
+}
+
+/// An extra-small button around a 12px icon (web: `Button size="xs"` or `"icon-xs"`, 24px tall).
+pub fn xs_button(
+    id: impl Into<ElementId>,
+    icon_name: &str,
+    square: bool,
+    variant: Variant,
+    cx: &App,
+) -> Stateful<Div> {
+    let c = cx.theme().colors;
+    div()
+        .id(id)
+        .h(px(24.))
+        .when(square, |b| b.w(px(24.)))
+        .when(!square, |b| b.px(px(8.)))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .cursor_pointer()
+        .map(|b| match variant {
+            Variant::Secondary => b
+                .bg(c.secondary)
+                .text_color(c.secondary_foreground)
+                .hover(|s| s.bg(c.secondary.opacity(0.9))),
+            Variant::Ghost => b.text_color(c.muted_foreground).hover(|s| s.bg(c.accent)),
+            Variant::GhostMuted => b
+                .text_color(c.muted_foreground)
+                .hover(|s| s.bg(c.accent).text_color(c.foreground)),
+        })
+        .child(icon(icon_name).size(px(12.)))
+}
+
+/// A tooltip with `label`, as the web's `TooltipPopup`.
+pub fn tooltip(label: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    let label = label.into();
+    move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label.clone()).build(window, cx)
+}
+
+/// Copies `text` and shows a check for a second (web: `MessageCopyButton`, the code block's copy).
+#[derive(IntoElement)]
+pub struct CopyButton {
+    id: ElementId,
+    text: String,
+    label: SharedString,
+    icon: &'static str,
+    square: bool,
+    /// The check takes the primary color, as `MessageCopyButton` draws it.
+    primary_check: bool,
+    timeout: std::time::Duration,
+}
+
+impl CopyButton {
+    /// `MessageCopyButton`: an xs ghost-muted button labelled "Copy message".
+    pub fn message(id: impl Into<ElementId>, text: String) -> Self {
+        Self {
+            id: id.into(),
+            text,
+            label: crate::i18n::t("Copy message").into(),
+            icon: "copy",
+            square: false,
+            primary_check: true,
+            timeout: std::time::Duration::from_millis(1000),
+        }
+    }
+
+    pub fn label(mut self, label: String) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    pub fn icon(mut self, icon: &'static str) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    /// The code block's `icon-xs` copy: a plain check, held a little longer.
+    pub fn code(id: impl Into<ElementId>, text: String) -> Self {
+        Self {
+            id: id.into(),
+            text,
+            label: crate::i18n::t("Copy code").into(),
+            icon: "copy",
+            square: true,
+            primary_check: false,
+            timeout: std::time::Duration::from_millis(1200),
+        }
+    }
+}
+
+impl RenderOnce for CopyButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let copied = window.use_keyed_state(self.id.clone(), cx, |_, _| false);
+        let is_copied = *copied.read(cx);
+        let label = if is_copied && !self.primary_check {
+            crate::i18n::t("Copied").into()
+        } else {
+            self.label
+        };
+        let primary = cx.theme().colors.primary;
+        let (text, timeout) = (self.text, self.timeout);
+        xs_button(
+            self.id,
+            if is_copied { "check" } else { self.icon },
+            self.square,
+            Variant::GhostMuted,
+            cx,
+        )
+        .when(is_copied && self.primary_check, |b| b.text_color(primary))
+        .tooltip(tooltip(label))
+        .on_click(move |_, _, cx| {
+            if *copied.read(cx) {
+                return;
+            }
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            copied.update(cx, |c, cx| {
+                *c = true;
+                cx.notify();
+            });
+            let copied = copied.clone();
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(timeout).await;
+                copied.update(cx, |c, cx| {
+                    *c = false;
+                    cx.notify();
+                });
+            })
+            .detach();
+        })
+    }
 }
 
 /// A project's monogram tile (web: `ProjectMonogram`): two letters on a 14% tint of its color.

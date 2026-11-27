@@ -181,6 +181,13 @@ impl T3App {
         true
     }
 
+    /// Runs a chat code block's command in a new terminal (web: `runShellCommand`), kept in the
+    /// shell's history unlike a project action.
+    pub(crate) fn run_shell_command(&mut self, command: String, cx: &mut Context<Self>) {
+        self.script_launch = Some(json!({ "command": command, "keepInHistory": true }));
+        self.new_terminal(cx);
+    }
+
     fn save_scripts(&mut self, scripts: Vec<Value>, cx: &mut Context<Self>) {
         let Some((project, _)) = self.project_scripts() else {
             return;
