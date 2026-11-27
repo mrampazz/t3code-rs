@@ -189,6 +189,50 @@ impl RenderOnce for CopyButton {
     }
 }
 
+/// A context chip's accent (`--context-chip-<kind>`), as the web's palette solves it for contrast
+/// on each theme's surfaces.
+pub fn chip_ink(kind: &str, cx: &App) -> Hsla {
+    let dark = cx.theme().mode == ThemeMode::Dark;
+    let (d, l) = match kind {
+        "thread" => (0x009e97, 0x006f6b),
+        "file" => (0x0f96d3, 0x006a99),
+        "citation" => (0x4e8cee, 0x2361be),
+        _ => (0x0d9ab4, 0x006d80),
+    };
+    rgb(if dark { d } else { l }).into()
+}
+
+/// An inline context chip (web: `ContextChip` + `ContextChipLabel`): icon and medium label in the
+/// kind's ink, the label underlined on hover.
+pub fn context_chip(
+    id: impl Into<ElementId>,
+    ink: Hsla,
+    icon: impl IntoElement,
+    label: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let id = id.into();
+    let group = SharedString::from(format!("chip-{id:?}"));
+    div()
+        .id(id)
+        .group(group.clone())
+        .flex()
+        .items_center()
+        .max_w_full()
+        .gap(px(3.))
+        .rounded_sm()
+        .cursor_pointer()
+        .text_color(ink)
+        .font_weight(FontWeight::MEDIUM)
+        .child(icon)
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .group_hover(group, |s| s.underline())
+                .child(label.into()),
+        )
+}
+
 /// A project's monogram tile (web: `ProjectMonogram`): two letters on a 14% tint of its color.
 pub fn project_mark(name: &str, size: Pixels, cx: &App) -> Div {
     let (dark, light) = crate::sidebar::PROJECT_COLORS[crate::sidebar::project_color_index(name)];

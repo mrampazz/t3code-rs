@@ -179,7 +179,7 @@ impl T3App {
     }
 
     /// Opens a file as a tab (web: `openFile`), jumping to `line` when given.
-    fn show_file(
+    pub(crate) fn show_file(
         &mut self,
         path: String,
         line: Option<u32>,

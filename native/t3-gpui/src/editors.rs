@@ -427,6 +427,40 @@ impl T3App {
     }
 
     /// Opens a chat link: web pages in the browser, files in the preferred editor at their line.
+    /// "Reveal in Finder" and its kin, when this machine runs the host and the host can reveal.
+    pub(crate) fn reveal_label(&self) -> Option<String> {
+        if !matches!(self.open_mode(), OpenMode::Local) {
+            return None;
+        }
+        Some(match self.config().reveal_kind.as_deref()? {
+            "finder" | "darwin" => t("Reveal in Finder"),
+            "file-explorer" | "windows" => t("Reveal in File Explorer"),
+            _ => t("Reveal in Files"),
+        })
+    }
+
+    /// Shows `path` in the host's file manager (`openInEditor` with `editor: "file-manager"`).
+    pub(crate) fn reveal_in_file_manager(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(client) = self.client() else { return };
+        let payload = json!({ "cwd": path, "editor": "file-manager", "reveal": true });
+        cx.spawn(async move |this, cx| {
+            let result =
+                on_tokio(async move { client.call("shell.openInEditor", payload).await }).await;
+            if let Some(e) = match result {
+                Ok(Ok(_)) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(e) => Some(e.to_string()),
+            } {
+                this.update(cx, |app, cx| {
+                    app.error = Some(format!("{}: {e}", t("Unable to reveal file")).into());
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn open_link(&mut self, href: &str, cx: &mut Context<Self>) {
         if !thread_link_ids(href).is_empty() {
             return match self.find_thread_link(href) {

@@ -255,6 +255,7 @@ impl T3App {
             false,
         )
         .plugin(crate::thread_chips::ThreadChips(cx.weak_entity()))
+        .plugin(crate::file_chips::FileChips(cx.weak_entity()))
         .style(crate::ui::markdown_style(cx))
         .on_link_click(crate::timeline::open_link)
         .selectable(true);
@@ -338,16 +339,20 @@ impl T3App {
     ) -> AnyElement {
         let streaming = item.raw["streaming"] == true || item.str("status") == "running";
         let markdown = crate::code_block::with_code_blocks(
-            crate::mermaid::with_mermaid(TextView::markdown(
-                SharedString::from(item.id.clone()),
-                self.resolve_images(&crate::directives::for_copy(item.str("text")), cx)
-                    .into_owned(),
-            )),
+            crate::directives::with_templates(
+                crate::mermaid::with_mermaid(TextView::markdown(
+                    SharedString::from(item.id.clone()),
+                    self.resolve_images(&crate::directives::for_display(item.str("text")), cx)
+                        .into_owned(),
+                )),
+                cx.weak_entity(),
+            ),
             item.id.clone().into(),
             cx.weak_entity(),
             !streaming,
         )
         .plugin(crate::thread_chips::ThreadChips(cx.weak_entity()))
+        .plugin(crate::file_chips::FileChips(cx.weak_entity()))
         .style(crate::ui::markdown_style(cx))
         .on_link_click(crate::timeline::open_link);
         let group: SharedString = format!("assistant-row-{}", item.id).into();
@@ -426,6 +431,28 @@ impl T3App {
 }
 
 impl T3App {
+    /// "Use template" (web: `insertArtifactTemplate`): the template's prompt joins the draft.
+    pub(crate) fn use_template(
+        &mut self,
+        template: &crate::directives::Template,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let draft = self.composer.read(cx).value().to_string();
+        if let Some(prompt) = crate::directives::template_prompt_to_append(&draft, template) {
+            let space = if draft.is_empty() || draft.ends_with(char::is_whitespace) {
+                ""
+            } else {
+                " "
+            };
+            self.composer.update(cx, |input, cx| {
+                input.set_value(format!("{draft}{space}{prompt}"), window, cx)
+            });
+        }
+        self.composer
+            .update(cx, |input, cx| input.focus(window, cx));
+    }
+
     /// `AssistantForkButton`: shown when the answer completed and its provider can fork there.
     fn fork_button(&self, item: &TurnItem, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let thread = self.selected.as_deref()?;

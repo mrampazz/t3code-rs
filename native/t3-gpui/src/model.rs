@@ -114,6 +114,8 @@ pub struct ThreadShell {
     #[serde(default)]
     pub last_error_class: Option<String>,
     #[serde(default)]
+    pub last_error_code: Option<String>,
+    #[serde(default)]
     pub usage_limit_reset_at: Option<String>,
     /// `OrchestrationV2AppThreadLineage`.
     #[serde(default)]
@@ -495,6 +497,8 @@ pub struct ServerConfig {
     pub keybindings: Vec<Value>,
     /// `EditorId`s the server can launch.
     pub available_editors: Vec<String>,
+    /// How the host reveals a file (`shellRevealInFileManagerKind`, else its OS), when it can.
+    pub reveal_kind: Option<String>,
     /// `RemoteOpenTarget`s: SSH hosts this server is reachable at.
     pub remote_open_targets: Vec<Value>,
     /// `environment.serverVersion`.
@@ -546,6 +550,15 @@ impl ServerConfig {
                     .cloned()
                     .unwrap_or_default();
                 self.available_editors = decode_vec(&config["availableEditors"]);
+                self.reveal_kind = (config["shellRevealInFileManager"] == true
+                    && self.available_editors.iter().any(|e| e == "file-manager"))
+                .then(|| {
+                    config["shellRevealInFileManagerKind"]
+                        .as_str()
+                        .or(config["environment"]["platform"]["os"].as_str())
+                        .unwrap_or("")
+                        .to_owned()
+                });
                 self.remote_open_targets = decode_vec(&config["remoteOpenTargets"]);
             }
             Some("providerStatuses") => self.providers = decode_vec(&event["payload"]["providers"]),

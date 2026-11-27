@@ -11,6 +11,7 @@ mod dpop;
 mod drag;
 mod editors;
 mod env;
+mod file_chips;
 mod file_icons;
 mod files;
 mod find;
@@ -29,6 +30,7 @@ mod menus;
 mod mermaid;
 mod messages;
 mod model;
+mod notices;
 mod notify;
 mod palette;
 mod panel;
@@ -179,6 +181,9 @@ struct T3App {
     forking: Option<String>,
     /// Measured heights of user message bodies, which fold when tall (`useTallEnoughToFold`).
     user_heights: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Pixels>>>,
+    notice_widths: notices::Widths,
+    /// A limit recovery change is on its way to the server.
+    limit_pending: bool,
     /// Project folders folded in boring mode, as "env\0project".
     folded_projects: std::collections::HashSet<String>,
     notifier: notify::Notifier,
@@ -472,6 +477,8 @@ impl T3App {
             reply_to: None,
             forking: None,
             user_heights: Default::default(),
+            notice_widths: Default::default(),
+            limit_pending: false,
             folded_projects: Default::default(),
             notifier: Default::default(),
             nav_back: Vec::new(),
@@ -2538,16 +2545,6 @@ impl T3App {
                     .clone()
                     .map(|e| div().px_4().text_sm().text_color(theme.danger).child(e)),
             )
-            .when_some(self.render_limit_banner(thread, cx), |col, banner| {
-                col.child(
-                    div()
-                        .mx_auto()
-                        .max_w(px(768.))
-                        .w_full()
-                        .px_4()
-                        .child(banner),
-                )
-            })
             .when_some(
                 thread
                     .last_error
@@ -2587,7 +2584,14 @@ impl T3App {
                     .child(self.render_queue(cx))
                     .child(self.render_stash(cx))
                     .child(self.render_attachments(cx))
-                    .children(self.render_reply_banner(cx))
+                    .children({
+                        let notices = self
+                            .limit_notice(thread, cx)
+                            .into_iter()
+                            .chain(self.reply_notice(cx))
+                            .collect();
+                        self.render_notice_stack(notices, cx)
+                    })
                     .child(self.render_composer_card(thread.is_running(), cx)),
             )
             .when(self.term.is_some() && !self.terminal_in_panel(), |col| {

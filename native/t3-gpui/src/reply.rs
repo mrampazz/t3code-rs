@@ -2,12 +2,14 @@
 //! `AssistantForkButton`): a reply cites the response's opening in a `response` context record
 //! shown above the composer; a fork copies the thread up to the response's run.
 
-use gpui_kit::component::{ActiveTheme, h_flex};
+use std::rc::Rc;
+
 use gpui_kit::*;
 use serde_json::{Value, json};
 
 use crate::T3App;
 use crate::i18n::t;
+use crate::notices::{Notice, Tone};
 
 /// `RESPONSE_OPENING_LENGTH`, `ASSISTANT_CITATION_CONTEXT_LENGTH`, `RESPONSE_LABEL_MAX_CHARS`.
 const OPENING: usize = 300;
@@ -217,8 +219,9 @@ impl T3App {
         let Some(environment) = self.env().and_then(|e| e.environment_id.clone()) else {
             return;
         };
+        // The text as the transcript shows it: directives rendered, then the markdown's text.
         let raw = item.str("text");
-        let rendered = plain_text(raw);
+        let rendered = plain_text(&crate::directives::for_copy(raw));
         let Some(mut citation) = opening_selector(if rendered.trim().is_empty() {
             raw
         } else {
@@ -275,14 +278,12 @@ impl T3App {
         text
     }
 
-    /// The "Replying to" banner above the composer, with the cited opening and a way out.
-    pub(crate) fn render_reply_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The "Replying to" notice: the cited opening, which leads back to the answer, and Cancel.
+    pub(crate) fn reply_notice(&self, cx: &mut Context<Self>) -> Option<Notice> {
         let (thread, record) = self.reply_to.as_ref()?;
         if self.selected.as_ref() != Some(thread) {
             return None;
         }
-        let c = cx.theme().colors;
-        let tokens = crate::web_theme::current(cx);
         let titles: Vec<&str> = record["subagents"]
             .as_array()
             .into_iter()
@@ -298,56 +299,32 @@ impl T3App {
             crate::i18n::tv("Replying to {titles}", &[("titles", &titles.join(", "))])
         };
         let item_id = record["itemId"].as_str().unwrap_or("").to_owned();
-        Some(
-            h_flex()
-                .gap_2()
-                .px_3()
-                .pt_2()
-                // Tucked under the card below it, past the stack's gap (`Surface` attached).
-                .pb(px(24.))
-                .mb(px(-24.))
-                .rounded_t(px(16.))
-                .border_1()
-                .border_color(tokens.composer_outline)
-                .bg(tokens.composer)
-                .text_sm()
-                .child(
-                    crate::ui::icon("reply")
-                        .size(px(12.))
-                        .text_color(c.muted_foreground),
-                )
-                .child(div().flex_none().child(title))
-                .child(div().text_color(c.muted_foreground.opacity(0.4)).child("·"))
-                .child(
-                    div()
-                        .id("reply-to-source")
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .cursor_pointer()
-                        .text_color(c.muted_foreground)
-                        .hover(|s| s.text_color(c.foreground))
-                        .child(citation_label(&record["citation"]))
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.reveal_item(&item_id, cx)),
-                        ),
-                )
-                .child(
-                    crate::ui::xs_button(
-                        "reply-to-cancel",
-                        "x",
-                        true,
-                        crate::ui::Variant::GhostMuted,
-                        cx,
-                    )
-                    .tooltip(crate::ui::tooltip(t("Cancel reply")))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.reply_to = None;
-                        cx.notify();
-                    })),
-                )
-                .into_any_element(),
-        )
+        let (reveal, cancel) = (cx.weak_entity(), cx.weak_entity());
+        Some(Notice {
+            id: "reply-to".into(),
+            tone: Tone::Default,
+            environment: false,
+            icon: crate::ui::icon("reply").size(px(12.)).into_any_element(),
+            title,
+            description: Some(citation_label(&record["citation"])),
+            on_description: Some(Rc::new(move |_, cx| {
+                reveal
+                    .update(cx, |this, cx| this.reveal_item(&item_id, cx))
+                    .ok();
+            })),
+            actions: Vec::new(),
+            dismiss: Some((
+                t("Cancel reply"),
+                Rc::new(move |_, cx| {
+                    cancel
+                        .update(cx, |this, cx| {
+                            this.reply_to = None;
+                            cx.notify();
+                        })
+                        .ok();
+                }),
+            )),
+        })
     }
 
     /// Scrolls the transcript to the row showing `item_id`.

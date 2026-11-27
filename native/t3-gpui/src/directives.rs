@@ -274,7 +274,7 @@ fn file_citation_markdown(attributes: &HashMap<String, String>) -> Option<String
 
 /// `markdownDestinationPath`'s test: a scheme, a root, or what `parseMarkdownFileLink` reads as a
 /// file path keeps its spelling; anything else gets `./` so it stays a relative link.
-fn reads_as_path(path: &str) -> bool {
+pub(crate) fn reads_as_path(path: &str) -> bool {
     const EXTENSIONLESS: [&str; 27] = [
         "Makefile",
         "makefile",
@@ -328,9 +328,76 @@ fn reads_as_path(path: &str) -> bool {
             || RELATIVE_NAME.is_match(path))
 }
 
-/// `resolveCodexArtifactTemplate`, as `codexArtifactTemplatePresentationLabel` names it.
-fn artifact_template_label(attributes: &HashMap<String, String>) -> Option<String> {
-    let kind = match attributes.get("artifact_kind")?.as_str() {
+/// `CodexArtifactTemplate`: what an `::artifact-template` line offers.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Template {
+    pub kind: String,
+    pub display_name: String,
+    pub skill_name: String,
+}
+
+impl Template {
+    /// `codexArtifactTemplatePresentationLabel`.
+    pub fn label(&self) -> String {
+        crate::i18n::t(presentation_label(&self.kind).unwrap_or("Document template"))
+    }
+
+    /// The lucide icon for the kind (`ARTIFACT_TEMPLATE_ICON_BY_KIND`).
+    pub fn icon(&self) -> &'static str {
+        match self.kind.as_str() {
+            "presentation" | "google-slides" => "presentation",
+            "spreadsheet" | "google-sheets" => "file-spreadsheet",
+            "site" => "globe",
+            "image" => "image",
+            "email" => "mail",
+            "slack" => "message-square",
+            _ => "file-text",
+        }
+    }
+
+    /// `codexArtifactTemplateUsePrompt`.
+    pub fn use_prompt(&self) -> String {
+        let skill = format!("${}", self.skill_name);
+        match self.kind.as_str() {
+            "presentation" => format!("Create a presentation using the {skill} template about…"),
+            "spreadsheet" => format!("Create a spreadsheet using this {skill} about…"),
+            "site" => format!("Create a Site using this {skill} about…"),
+            "google-docs" => format!("Create a Google Doc using this {skill} about…"),
+            "google-slides" => {
+                format!("Create a Google Slides presentation using this {skill} about…")
+            }
+            "google-sheets" => format!("Create a Google Sheet using this {skill} about…"),
+            "image" => format!("Create an image using this {skill} of…"),
+            "email" => format!("Draft an email using this {skill} about…"),
+            "slack" => format!("Draft a Slack message using this {skill} about…"),
+            _ => format!("Create a document using this {skill} about…"),
+        }
+    }
+}
+
+/// `codexArtifactTemplatePromptToAppend`: the use prompt, unless the draft already ends with it.
+pub(crate) fn template_prompt_to_append(draft: &str, template: &Template) -> Option<String> {
+    let prompt = template.use_prompt();
+    let trimmed = draft.trim_end();
+    let ends = trimmed
+        .strip_suffix(prompt.as_str())
+        .is_some_and(|before| before.is_empty() || before.ends_with(char::is_whitespace));
+    (!ends).then_some(prompt)
+}
+
+/// The template a paragraph that is only an `::artifact-template` line offers.
+pub(crate) fn template_line(source: &str) -> Option<Template> {
+    let body = source.trim();
+    if body.contains('\n') {
+        return None;
+    }
+    let d = parse_at(body, 2, 2, &[ARTIFACT_TEMPLATE])
+        .filter(|d| body.starts_with("::") && body[d.range.end..].trim().is_empty())?;
+    resolve_template(&d.attributes)
+}
+
+fn presentation_label(kind: &str) -> Option<&'static str> {
+    Some(match kind {
         "document" => "Document template",
         "presentation" => "Presentation template",
         "spreadsheet" => "Spreadsheet template",
@@ -342,7 +409,13 @@ fn artifact_template_label(attributes: &HashMap<String, String>) -> Option<Strin
         "email" => "Email template",
         "slack" => "Slack template",
         _ => return None,
-    };
+    })
+}
+
+/// `resolveCodexArtifactTemplate`.
+fn resolve_template(attributes: &HashMap<String, String>) -> Option<Template> {
+    let kind = attributes.get("artifact_kind")?;
+    presentation_label(kind)?;
     let name = attributes.get("display_name")?.trim();
     let directory = attributes.get("skill_directory")?;
     static ABSOLUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -356,7 +429,11 @@ fn artifact_template_label(attributes: &HashMap<String, String>) -> Option<Strin
         && attributes
             .get("gallery_kind")
             .is_none_or(|g| matches!(g.as_str(), "imagegen" | "product-design"));
-    valid.then(|| format!("{name} ({kind})"))
+    valid.then(|| Template {
+        kind: kind.clone(),
+        display_name: name.to_owned(),
+        skill_name: attributes["skill_name"].clone(),
+    })
 }
 
 fn follow_up_label(d: &Directive) -> Option<String> {
@@ -371,9 +448,161 @@ pub fn for_copy(markdown: &str) -> String {
     rewrite(markdown, |d, inside_link| match d.name {
         FILE_CITATION if !inside_link => file_citation_markdown(&d.attributes),
         FOLLOW_UP => follow_up_label(d),
-        ARTIFACT_TEMPLATE => artifact_template_label(&d.attributes),
+        ARTIFACT_TEMPLATE => resolve_template(&d.attributes).map(|t| {
+            format!(
+                "{} ({})",
+                t.display_name,
+                presentation_label(&t.kind).unwrap_or("")
+            )
+        }),
         _ => None,
     })
+}
+
+/// What the transcript shows: citations as links and follow-ups as their label; a template
+/// line stays for the card that replaces it (`with_templates`).
+pub fn for_display(markdown: &str) -> String {
+    rewrite(markdown, |d, inside_link| match d.name {
+        FILE_CITATION if !inside_link => file_citation_markdown(&d.attributes),
+        FOLLOW_UP => follow_up_label(d),
+        _ => None,
+    })
+}
+
+const TEMPLATE_NODE: &str = "artifact-template";
+
+/// Draws `view`'s `::artifact-template` lines as the web's card (`CodexArtifactTemplateCard`);
+/// "Use template" adds its prompt to the composer.
+pub(crate) fn with_templates(
+    view: gpui_kit::component::text::TextView,
+    app: gpui_kit::WeakEntity<crate::T3App>,
+) -> gpui_kit::component::text::TextView {
+    use gpui_kit::component::text::MarkdownNode;
+    view.markdown_block_parser(|node, ctx| match node {
+        markdown::mdast::Node::Paragraph(_) => {
+            let source = ctx.node_source(node)?;
+            let template = template_line(source)?;
+            let copy = format!("{} ({})\n\n", template.display_name, template.label());
+            Some(
+                MarkdownNode::new(TEMPLATE_NODE, template)
+                    .text(copy)
+                    .markdown(source.to_owned()),
+            )
+        }
+        _ => None,
+    })
+    .markdown_block_renderer(TEMPLATE_NODE, move |node, _, cx| {
+        match node.data::<Template>() {
+            Some(template) => template_card(template.clone(), app.clone(), cx),
+            None => gpui_kit::IntoElement::into_any_element(gpui_kit::div()),
+        }
+    })
+}
+
+fn template_card(
+    template: Template,
+    app: gpui_kit::WeakEntity<crate::T3App>,
+    cx: &mut gpui_kit::App,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
+    use gpui_kit::prelude::FluentBuilder;
+    use gpui_kit::*;
+    let theme = cx.theme();
+    let c = theme.colors;
+    let dark = theme.mode.is_dark();
+    let web = crate::web_theme::current(cx);
+    let shadow = vec![BoxShadow {
+        color: hsla(0., 0., 0., 0.05),
+        offset: point(px(0.), px(1.)),
+        blur_radius: px(2.),
+        spread_radius: px(0.),
+        inset: false,
+    }];
+    let id = format!(
+        "template-use-{}-{}",
+        template.skill_name, template.display_name
+    );
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_3()
+        .rounded(px(12.))
+        .border_1()
+        .border_color(c.border.opacity(0.7))
+        .bg(web.card.opacity(0.6))
+        .px_3()
+        .py(px(10.))
+        .text_color(c.foreground)
+        .shadow(shadow.clone())
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_3()
+                .child(
+                    div()
+                        .size(px(36.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(c.border.opacity(0.7))
+                        .bg(c.background)
+                        .text_color(c.muted_foreground)
+                        .shadow(shadow.clone())
+                        .child(crate::ui::icon(template.icon()).size(px(20.))),
+                )
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(template.display_name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(c.muted_foreground)
+                                .child(template.label()),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .id(SharedString::from(id))
+                .flex_none()
+                .h(px(28.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .rounded_md()
+                .border_1()
+                .border_color(c.input)
+                .cursor_pointer()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .shadow(shadow)
+                .map(|b| {
+                    if dark {
+                        b.bg(c.input.opacity(0.32))
+                            .hover(move |s| s.bg(c.input.opacity(0.64)))
+                    } else {
+                        b.bg(c.popover).hover(move |s| s.bg(c.accent.opacity(0.5)))
+                    }
+                })
+                .child(crate::i18n::t("Use template"))
+                .on_click(move |_, window, cx| {
+                    let template = template.clone();
+                    app.update(cx, |this, cx| this.use_template(&template, window, cx))
+                        .ok();
+                }),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -404,12 +633,24 @@ mod tests {
             for_copy("Try :codex-followup[Run tests]{prompt=\"run the tests\"}."),
             "Try Run tests."
         );
+        let line = "::artifact-template{artifact_kind=document display_name=\"Memo\" skill_directory=\"/s/m\" skill_name=artifact-template-memo}";
+        assert_eq!(for_copy(&format!("{line}\n")), "Memo (Document template)\n");
+        assert_eq!(super::for_display(line), line, "the card replaces the line");
+        let template = super::template_line(line).unwrap();
         assert_eq!(
-            for_copy(
-                "::artifact-template{artifact_kind=document display_name=\"Memo\" skill_directory=\"/s/m\" skill_name=artifact-template-memo}\n"
-            ),
-            "Memo (Document template)\n"
+            template.use_prompt(),
+            "Create a document using this $artifact-template-memo about…"
         );
+        let prompt = template.use_prompt();
+        assert_eq!(
+            super::template_prompt_to_append(&format!("hi {prompt}  "), &template),
+            None
+        );
+        assert_eq!(
+            super::template_prompt_to_append("hi", &template),
+            Some(prompt)
+        );
+        assert!(super::template_line("::artifact-template{artifact_kind=document}").is_none());
         let untouched =
             "`:codex-file-citation{path=a.ts}`\n```\n:codex-followup[x]{prompt=y}\n```\n";
         assert_eq!(for_copy(untouched), untouched);
