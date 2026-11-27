@@ -6,6 +6,7 @@ mod command_label;
 mod composer;
 mod composer_menu;
 mod diff_panel;
+mod directives;
 mod dpop;
 mod drag;
 mod editors;
@@ -38,6 +39,7 @@ mod provider_banner;
 mod provider_setup;
 mod pull_requests;
 mod queue;
+mod reply;
 mod right_panel;
 mod rpc;
 pub(crate) mod scheduled;
@@ -171,6 +173,12 @@ struct T3App {
     scheduled_sub: Option<String>,
     /// Context records of `@` thread mentions in the composer, sent with the message.
     composer_contexts: Vec<serde_json::Value>,
+    /// "Reply to this response": the thread and the `response` record cited above the composer.
+    reply_to: Option<(String, serde_json::Value)>,
+    /// The answer "Fork from this response" is forking, while the server makes the fork.
+    forking: Option<String>,
+    /// Measured heights of user message bodies, which fold when tall (`useTallEnoughToFold`).
+    user_heights: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Pixels>>>,
     /// Project folders folded in boring mode, as "env\0project".
     folded_projects: std::collections::HashSet<String>,
     notifier: notify::Notifier,
@@ -461,6 +469,9 @@ impl T3App {
             scheduled: Vec::new(),
             scheduled_sub: None,
             composer_contexts: Vec::new(),
+            reply_to: None,
+            forking: None,
+            user_heights: Default::default(),
             folded_projects: Default::default(),
             notifier: Default::default(),
             nav_back: Vec::new(),
@@ -947,6 +958,7 @@ impl T3App {
         self.composer
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.transcript.set_follow_mode(FollowMode::Tail);
+        let text = self.take_reply(text);
         let context =
             composer_menu::message_context(&text, &std::mem::take(&mut self.composer_contexts));
         let command_id = uuid::Uuid::new_v4().to_string();
@@ -2575,6 +2587,7 @@ impl T3App {
                     .child(self.render_queue(cx))
                     .child(self.render_stash(cx))
                     .child(self.render_attachments(cx))
+                    .children(self.render_reply_banner(cx))
                     .child(self.render_composer_card(thread.is_running(), cx)),
             )
             .when(self.term.is_some() && !self.terminal_in_panel(), |col| {

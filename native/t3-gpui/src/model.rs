@@ -699,6 +699,8 @@ impl TurnItem {
 #[derive(Clone, Debug)]
 pub struct Row {
     pub local: bool,
+    /// The thread the item belongs to (a fork's inherited rows name their source).
+    pub source_thread: Option<String>,
     pub item: TurnItem,
 }
 
@@ -793,6 +795,8 @@ pub struct ThreadView {
     /// `providerSessions` and `providerTurns` by id.
     provider_sessions: Vec<Value>,
     provider_turns: HashMap<String, Value>,
+    /// `providerThreads` by id: which provider session an item's provider thread ran in.
+    provider_threads: HashMap<String, Value>,
 }
 
 fn projected_rows(rows: &Value) -> Vec<Row> {
@@ -802,6 +806,7 @@ fn projected_rows(rows: &Value) -> Vec<Row> {
         .filter_map(|row| {
             Some(Row {
                 local: row["visibility"] == "local",
+                source_thread: row["sourceThreadId"].as_str().map(str::to_owned),
                 item: TurnItem::from_value(&row["item"])?,
             })
         })
@@ -1108,6 +1113,12 @@ impl ThreadView {
                     .as_array()
                     .cloned()
                     .unwrap_or_default();
+                self.provider_threads = projection["providerThreads"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| Some((t["id"].as_str()?.to_owned(), t.clone())))
+                    .collect();
                 self.provider_turns = projection["providerTurns"]
                     .as_array()
                     .into_iter()
@@ -1135,6 +1146,11 @@ impl ThreadView {
                         self.apply_attempt(payload)
                     }
                     Some("checkpoint.captured") => self.apply_checkpoint(payload),
+                    Some("provider-thread.updated") => {
+                        if let Some(id) = payload["id"].as_str() {
+                            self.provider_threads.insert(id.to_owned(), payload.clone());
+                        }
+                    }
                     Some("provider-turn.updated") => {
                         if let Some(id) = payload["id"].as_str() {
                             self.provider_turns.insert(id.to_owned(), payload.clone());
@@ -1248,7 +1264,14 @@ impl ThreadView {
             .iter()
             .position(|r| r.local && (r.item.ordinal, &r.item.id) > (item.ordinal, &item.id))
             .unwrap_or(self.rows.len());
-        self.rows.insert(at, Row { local: true, item });
+        self.rows.insert(
+            at,
+            Row {
+                local: true,
+                source_thread: None,
+                item,
+            },
+        );
     }
 
     /// An item older than the loaded window of a thread with more history, unless its run is
@@ -1301,6 +1324,91 @@ impl ThreadView {
             r.item.kind == "run_interrupt_request" && r.item.run_id.as_ref() == Some(run_id)
         });
         !superseded || has_request
+    }
+
+    /// `canForkProjectedAssistantItem`: the thread and run "Fork from this response" forks, when
+    /// the answer completed and its provider can fork from a turn or hand a thread off. Rows whose
+    /// provider session is unknown (inherited, or older than its record) fall back to allowing it.
+    pub fn fork_point(&self, item_id: &str, thread_id: &str) -> Option<(String, String)> {
+        let row = self.rows.iter().find(|r| r.item.id == item_id)?;
+        let item = &row.item;
+        let run = item.run_id.clone()?;
+        if item.kind != "assistant_message" || item.str("status") != "completed" {
+            return None;
+        }
+        let capabilities = item.raw["providerThreadId"]
+            .as_str()
+            .and_then(|id| self.provider_threads.get(id))
+            .and_then(|t| t["providerSessionId"].as_str())
+            .and_then(|id| self.provider_sessions.iter().find(|s| s["id"] == id))
+            .map(|s| &s["capabilities"])
+            .filter(|c| c.is_object());
+        let allowed = capabilities.is_none_or(|c| {
+            (c["threads"]["canForkThread"] == true
+                && c["threads"]["canForkFromTurn"] == true
+                && c["identity"]["nativeThreadIds"] == "strong")
+                || c["context"]["supportsFullThreadHandoff"] == true
+        });
+        let source = row
+            .source_thread
+            .clone()
+            .unwrap_or_else(|| thread_id.to_owned());
+        allowed.then_some((source, run))
+    }
+
+    /// `readResponseSubagents`: the subagents whose reports the answer `item_id` replied to — the
+    /// notices and messages from them just before its turn — as (thread, title).
+    pub fn response_subagents(&self, item_id: &str) -> Vec<(String, Option<String>)> {
+        let items: Vec<&TurnItem> = self.items().collect();
+        let is_input = |i: &TurnItem| matches!(i.kind.as_str(), "user_message" | "notification");
+        let Some(at) = items.iter().position(|i| i.id == item_id) else {
+            return Vec::new();
+        };
+        let mut by_task: HashMap<&str, (String, Option<String>)> = HashMap::new();
+        let mut titles: HashMap<&str, Option<String>> = HashMap::new();
+        for item in items.iter().filter(|i| i.kind == "subagent") {
+            if let (Some(task), Some(child)) = (
+                item.raw["subagentId"].as_str(),
+                item.raw["childThreadId"].as_str(),
+            ) {
+                let title = item.raw["title"].as_str().map(str::to_owned);
+                by_task.insert(task, (child.to_owned(), title.clone()));
+                titles.insert(child, title);
+            }
+        }
+        let mut found: Vec<(String, Option<String>)> = Vec::new();
+        let mut add = |child: Option<(String, Option<String>)>| {
+            if let Some(child) = child
+                && !found.iter().any(|(t, _)| *t == child.0)
+            {
+                found.push(child);
+            }
+        };
+        let mut index = at;
+        while index > 0 && !is_input(items[index - 1]) {
+            index -= 1;
+        }
+        while index > 0 && is_input(items[index - 1]) {
+            index -= 1;
+            let item = items[index];
+            if item.kind == "notification" {
+                let source = &item.raw["source"];
+                if let Some(child) = source["childThreadId"].as_str() {
+                    add(Some((
+                        child.to_owned(),
+                        titles.get(child).cloned().flatten(),
+                    )));
+                }
+                for task in source["taskIds"].as_array().into_iter().flatten() {
+                    add(task.as_str().and_then(|t| by_task.get(t).cloned()));
+                }
+            } else if let Some(sender) = item.raw["senderThreadId"].as_str()
+                && titles.contains_key(sender)
+            {
+                add(Some((sender.to_owned(), titles[sender].clone())));
+            }
+        }
+        found
     }
 
     pub fn items(&self) -> impl Iterator<Item = &TurnItem> {

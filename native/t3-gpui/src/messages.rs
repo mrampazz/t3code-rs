@@ -201,18 +201,7 @@ impl T3App {
             .when(row.grouped_with_next, |b| b.rounded_br(px(6.)))
             .bg(crate::web_theme::current(cx).message)
             .text_color(c.foreground)
-            .child(
-                crate::code_block::with_code_blocks(
-                    TextView::markdown(SharedString::from(item.id.clone()), hard_breaks(&text)),
-                    item.id.clone().into(),
-                    cx.weak_entity(),
-                    false,
-                )
-                .plugin(crate::thread_chips::ThreadChips(cx.weak_entity()))
-                .style(crate::ui::markdown_style(cx))
-                .on_link_click(crate::timeline::open_link)
-                .selectable(true),
-            );
+            .child(self.render_user_body(item, &text, cx));
 
         v_flex()
             .group(group.clone())
@@ -247,6 +236,98 @@ impl T3App {
             .into_any_element()
     }
 
+    /// `CollapsibleUserMessageBody`: a message at least twice 11rem tall folds to 11rem under a
+    /// fade, with "Show full message" to open it.
+    fn render_user_body(&self, item: &TurnItem, text: &str, cx: &mut Context<Self>) -> Div {
+        const FOLDED: f32 = 176.;
+        let key = format!("user-full:{}", item.id);
+        let tall = self
+            .user_heights
+            .borrow()
+            .get(&item.id)
+            .is_some_and(|h| *h >= px(FOLDED * 2.));
+        let expanded = self.expanded.contains(&key);
+        let folded = tall && !expanded;
+        let markdown = crate::code_block::with_code_blocks(
+            TextView::markdown(SharedString::from(item.id.clone()), hard_breaks(text)),
+            item.id.clone().into(),
+            cx.weak_entity(),
+            false,
+        )
+        .plugin(crate::thread_chips::ThreadChips(cx.weak_entity()))
+        .style(crate::ui::markdown_style(cx))
+        .on_link_click(crate::timeline::open_link)
+        .selectable(true);
+        let (heights, id, view) = (self.user_heights.clone(), item.id.clone(), cx.entity_id());
+        // The unclipped content's height, read after layout; a change re-renders the row.
+        let measure = canvas(
+            move |bounds, _, cx| {
+                let height = bounds.size.height;
+                let changed = heights.borrow_mut().insert(id.clone(), height) != Some(height);
+                if changed {
+                    cx.notify(view);
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        let content = div().relative().child(markdown).child(measure);
+        let surface = crate::web_theme::current(cx).message;
+        let c = cx.theme().colors;
+        v_flex()
+            .child(if folded {
+                div()
+                    .relative()
+                    .max_h(px(FOLDED))
+                    .overflow_hidden()
+                    .child(content)
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(28.))
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(surface.opacity(0.), 0.),
+                                linear_color_stop(surface, 1.),
+                            )),
+                    )
+            } else {
+                content
+            })
+            .when(tall, |col| {
+                col.child(
+                    h_flex().mt(px(6.)).justify_end().child(
+                        div()
+                            .id(SharedString::from(format!("user-fold-{}", item.id)))
+                            .h(px(24.))
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(c.muted_foreground)
+                            .hover(|s| s.bg(c.accent).text_color(c.foreground))
+                            .child(if expanded {
+                                t("Show less")
+                            } else {
+                                t("Show full message")
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !this.expanded.remove(&key) {
+                                    this.expanded.insert(key.clone());
+                                }
+                                cx.notify();
+                            })),
+                    ),
+                )
+            })
+    }
+
     /// `AssistantTimelineRow`: the reply, and under the turn's last answer its meta row.
     /// `meta` is `Some(false)` for a hover meta row, `None` when the answer shows none.
     pub(crate) fn render_assistant_message(
@@ -259,7 +340,8 @@ impl T3App {
         let markdown = crate::code_block::with_code_blocks(
             crate::mermaid::with_mermaid(TextView::markdown(
                 SharedString::from(item.id.clone()),
-                self.resolve_images(item.str("text"), cx).into_owned(),
+                self.resolve_images(&crate::directives::for_copy(item.str("text")), cx)
+                    .into_owned(),
             )),
             item.id.clone().into(),
             cx.weak_entity(),
@@ -307,9 +389,31 @@ impl T3App {
             .when(!streaming && !text.trim().is_empty(), |r| {
                 r.child(crate::ui::CopyButton::message(
                     SharedString::from(format!("assistant-copy-{}", item.id)),
-                    text.to_owned(),
+                    crate::directives::for_copy(text),
                 ))
             })
+            .children(self.fork_button(item, cx))
+            .when(
+                !streaming
+                    && !text.trim().is_empty()
+                    && self.env().is_some_and(|e| e.environment_id.is_some()),
+                |r| {
+                    let id = item.id.clone();
+                    r.child(
+                        crate::ui::xs_button(
+                            SharedString::from(format!("assistant-reply-{}", item.id)),
+                            "reply",
+                            false,
+                            crate::ui::Variant::GhostMuted,
+                            cx,
+                        )
+                        .tooltip(crate::ui::tooltip(t("Reply to this response")))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| this.reply_to_response(&id, window, cx),
+                        )),
+                    )
+                },
+            )
             .when(!streaming, |r| {
                 r.children(message_time(
                     format!("assistant-time-{}", item.id),
@@ -318,6 +422,32 @@ impl T3App {
                 ))
             });
         if always { row } else { reveal(row, group) }
+    }
+}
+
+impl T3App {
+    /// `AssistantForkButton`: shown when the answer completed and its provider can fork there.
+    fn fork_button(&self, item: &TurnItem, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let thread = self.selected.as_deref()?;
+        let (source, run) = self.thread.fork_point(&item.id, thread)?;
+        let busy = self.forking.as_deref() == Some(item.id.as_str());
+        let id = item.id.clone();
+        Some(
+            crate::ui::xs_button(
+                SharedString::from(format!("assistant-fork-{}", item.id)),
+                "git-fork",
+                false,
+                crate::ui::Variant::Ghost,
+                cx,
+            )
+            .tooltip(crate::ui::tooltip(t("Fork from this response")))
+            .when(busy, |b| b.opacity(0.64).cursor_default())
+            .when(!busy, |b| {
+                b.on_click(cx.listener(move |this, _, _, cx| {
+                    this.fork_from_response(id.clone(), source.clone(), run.clone(), cx)
+                }))
+            }),
+        )
     }
 }
 

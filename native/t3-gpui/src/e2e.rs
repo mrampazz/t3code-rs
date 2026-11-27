@@ -2377,3 +2377,73 @@ async fn e2e_probe() {
     .await;
     assert!(matches!(answered, Ok(Ok(_))), "{answered:?}");
 }
+
+#[tokio::test]
+#[ignore]
+async fn e2e_fork_and_reply_to_response() {
+    let env = connect().await;
+    let (thread_id, view) = launch(&env, "multi-turn", "first").await;
+    wait_idle(&env, &thread_id).await;
+    let (item_id, message_id, text) = view
+        .until("a completed answer", |v| {
+            v.items()
+                .find(|i| i.kind == "assistant_message" && i.str("status") == "completed")
+                .map(|i| {
+                    (
+                        i.id.clone(),
+                        i.str("messageId").to_owned(),
+                        i.str("text").to_owned(),
+                    )
+                })
+        })
+        .await;
+    let (source, run) = view
+        .state
+        .lock()
+        .unwrap()
+        .fork_point(&item_id, &thread_id)
+        .expect("replay answers can be forked");
+
+    let target = uuid::Uuid::new_v4().to_string();
+    dispatch(
+        &env.client,
+        crate::reply::fork_command(&source, &target, &run, "first fork"),
+    )
+    .await;
+    env.shell
+        .until("the fork's thread", |s| {
+            s.threads.iter().any(|t| t.id == target).then_some(())
+        })
+        .await;
+
+    let environment = auth::descriptor(&env.base_url).await["environmentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut citation =
+        crate::reply::opening_selector(&crate::reply::plain_text(&text)).expect("an opening");
+    citation["version"] = json!(1);
+    citation["environmentId"] = json!(environment);
+    citation["threadId"] = json!(thread_id);
+    citation["messageId"] = json!(message_id);
+    let record = crate::reply::response_record(citation, &item_id, Vec::new());
+    let id = record["contextId"].as_str().unwrap().to_owned();
+    let label = record["label"].as_str().unwrap().to_owned();
+    dispatch(
+        &env.client,
+        json!({
+            "type": "message.dispatch", "threadId": thread_id, "messageId": uuid::Uuid::new_v4().to_string(),
+            "text": format!("[{label}](t3-context://v1/response/{id}) and then?"), "attachments": [],
+            "context": { "version": 1, "records": [record] },
+            "dispatchMode": { "type": "queue_after_active" }, "createdBy": "user", "creationSource": "web",
+        }),
+    )
+    .await;
+    view.until("the reply with its response record", |v| {
+        v.items()
+            .find(|i| i.kind == "user_message" && i.str("text").ends_with("and then?"))
+            .filter(|i| i.raw["context"]["records"][0]["kind"] == "response")
+            .map(|_| ())
+    })
+    .await;
+}
