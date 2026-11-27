@@ -1,6 +1,7 @@
 mod access;
 mod attachments;
 mod auth;
+mod command_label;
 mod composer;
 mod composer_menu;
 mod diff_panel;
@@ -44,8 +45,10 @@ mod sidebar;
 pub(crate) mod source_control;
 mod stash;
 mod storage;
+mod t3_tools;
 mod terminal;
 mod terminal_drawer;
+mod terminal_output;
 mod thread_chips;
 mod timeline;
 mod ui;

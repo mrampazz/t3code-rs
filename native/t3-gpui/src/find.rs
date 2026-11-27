@@ -35,9 +35,13 @@ pub fn matching_rows(rows: &[Row<'_>], query: &str) -> Vec<usize> {
         .enumerate()
         .filter(|(_, row)| match row {
             Row::Item(item) => item_text(item).contains(&query),
-            Row::Group { items, .. } | Row::Fold { items, .. } => {
+            Row::Group { items, .. } | Row::Fold { items, .. } | Row::Live { items, .. } => {
                 items.iter().any(|i| item_text(i).contains(&query))
             }
+            Row::Thinking { group, .. } => group
+                .as_ref()
+                .is_some_and(|(_, items)| items.iter().any(|i| item_text(i).contains(&query))),
+            Row::Working { .. } | Row::Images { .. } => false,
         })
         .map(|(i, _)| i)
         .collect()
@@ -146,7 +150,7 @@ impl T3App {
 mod tests {
     use super::matching_rows;
     use crate::model::TurnItem;
-    use crate::timeline::group_rows;
+    use crate::timeline::timeline_rows;
     use serde_json::json;
 
     #[test]
@@ -168,7 +172,7 @@ mod tests {
             ),
             item("a", "assistant_message", json!({"text": "Done."})),
         ];
-        let rows = group_rows(items.iter());
+        let rows = timeline_rows(items.iter(), &Default::default(), None);
         assert_eq!(
             matching_rows(&rows, "LOGIN"),
             [0, 1],

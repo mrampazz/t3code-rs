@@ -248,16 +248,18 @@ async fn e2e_chat_diff_and_model() {
     println!("showcase items: {:?}", kinds(&view.state.lock().unwrap()));
     {
         let v = view.state.lock().unwrap();
-        let summaries: Vec<String> = crate::timeline::group_rows(v.items())
-            .iter()
-            .map(|row| match row {
-                crate::timeline::Row::Item(i) => i.kind.clone(),
-                crate::timeline::Row::Group { items, .. } => {
-                    format!("[{}]", crate::work_rows::summarize(items))
-                }
-                crate::timeline::Row::Fold { label, .. } => label.clone(),
-            })
-            .collect();
+        let summaries: Vec<String> =
+            crate::timeline::timeline_rows(v.items(), &Default::default(), None)
+                .iter()
+                .map(|row| match row {
+                    crate::timeline::Row::Item(i) => i.kind.clone(),
+                    crate::timeline::Row::Group { items, .. } => {
+                        format!("[{}]", crate::work_rows::summarize(items))
+                    }
+                    crate::timeline::Row::Fold { label, .. } => label.clone(),
+                    _ => String::new(),
+                })
+                .collect();
         println!("timeline rows: {summaries:?}");
         assert!(
             summaries.iter().any(|s| s.starts_with('[')),
@@ -2240,8 +2242,8 @@ async fn e2e_work_row_details() {
             break;
         }
     }
-    println!("command output: {:?}", output.text);
-    assert!(output.text.contains("12 passed"), "{:?}", output.text);
+    println!("command output: {:?}", output.text());
+    assert!(output.text().contains("12 passed"), "{:?}", output.text());
 
     let read = items
         .iter()

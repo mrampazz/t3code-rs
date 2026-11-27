@@ -125,64 +125,105 @@ pub fn tv(text: &str, vars: &[(&str, &str)]) -> String {
 }
 
 /// Translates an ICU `{count, plural, …}` message and fills its variables (`count` included).
-/// shortcut: English plural rules (`=n`, `one`, `other`) in every locale; Russian or Arabic
-/// forms fall back to `other`.
 pub fn tp(text: &str, count: usize, vars: &[(&str, &str)]) -> String {
-    let message = lookup(text, None);
     let n = count.to_string();
-    let chosen = plural_branch(&message, count).unwrap_or(message);
-    tv(&chosen, vars).replace("{count}", &n)
+    let mut args: Vec<(&str, &str)> = vec![("count", &n)];
+    args.extend_from_slice(vars);
+    tf(text, &args)
 }
 
-/// The branch of a top-level `{x, plural, …}` for `count`, with its text around the block kept.
-fn plural_branch(message: &str, count: usize) -> Option<String> {
-    let start = message.find(", plural,")?;
-    let open = message[..start].rfind('{')?;
-    let mut depth = 0;
-    let close = open
-        + message[open..]
-            .char_indices()
-            .find(|&(_, c)| {
-                depth += match c {
-                    '{' => 1,
-                    '}' => -1,
-                    _ => 0,
-                };
-                depth == 0
-            })?
-            .0;
-    let mut rest = &message[start + ", plural,".len()..close];
-    let mut branches = Vec::new();
-    while let Some(brace) = rest.find('{') {
-        let key = rest[..brace].trim();
-        let mut depth = 0;
-        let end = brace
-            + rest[brace..]
-                .char_indices()
-                .find(|&(_, c)| {
-                    depth += match c {
-                        '{' => 1,
-                        '}' => -1,
-                        _ => 0,
-                    };
-                    depth == 0
-                })?
-                .0;
-        branches.push((key, &rest[brace + 1..end]));
-        rest = &rest[end + 1..];
+/// Translates an ICU message and formats it: `{name}`, and nested `{name, plural, …}` /
+/// `{name, select, …}` with the active locale's plural rules. Numbers are passed as text.
+pub fn tf(text: &str, vars: &[(&str, &str)]) -> String {
+    format_icu(&lookup(text, None), vars, &locale())
+}
+
+/// CLDR cardinal categories for the catalogs' locales (integers only).
+fn plural_category(locale: &str, n: u64) -> &'static str {
+    let lang = locale.split(['-', '_']).next().unwrap_or(locale);
+    let million = n != 0 && n.is_multiple_of(1_000_000);
+    match lang {
+        "ja" | "ko" | "zh" => "other",
+        "ru" => match (n % 10, n % 100) {
+            (1, r) if r != 11 => "one",
+            (2..=4, r) if !(12..=14).contains(&r) => "few",
+            _ => "many",
+        },
+        "fr" | "pt" if n <= 1 => "one",
+        "fr" | "pt" | "es" if million => "many",
+        "es" if n == 1 => "one",
+        _ if n == 1 => "one",
+        _ => "other",
     }
-    let exact = format!("={count}");
-    let body = branches
-        .iter()
-        .find(|(k, _)| *k == exact)
-        .or_else(|| branches.iter().find(|(k, _)| count == 1 && *k == "one"))
-        .or_else(|| branches.iter().find(|(k, _)| *k == "other"))?
-        .1;
-    Some(format!(
-        "{}{body}{}",
-        &message[..open],
-        &message[close + 1..]
-    ))
+}
+
+/// The text inside the brace that opens at `open`, and the index after its close.
+fn braced(text: &str, open: usize) -> Option<(&str, usize)> {
+    let mut depth = 0;
+    for (i, c) in text[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&text[open + 1..open + i], open + i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn format_icu(message: &str, vars: &[(&str, &str)], locale: &str) -> String {
+    let value = |name: &str| {
+        vars.iter()
+            .find(|(k, _)| *k == name.trim())
+            .map(|(_, v)| *v)
+    };
+    let mut out = String::new();
+    let mut rest = message;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let Some((inner, after)) = braced(rest, open) else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let mut parts = inner.splitn(3, ',');
+        let (name, kind, body) = (parts.next().unwrap_or(""), parts.next(), parts.next());
+        match (kind.map(str::trim), body) {
+            (Some(kind @ ("plural" | "select")), Some(body)) => {
+                let arg = value(name).unwrap_or("");
+                let mut branches = Vec::new();
+                let mut cases = body;
+                while let Some(start) = cases.find('{') {
+                    let key = cases[..start].trim();
+                    let Some((text, end)) = braced(cases, start) else {
+                        break;
+                    };
+                    branches.push((key, text));
+                    cases = &cases[end..];
+                }
+                let pick = |key: &str| branches.iter().find(|(k, _)| *k == key).map(|b| b.1);
+                let chosen = if kind == "plural" {
+                    let n: u64 = arg.parse().unwrap_or(0);
+                    pick(&format!("={n}")).or_else(|| pick(plural_category(locale, n)))
+                } else {
+                    pick(arg)
+                };
+                if let Some(text) = chosen.or_else(|| pick("other")) {
+                    out.push_str(&format_icu(text, vars, locale));
+                }
+            }
+            _ => match value(name) {
+                Some(v) => out.push_str(v),
+                None => out.push_str(&rest[open..after]),
+            },
+        }
+        rest = &rest[after..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -197,6 +238,28 @@ mod tests {
         let m = "{count, plural, =1 {Checked linked pull requests} other {Checked {count} times}}";
         assert_eq!(tp(m, 1, &[]), "Checked linked pull requests");
         assert_eq!(tp(m, 2, &[]), "Checked 2 times");
+        let nested = "{messages, plural, one {Sent {messages} message to {threads, plural, one {{threads} thread} other {{threads} threads}}} other {Sent {messages} messages to {threads, plural, one {{threads} thread} other {{threads} threads}}}}";
+        assert_eq!(
+            tf(nested, &[("messages", "2"), ("threads", "1")]),
+            "Sent 2 messages to 1 thread"
+        );
+        let select =
+            "{status, select, completed {Linked {changeRequest} #{number}} other {Linking}}";
+        assert_eq!(
+            tf(
+                select,
+                &[
+                    ("status", "completed"),
+                    ("changeRequest", "PR"),
+                    ("number", "4")
+                ]
+            ),
+            "Linked PR #4"
+        );
+        assert_eq!(super::plural_category("ru", 3), "few");
+        assert_eq!(super::plural_category("ru", 11), "many");
+        assert_eq!(super::plural_category("fr", 0), "one");
+        assert_eq!(super::plural_category("ja", 1), "other");
     }
 
     #[test]

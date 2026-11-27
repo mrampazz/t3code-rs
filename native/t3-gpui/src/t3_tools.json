@@ -1,0 +1,1400 @@
+{
+  "tools": {
+    "ci_logs": {
+      "displayName": "Read CI logs",
+      "labels": ["Read", "Reading", "Read", "CI logs"],
+      "icon": "pull-request",
+      "summaryAction": "ci-logs"
+    },
+    "ci_rerun": {
+      "displayName": "Re-run CI",
+      "labels": ["Re-run", "Re-running", "Re-ran", "CI"],
+      "icon": "pull-request",
+      "summaryAction": "ci-rerun"
+    },
+    "comment_on_issue": {
+      "displayName": "Comment on an issue",
+      "labels": ["Comment on", "Commenting on", "Commented on", "an issue"],
+      "icon": "t3-code",
+      "summaryAction": "comment-issue"
+    },
+    "create_issue": {
+      "displayName": "File an issue",
+      "labels": ["File", "Filing", "Filed", "an issue"],
+      "icon": "t3-code",
+      "summaryAction": "create-issue"
+    },
+    "create_threads": {
+      "displayName": "Create T3 threads",
+      "labels": ["Create", "Creating", "Created", "T3 threads"],
+      "icon": "t3-code",
+      "summaryAction": "thread-create"
+    },
+    "delegate_task": {
+      "displayName": "Delegate a child task",
+      "labels": ["Delegate", "Delegating", "Delegated", "a child task"],
+      "icon": "t3-code",
+      "summaryAction": "delegate"
+    },
+    "delete_scheduled_task": {
+      "displayName": "Delete a scheduled task",
+      "labels": ["Delete", "Deleting", "Requested deletion of", "a scheduled task"],
+      "icon": "t3-code",
+      "summaryAction": "schedule-delete"
+    },
+    "device_close": {
+      "displayName": "Close a device",
+      "labels": ["Close", "Closing", "Closed", "a device"],
+      "icon": "device",
+      "summaryAction": "device"
+    },
+    "device_list": {
+      "displayName": "List simulators and emulators",
+      "labels": ["List", "Listing", "Listed", "simulators and emulators"],
+      "icon": "device",
+      "summaryAction": "device"
+    },
+    "device_open": {
+      "displayName": "Open a device in the Device panel",
+      "labels": ["Open", "Opening", "Opened", "a device in the Device panel"],
+      "icon": "device",
+      "summaryAction": "device"
+    },
+    "device_screenshot": {
+      "displayName": "Take a screenshot of the device",
+      "labels": [
+        "Take a screenshot of",
+        "Taking a screenshot of",
+        "Took a screenshot of",
+        "the device"
+      ],
+      "icon": "device",
+      "summaryAction": "device"
+    },
+    "html_preview": {
+      "displayName": "Preview an HTML page",
+      "labels": ["Preview", "Previewing", "Previewed", "an HTML page"],
+      "icon": "t3-code",
+      "summaryAction": "html-preview"
+    },
+    "html_render": {
+      "displayName": "Render an HTML page",
+      "labels": ["Render", "Rendering", "Rendered", "an HTML page"],
+      "icon": "t3-code",
+      "summaryAction": "html-render"
+    },
+    "link_issue": {
+      "displayName": "Link an issue",
+      "labels": ["Link", "Linking", "Linked", "an issue"],
+      "icon": "t3-code",
+      "summaryAction": "link-issue"
+    },
+    "link_pull_request": {
+      "displayName": "Link a pull request",
+      "labels": ["Link", "Linking", "Linked", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "link-pr"
+    },
+    "link_pull_requests": {
+      "displayName": "Link pull requests",
+      "labels": ["Link", "Linking", "Linked", "pull requests"],
+      "icon": "pull-request",
+      "summaryAction": "link-pr"
+    },
+    "list_issues": {
+      "displayName": "List issues",
+      "labels": ["List", "Listing", "Listed", "issues"],
+      "icon": "t3-code",
+      "summaryAction": "list-issues"
+    },
+    "list_scheduled_tasks": {
+      "displayName": "List scheduled tasks",
+      "labels": ["List", "Listing", "Listed", "scheduled tasks"],
+      "icon": "t3-code",
+      "summaryAction": "schedule-list"
+    },
+    "list_thread_issues": {
+      "displayName": "Check linked issues",
+      "labels": ["Check", "Checking", "Checked", "linked issues"],
+      "icon": "t3-code",
+      "summaryAction": "list-thread-issues"
+    },
+    "list_thread_pull_requests": {
+      "displayName": "Check linked pull requests",
+      "labels": ["Check", "Checking", "Checked", "linked pull requests"],
+      "icon": "pull-request",
+      "summaryAction": "list-prs"
+    },
+    "orchestrator_capabilities": {
+      "displayName": "Get orchestration capabilities",
+      "labels": ["Get", "Getting", "Got", "orchestration capabilities"],
+      "icon": "t3-code",
+      "summaryAction": "capabilities"
+    },
+    "preview_act": {
+      "displayName": "Use the preview browser",
+      "labels": ["Use", "Using", "Used", "the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_click": {
+      "displayName": "Click in the preview browser",
+      "labels": ["Click", "Clicking", "Clicked", "in the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_dialog": {
+      "displayName": "Respond to a preview browser dialog",
+      "labels": ["Respond", "Responding", "Responded", "to a preview browser dialog"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_drag": {
+      "displayName": "Drag in the preview browser",
+      "labels": ["Drag", "Dragging", "Dragged", "in the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_evaluate": {
+      "displayName": "Evaluate script in the preview browser",
+      "labels": ["Evaluate", "Evaluating", "Evaluated", "script in the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_hover": {
+      "displayName": "Hover in the preview browser",
+      "labels": ["Hover", "Hovering", "Hovered", "in the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_navigate": {
+      "displayName": "Navigate the preview browser",
+      "labels": ["Navigate", "Navigating", "Navigated", "the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_open": {
+      "displayName": "Open a page in the preview browser",
+      "labels": ["Open", "Opening", "Opened", "a page in the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_press": {
+      "displayName": "Press a key in the preview browser",
+      "labels": ["Press", "Pressing", "Pressed", "a key in the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_recording_start": {
+      "displayName": "Start recording the preview browser",
+      "labels": ["Start", "Starting", "Started", "recording the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_recording_stop": {
+      "displayName": "Stop recording the preview browser",
+      "labels": ["Stop", "Stopping", "Stopped", "recording the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_resize": {
+      "displayName": "Resize the preview browser",
+      "labels": ["Resize", "Resizing", "Resized", "the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_scroll": {
+      "displayName": "Scroll the preview browser",
+      "labels": ["Scroll", "Scrolling", "Scrolled", "the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_select": {
+      "displayName": "Choose an option in the preview browser",
+      "labels": ["Choose", "Choosing", "Chose", "an option in the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_set_appearance": {
+      "displayName": "Set preview browser appearance",
+      "labels": ["Set", "Setting", "Set", "preview browser appearance"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_snapshot": {
+      "displayName": "Snapshot the preview page",
+      "labels": [
+        "Take a snapshot of",
+        "Taking a snapshot of",
+        "Took a snapshot of",
+        "the preview page"
+      ],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_status": {
+      "displayName": "Get preview browser status",
+      "labels": ["Get", "Getting", "Got", "preview browser status"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_type": {
+      "displayName": "Type in the preview browser",
+      "labels": ["Type", "Typing", "Typed", "in the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_upload": {
+      "displayName": "Upload files to the preview browser",
+      "labels": ["Upload", "Uploading", "Uploaded", "files to the preview browser"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "preview_wait_for": {
+      "displayName": "Wait for the preview page",
+      "labels": ["Wait", "Waiting", "Waited", "for the preview page"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "pull_request_create": {
+      "displayName": "Open a pull request",
+      "labels": ["Open", "Opening", "Opened", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "create-pr"
+    },
+    "pull_request_list": {
+      "displayName": "List pull requests",
+      "labels": ["List", "Listing", "Listed", "pull requests"],
+      "icon": "pull-request",
+      "summaryAction": "list-repo-prs"
+    },
+    "pull_request_merge": {
+      "displayName": "Merge a pull request",
+      "labels": ["Merge", "Merging", "Merged", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "merge-pr"
+    },
+    "pull_request_read": {
+      "displayName": "Read a pull request",
+      "labels": ["Read", "Reading", "Read", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "read-pr"
+    },
+    "pull_request_respond": {
+      "displayName": "Respond on a pull request",
+      "labels": ["Respond", "Responding", "Responded", "on a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "respond-pr"
+    },
+    "pull_request_review": {
+      "displayName": "Review a pull request",
+      "labels": ["Review", "Reviewing", "Reviewed", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "review-pr"
+    },
+    "pull_request_update": {
+      "displayName": "Update a pull request",
+      "labels": ["Update", "Updating", "Updated", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "update-pr"
+    },
+    "read_issue": {
+      "displayName": "Read an issue",
+      "labels": ["Read", "Reading", "Read", "an issue"],
+      "icon": "t3-code",
+      "summaryAction": "read-issue"
+    },
+    "read_pull_request_guide": {
+      "displayName": "Read a review guide",
+      "labels": ["Read", "Reading", "Read", "a review guide"],
+      "icon": "pull-request",
+      "summaryAction": "read-pr-guide"
+    },
+    "request_secret": {
+      "displayName": "Ask for a secret",
+      "labels": ["Ask for", "Asking for", "Asked for", "a secret"],
+      "icon": "t3-code",
+      "summaryAction": "secret-request"
+    },
+    "run_scheduled_task_now": {
+      "displayName": "Run a scheduled task",
+      "labels": ["Run", "Running", "Requested a run of", "a scheduled task"],
+      "icon": "t3-code",
+      "summaryAction": "schedule-run"
+    },
+    "schedule_task": {
+      "displayName": "Schedule a task",
+      "labels": ["Schedule", "Scheduling", "Scheduled", "a task"],
+      "icon": "t3-code",
+      "summaryAction": "schedule-create"
+    },
+    "send_to_user": {
+      "displayName": "Send a message",
+      "labels": ["Send", "Sending", "Sent", "a message"],
+      "icon": "t3-code",
+      "summaryAction": "send-to-user"
+    },
+    "set_issue_state": {
+      "displayName": "Change an issue's state",
+      "labels": ["Change", "Changing", "Changed", "an issue's state"],
+      "icon": "t3-code",
+      "summaryAction": "set-issue-state"
+    },
+    "t3_attachment_discard": {
+      "displayName": "Discard a pending attachment",
+      "labels": ["Discard", "Discarding", "Discarded", "a pending attachment"],
+      "icon": "t3-code",
+      "summaryAction": "attachment-discard"
+    },
+    "t3_attachment_prepare_upload": {
+      "displayName": "Prepare an attachment upload",
+      "labels": ["Prepare", "Preparing", "Prepared", "an attachment upload"],
+      "icon": "t3-code",
+      "summaryAction": "attachment-prepare"
+    },
+    "t3_background_wait": {
+      "displayName": "Update background waits",
+      "labels": ["Update", "Updating", "Updated", "background waits"],
+      "icon": "t3-code",
+      "summaryAction": "background-wait"
+    },
+    "t3_environment_link": {
+      "displayName": "Ask to link an environment",
+      "labels": ["Ask to link", "Asking to link", "Asked to link", "an environment"],
+      "icon": "t3-code",
+      "summaryAction": "environment-link"
+    },
+    "t3_environment_links": {
+      "displayName": "List linked environments",
+      "labels": ["List", "Listing", "Listed", "linked environments"],
+      "icon": "t3-code",
+      "summaryAction": "environment-links"
+    },
+    "t3_environment_preferences_update": {
+      "displayName": "Update environment preferences",
+      "labels": ["Update", "Updating", "Updated", "environment preferences"],
+      "icon": "t3-code",
+      "summaryAction": "environment-update"
+    },
+    "t3_environment_read": {
+      "displayName": "Read environment preferences",
+      "labels": ["Read", "Reading", "Read", "environment preferences"],
+      "icon": "t3-code",
+      "summaryAction": "environment-read"
+    },
+    "t3_environment_unlink": {
+      "displayName": "Forget a linked environment",
+      "labels": ["Forget", "Forgetting", "Forgot", "a linked environment"],
+      "icon": "t3-code",
+      "summaryAction": "environment-unlink"
+    },
+    "t3_pending_request": {
+      "displayName": "Handle pending questions",
+      "labels": ["Handle", "Handling", "Handled", "pending questions"],
+      "icon": "t3-code",
+      "summaryAction": "question-respond"
+    },
+    "t3_pending_request_list": {
+      "displayName": "List pending questions",
+      "labels": ["List", "Listing", "Listed", "pending questions"],
+      "icon": "t3-code",
+      "summaryAction": "question-list"
+    },
+    "t3_pending_request_read": {
+      "displayName": "Read pending questions",
+      "labels": ["Read", "Reading", "Read", "pending questions"],
+      "icon": "t3-code",
+      "summaryAction": "question-read"
+    },
+    "t3_pending_request_respond": {
+      "displayName": "Answer pending questions",
+      "labels": ["Answer", "Answering", "Answered", "pending questions"],
+      "icon": "t3-code",
+      "summaryAction": "question-respond"
+    },
+    "t3_preview_close": {
+      "displayName": "Close a preview tab",
+      "labels": ["Close", "Closing", "Closed", "a preview tab"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "t3_preview_list": {
+      "displayName": "List preview tabs",
+      "labels": ["List", "Listing", "Listed", "preview tabs"],
+      "icon": "browser",
+      "summaryAction": "browser"
+    },
+    "t3_project_clone": {
+      "displayName": "Clone a repository",
+      "labels": ["Clone", "Cloning", "Cloned", "a repository"],
+      "icon": "t3-code",
+      "summaryAction": "project-clone"
+    },
+    "t3_project_create": {
+      "displayName": "Register a project",
+      "labels": ["Register", "Registering", "Registered", "a project"],
+      "icon": "t3-code",
+      "summaryAction": "project-create"
+    },
+    "t3_project_delete": {
+      "displayName": "Delete a project",
+      "labels": ["Delete", "Deleting", "Deleted", "a project"],
+      "icon": "t3-code",
+      "summaryAction": "project-delete"
+    },
+    "t3_project_list": {
+      "displayName": "List projects",
+      "labels": ["List", "Listing", "Listed", "projects"],
+      "icon": "t3-code",
+      "summaryAction": "project-list"
+    },
+    "t3_project_read": {
+      "displayName": "Read a project",
+      "labels": ["Read", "Reading", "Read", "a project"],
+      "icon": "t3-code",
+      "summaryAction": "project-read"
+    },
+    "t3_project_update": {
+      "displayName": "Update a project",
+      "labels": ["Update", "Updating", "Updated", "a project"],
+      "icon": "t3-code",
+      "summaryAction": "project-update"
+    },
+    "t3_queue": {
+      "displayName": "Manage queued messages",
+      "labels": ["Manage", "Managing", "Managed", "queued messages"],
+      "icon": "t3-code",
+      "summaryAction": "queue-edit"
+    },
+    "t3_queue_cancel": {
+      "displayName": "Cancel a queued run",
+      "labels": ["Cancel", "Canceling", "Requested cancellation of", "a queued run"],
+      "icon": "t3-code",
+      "summaryAction": "queue-cancel"
+    },
+    "t3_queue_edit": {
+      "displayName": "Edit a queued message",
+      "labels": ["Edit", "Editing", "Edited", "a queued message"],
+      "icon": "t3-code",
+      "summaryAction": "queue-edit"
+    },
+    "t3_queue_list": {
+      "displayName": "List queued messages",
+      "labels": ["List", "Listing", "Listed", "queued messages"],
+      "icon": "t3-code",
+      "summaryAction": "queue-list"
+    },
+    "t3_queue_promote_to_steer": {
+      "displayName": "Steer with a queued message",
+      "labels": ["Steer with", "Steering with", "Requested steering with", "a queued message"],
+      "icon": "t3-code",
+      "summaryAction": "queue-steer"
+    },
+    "t3_queue_read": {
+      "displayName": "Read a queued message",
+      "labels": ["Read", "Reading", "Read", "a queued message"],
+      "icon": "t3-code",
+      "summaryAction": "queue-read"
+    },
+    "t3_queue_reorder": {
+      "displayName": "Reorder a queued run",
+      "labels": ["Reorder", "Reordering", "Reordered", "a queued run"],
+      "icon": "t3-code",
+      "summaryAction": "queue-reorder"
+    },
+    "t3_submit_output": {
+      "displayName": "Submit the result",
+      "labels": ["Submit", "Submitting", "Submitted", "the result"],
+      "icon": "t3-code",
+      "summaryAction": "thread-send"
+    },
+    "t3_theme_read": {
+      "displayName": "Read themes",
+      "labels": ["Read", "Reading", "Read", "themes"],
+      "icon": "t3-code",
+      "summaryAction": "theme-read"
+    },
+    "t3_theme_set": {
+      "displayName": "Set the theme",
+      "labels": ["Set", "Setting", "Set", "the theme"],
+      "icon": "t3-code",
+      "summaryAction": "theme-set"
+    },
+    "t3_thread_configuration": {
+      "displayName": "Read thread configuration",
+      "labels": ["Read", "Reading", "Read", "thread configuration"],
+      "icon": "t3-code",
+      "summaryAction": "thread-configuration"
+    },
+    "t3_thread_configure": {
+      "displayName": "Use thread model settings",
+      "labels": ["Use", "Using", "Used", "thread model settings"],
+      "icon": "t3-code",
+      "summaryAction": "thread-configure"
+    },
+    "t3_thread_fork": {
+      "displayName": "Fork this thread",
+      "labels": ["Fork", "Forking", "Requested a fork of", "this thread"],
+      "icon": "t3-code",
+      "summaryAction": "thread-fork"
+    },
+    "t3_thread_interrupt": {
+      "displayName": "Interrupt a T3 thread",
+      "labels": ["Interrupt", "Interrupting", "Requested an interrupt of", "a T3 thread"],
+      "icon": "t3-code",
+      "summaryAction": "thread-interrupt"
+    },
+    "t3_thread_launch": {
+      "displayName": "Launch a project thread",
+      "labels": ["Launch", "Launching", "Launched", "a project thread"],
+      "icon": "t3-code",
+      "summaryAction": "thread-create"
+    },
+    "t3_thread_list": {
+      "displayName": "List T3 threads",
+      "labels": ["List", "Listing", "Listed", "T3 threads"],
+      "icon": "t3-code",
+      "summaryAction": "thread-list"
+    },
+    "t3_thread_merge_back": {
+      "displayName": "Merge thread context",
+      "labels": ["Merge", "Merging", "Requested a merge of", "thread context"],
+      "icon": "t3-code",
+      "summaryAction": "thread-merge"
+    },
+    "t3_thread_organize": {
+      "displayName": "Organize a thread",
+      "labels": ["Organize", "Organizing", "Organized", "a thread"],
+      "icon": "t3-code",
+      "summaryAction": "thread-organize"
+    },
+    "t3_thread_read": {
+      "displayName": "Read a T3 thread",
+      "labels": ["Read", "Reading", "Read", "a T3 thread"],
+      "icon": "t3-code",
+      "summaryAction": "thread-read"
+    },
+    "t3_thread_search": {
+      "displayName": "Search thread content",
+      "labels": ["Search", "Searching", "Searched", "thread content"],
+      "icon": "t3-code",
+      "summaryAction": "thread-search"
+    },
+    "t3_thread_send": {
+      "displayName": "Send to a T3 thread",
+      "labels": ["Send", "Sending", "Sent", "to a T3 thread"],
+      "icon": "t3-code",
+      "summaryAction": "thread-send"
+    },
+    "t3_thread_send_attachments": {
+      "displayName": "Send attachments",
+      "labels": ["Send", "Sending", "Sent", "attachments"],
+      "icon": "t3-code",
+      "summaryAction": "attachment-send"
+    },
+    "t3_thread_start": {
+      "displayName": "Start a T3 thread",
+      "labels": ["Start", "Starting", "Started", "a T3 thread"],
+      "icon": "t3-code",
+      "summaryAction": "thread-create"
+    },
+    "t3_thread_transfer": {
+      "displayName": "Use thread transfers",
+      "labels": ["Use", "Using", "Used", "thread transfers"],
+      "icon": "t3-code",
+      "summaryAction": "thread-fork"
+    },
+    "t3_thread_transfers": {
+      "displayName": "Read thread transfers",
+      "labels": ["Read", "Reading", "Read", "thread transfers"],
+      "icon": "t3-code",
+      "summaryAction": "thread-transfers"
+    },
+    "t3_thread_update": {
+      "displayName": "Update T3 thread metadata",
+      "labels": ["Update", "Updating", "Updated", "T3 thread metadata"],
+      "icon": "t3-code",
+      "summaryAction": "thread-update"
+    },
+    "t3_thread_wait": {
+      "displayName": "Wait for a T3 thread",
+      "labels": ["Wait", "Waiting", "Waited", "for a T3 thread"],
+      "icon": "t3-code",
+      "summaryAction": "thread-wait"
+    },
+    "t3_workflow": {
+      "displayName": "Use workflow runs",
+      "labels": ["Use", "Using", "Used", "workflow runs"],
+      "icon": "t3-code",
+      "summaryAction": "thread-send"
+    },
+    "t3_workflow_stop": {
+      "displayName": "Stop a workflow",
+      "labels": ["Stop", "Stopping", "Requested a stop for", "a workflow"],
+      "icon": "t3-code",
+      "summaryAction": "workflow-stop"
+    },
+    "t3_worktree_handoff": {
+      "displayName": "Hand off thread to a git worktree",
+      "labels": ["Hand off", "Handing off", "Handed off", "thread to a git worktree"],
+      "icon": "t3-code",
+      "summaryAction": "worktree-handoff"
+    },
+    "t3_worktree_list": {
+      "displayName": "List workspace branches",
+      "labels": ["List", "Listing", "Listed", "workspace branches"],
+      "icon": "t3-code",
+      "summaryAction": "worktree-list"
+    },
+    "t3_worktree_status": {
+      "displayName": "Get thread worktree status",
+      "labels": ["Get", "Getting", "Got", "thread worktree status"],
+      "icon": "t3-code",
+      "summaryAction": "worktree-status"
+    },
+    "task_cancel": {
+      "displayName": "Cancel a delegated task",
+      "labels": ["Cancel", "Canceling", "Requested cancellation of", "a delegated task"],
+      "icon": "t3-code",
+      "summaryAction": "task-cancel"
+    },
+    "task_status": {
+      "displayName": "Get delegated task status",
+      "labels": ["Get", "Getting", "Got", "delegated task status"],
+      "icon": "t3-code",
+      "summaryAction": "task-status"
+    },
+    "unlink_issue": {
+      "displayName": "Unlink an issue",
+      "labels": ["Unlink", "Unlinking", "Unlinked", "an issue"],
+      "icon": "t3-code",
+      "summaryAction": "unlink-issue"
+    },
+    "unlink_pull_request": {
+      "displayName": "Unlink a pull request",
+      "labels": ["Unlink", "Unlinking", "Unlinked", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "unlink-pr"
+    },
+    "unlink_pull_requests": {
+      "displayName": "Unlink pull requests by state",
+      "labels": ["Unlink", "Unlinking", "Unlinked", "pull requests by state"],
+      "icon": "pull-request",
+      "summaryAction": "unlink-pr"
+    },
+    "unwatch_pull_request": {
+      "displayName": "Stop watching a pull request",
+      "labels": ["Stop watching", "Unwatching", "Stopped watching", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "unwatch-pr"
+    },
+    "update_scheduled_task": {
+      "displayName": "Update a scheduled task",
+      "labels": ["Update", "Updating", "Updated", "a scheduled task"],
+      "icon": "t3-code",
+      "summaryAction": "schedule-update"
+    },
+    "watch_pull_request": {
+      "displayName": "Watch a pull request",
+      "labels": ["Watch", "Watching", "Watching", "a pull request"],
+      "icon": "pull-request",
+      "summaryAction": "watch-pr"
+    },
+    "write_pull_request_guides": {
+      "displayName": "Write review guides",
+      "labels": ["Write", "Writing", "Started writing", "review guides"],
+      "icon": "pull-request",
+      "summaryAction": "write-pr-guides"
+    }
+  },
+  "sentences": {
+    "Link\nLinking\nLinked\na pull request": {
+      "detail": "{status, select, inProgress {Linking a pull request} completed {Linked a pull request} failed {Failed to link a pull request} declined {Declined to link a pull request} stopped {Stopped linking a pull request} other {Linking a pull request}}",
+      "changeRequest": "{status, select, inProgress {Linking {changeRequest} #{number}} completed {Linked {changeRequest} #{number}} failed {Failed to link {changeRequest} #{number}} declined {Declined to link {changeRequest} #{number}} stopped {Stopped linking {changeRequest} #{number}} other {Linking {changeRequest} #{number}}}"
+    },
+    "Link\nLinking\nLinked\npull requests": {
+      "detail": "{status, select, inProgress {Linking pull requests} completed {Linked pull requests} failed {Failed to link pull requests} declined {Declined to link pull requests} stopped {Stopped linking pull requests} other {Linking pull requests}}",
+      "changeRequest": "{status, select, inProgress {Linking {changeRequest} #{number}} completed {Linked {changeRequest} #{number}} failed {Failed to link {changeRequest} #{number}} declined {Declined to link {changeRequest} #{number}} stopped {Stopped linking {changeRequest} #{number}} other {Linking {changeRequest} #{number}}}"
+    },
+    "Unlink\nUnlinking\nUnlinked\na pull request": {
+      "detail": "{status, select, inProgress {Unlinking a pull request} completed {Unlinked a pull request} failed {Failed to unlink a pull request} declined {Declined to unlink a pull request} stopped {Stopped unlinking a pull request} other {Unlinking a pull request}}",
+      "changeRequest": "{status, select, inProgress {Unlinking {changeRequest} #{number}} completed {Unlinked {changeRequest} #{number}} failed {Failed to unlink {changeRequest} #{number}} declined {Declined to unlink {changeRequest} #{number}} stopped {Stopped unlinking {changeRequest} #{number}} other {Unlinking {changeRequest} #{number}}}"
+    },
+    "Unlink\nUnlinking\nUnlinked\npull requests by state": {
+      "detail": "{status, select, inProgress {Unlinking pull requests by state} completed {Unlinked pull requests by state} failed {Failed to unlink pull requests by state} declined {Declined to unlink pull requests by state} stopped {Stopped unlinking pull requests by state} other {Unlinking pull requests by state}}",
+      "changeRequest": "{status, select, inProgress {Unlinking {changeRequest} #{number}} completed {Unlinked {changeRequest} #{number}} failed {Failed to unlink {changeRequest} #{number}} declined {Declined to unlink {changeRequest} #{number}} stopped {Stopped unlinking {changeRequest} #{number}} other {Unlinking {changeRequest} #{number}}}"
+    },
+    "Check\nChecking\nChecked\nlinked pull requests": {
+      "detail": "{status, select, inProgress {Checking linked pull requests} completed {Checked linked pull requests} failed {Failed to check linked pull requests} declined {Declined to check linked pull requests} stopped {Stopped checking linked pull requests} other {Checking linked pull requests}}"
+    },
+    "Watch\nWatching\nWatching\na pull request": {
+      "detail": "{status, select, inProgress {Watching a pull request} completed {Watching a pull request} failed {Failed to watch a pull request} declined {Declined to watch a pull request} stopped {Stopped watching a pull request} other {Watching a pull request}}",
+      "changeRequest": "{status, select, inProgress {Watching {changeRequest} #{number}} completed {Watching {changeRequest} #{number}} failed {Failed to watch {changeRequest} #{number}} declined {Declined to watch {changeRequest} #{number}} stopped {Stopped watching {changeRequest} #{number}} other {Watching {changeRequest} #{number}}}"
+    },
+    "Stop watching\nUnwatching\nStopped watching\na pull request": {
+      "detail": "{status, select, inProgress {Unwatching a pull request} completed {Stopped watching a pull request} failed {Failed to stop watching a pull request} declined {Declined to stop watching a pull request} stopped {Stopped unwatching a pull request} other {Unwatching a pull request}}",
+      "changeRequest": "{status, select, inProgress {Unwatching {changeRequest} #{number}} completed {Stopped watching {changeRequest} #{number}} failed {Failed to stop watching {changeRequest} #{number}} declined {Declined to stop watching {changeRequest} #{number}} stopped {Stopped unwatching {changeRequest} #{number}} other {Unwatching {changeRequest} #{number}}}"
+    },
+    "Write\nWriting\nStarted writing\nreview guides": {
+      "detail": "{status, select, inProgress {Writing review guides} completed {Started writing review guides} failed {Failed to write review guides} declined {Declined to write review guides} stopped {Stopped writing review guides} other {Writing review guides}}"
+    },
+    "Read\nReading\nRead\na review guide": {
+      "detail": "{status, select, inProgress {Reading a review guide} completed {Read a review guide} failed {Failed to read a review guide} declined {Declined to read a review guide} stopped {Stopped reading a review guide} other {Reading a review guide}}"
+    },
+    "List\nListing\nListed\nissues": {
+      "detail": "{status, select, inProgress {Listing issues} completed {Listed issues} failed {Failed to list issues} declined {Declined to list issues} stopped {Stopped listing issues} other {Listing issues}}"
+    },
+    "Read\nReading\nRead\nan issue": {
+      "detail": "{status, select, inProgress {Reading an issue} completed {Read an issue} failed {Failed to read an issue} declined {Declined to read an issue} stopped {Stopped reading an issue} other {Reading an issue}}"
+    },
+    "File\nFiling\nFiled\nan issue": {
+      "detail": "{status, select, inProgress {Filing an issue} completed {Filed an issue} failed {Failed to file an issue} declined {Declined to file an issue} stopped {Stopped filing an issue} other {Filing an issue}}"
+    },
+    "Comment on\nCommenting on\nCommented on\nan issue": {
+      "detail": "{status, select, inProgress {Commenting on an issue} completed {Commented on an issue} failed {Failed to comment on an issue} declined {Declined to comment on an issue} stopped {Stopped commenting on an issue} other {Commenting on an issue}}"
+    },
+    "Change\nChanging\nChanged\nan issue's state": {
+      "detail": "{status, select, inProgress {Changing an issue's state} completed {Changed an issue's state} failed {Failed to change an issue's state} declined {Declined to change an issue's state} stopped {Stopped changing an issue's state} other {Changing an issue's state}}"
+    },
+    "Link\nLinking\nLinked\nan issue": {
+      "detail": "{status, select, inProgress {Linking an issue} completed {Linked an issue} failed {Failed to link an issue} declined {Declined to link an issue} stopped {Stopped linking an issue} other {Linking an issue}}"
+    },
+    "Unlink\nUnlinking\nUnlinked\nan issue": {
+      "detail": "{status, select, inProgress {Unlinking an issue} completed {Unlinked an issue} failed {Failed to unlink an issue} declined {Declined to unlink an issue} stopped {Stopped unlinking an issue} other {Unlinking an issue}}"
+    },
+    "Check\nChecking\nChecked\nlinked issues": {
+      "detail": "{status, select, inProgress {Checking linked issues} completed {Checked linked issues} failed {Failed to check linked issues} declined {Declined to check linked issues} stopped {Stopped checking linked issues} other {Checking linked issues}}"
+    },
+    "Get\nGetting\nGot\norchestration capabilities": {
+      "detail": "{status, select, inProgress {Getting orchestration capabilities} completed {Got orchestration capabilities} failed {Failed to get orchestration capabilities} declined {Declined to get orchestration capabilities} stopped {Stopped getting orchestration capabilities} other {Getting orchestration capabilities}}"
+    },
+    "Delegate\nDelegating\nDelegated\na child task": {
+      "detail": "{status, select, inProgress {Delegating a child task} completed {Delegated a child task} failed {Failed to delegate a child task} declined {Declined to delegate a child task} stopped {Stopped delegating a child task} other {Delegating a child task}}"
+    },
+    "Get\nGetting\nGot\ndelegated task status": {
+      "detail": "{status, select, inProgress {Getting delegated task status} completed {Got delegated task status} failed {Failed to get delegated task status} declined {Declined to get delegated task status} stopped {Stopped getting delegated task status} other {Getting delegated task status}}"
+    },
+    "Cancel\nCanceling\nRequested cancellation of\na delegated task": {
+      "detail": "{status, select, inProgress {Canceling a delegated task} completed {Requested cancellation of a delegated task} failed {Failed to cancel a delegated task} declined {Declined to cancel a delegated task} stopped {Stopped canceling a delegated task} other {Canceling a delegated task}}"
+    },
+    "Schedule\nScheduling\nScheduled\na task": {
+      "detail": "{status, select, inProgress {Scheduling a task} completed {Scheduled a task} failed {Failed to schedule a task} declined {Declined to schedule a task} stopped {Stopped scheduling a task} other {Scheduling a task}}"
+    },
+    "List\nListing\nListed\nscheduled tasks": {
+      "detail": "{status, select, inProgress {Listing scheduled tasks} completed {Listed scheduled tasks} failed {Failed to list scheduled tasks} declined {Declined to list scheduled tasks} stopped {Stopped listing scheduled tasks} other {Listing scheduled tasks}}"
+    },
+    "Update\nUpdating\nUpdated\na scheduled task": {
+      "detail": "{status, select, inProgress {Updating a scheduled task} completed {Updated a scheduled task} failed {Failed to update a scheduled task} declined {Declined to update a scheduled task} stopped {Stopped updating a scheduled task} other {Updating a scheduled task}}"
+    },
+    "Delete\nDeleting\nRequested deletion of\na scheduled task": {
+      "detail": "{status, select, inProgress {Deleting a scheduled task} completed {Requested deletion of a scheduled task} failed {Failed to delete a scheduled task} declined {Declined to delete a scheduled task} stopped {Stopped deleting a scheduled task} other {Deleting a scheduled task}}"
+    },
+    "Ask for\nAsking for\nAsked for\na secret": {
+      "detail": "{status, select, inProgress {Asking for a secret} completed {Asked for a secret} failed {Failed to ask for a secret} declined {Declined to ask for a secret} stopped {Stopped asking for a secret} other {Asking for a secret}}"
+    },
+    "Create\nCreating\nCreated\nT3 threads": {
+      "detail": "{status, select, inProgress {Creating T3 threads} completed {Created T3 threads} failed {Failed to create T3 threads} declined {Declined to create T3 threads} stopped {Stopped creating T3 threads} other {Creating T3 threads}}"
+    },
+    "Start\nStarting\nStarted\na T3 thread": {
+      "detail": "{status, select, inProgress {Starting a T3 thread} completed {Started a T3 thread} failed {Failed to start a T3 thread} declined {Declined to start a T3 thread} stopped {Stopped starting a T3 thread} other {Starting a T3 thread}}"
+    },
+    "List\nListing\nListed\nT3 threads": {
+      "detail": "{status, select, inProgress {Listing T3 threads} completed {Listed T3 threads} failed {Failed to list T3 threads} declined {Declined to list T3 threads} stopped {Stopped listing T3 threads} other {Listing T3 threads}}"
+    },
+    "Read\nReading\nRead\na T3 thread": {
+      "detail": "{status, select, inProgress {Reading a T3 thread} completed {Read a T3 thread} failed {Failed to read a T3 thread} declined {Declined to read a T3 thread} stopped {Stopped reading a T3 thread} other {Reading a T3 thread}}"
+    },
+    "Send\nSending\nSent\nto a T3 thread": {
+      "detail": "{status, select, inProgress {Sending to a T3 thread} completed {Sent to a T3 thread} failed {Failed to send to a T3 thread} declined {Declined to send to a T3 thread} stopped {Stopped sending to a T3 thread} other {Sending to a T3 thread}}"
+    },
+    "Wait\nWaiting\nWaited\nfor a T3 thread": {
+      "detail": "{status, select, inProgress {Waiting for a T3 thread} completed {Waited for a T3 thread} failed {Failed to wait for a T3 thread} declined {Declined to wait for a T3 thread} stopped {Stopped waiting for a T3 thread} other {Waiting for a T3 thread}}"
+    },
+    "Stop\nStopping\nRequested a stop for\na workflow": {
+      "detail": "{status, select, inProgress {Stopping a workflow} completed {Requested a stop for a workflow} failed {Failed to stop a workflow} declined {Declined to stop a workflow} stopped {Stopped stopping a workflow} other {Stopping a workflow}}"
+    },
+    "Update\nUpdating\nUpdated\nbackground waits": {
+      "detail": "{status, select, inProgress {Updating background waits} completed {Updated background waits} failed {Failed to update background waits} declined {Declined to update background waits} stopped {Stopped updating background waits} other {Updating background waits}}"
+    },
+    "Interrupt\nInterrupting\nRequested an interrupt of\na T3 thread": {
+      "detail": "{status, select, inProgress {Interrupting a T3 thread} completed {Requested an interrupt of a T3 thread} failed {Failed to interrupt a T3 thread} declined {Declined to interrupt a T3 thread} stopped {Stopped interrupting a T3 thread} other {Interrupting a T3 thread}}"
+    },
+    "Hand off\nHanding off\nHanded off\nthread to a git worktree": {
+      "detail": "{status, select, inProgress {Handing off thread to a git worktree} completed {Handed off thread to a git worktree} failed {Failed to hand off thread to a git worktree} declined {Declined to hand off thread to a git worktree} stopped {Stopped handing off thread to a git worktree} other {Handing off thread to a git worktree}}"
+    },
+    "Get\nGetting\nGot\nthread worktree status": {
+      "detail": "{status, select, inProgress {Getting thread worktree status} completed {Got thread worktree status} failed {Failed to get thread worktree status} declined {Declined to get thread worktree status} stopped {Stopped getting thread worktree status} other {Getting thread worktree status}}"
+    },
+    "Get\nGetting\nGot\npreview browser status": {
+      "detail": "{status, select, inProgress {Getting preview browser status} completed {Got preview browser status} failed {Failed to get preview browser status} declined {Declined to get preview browser status} stopped {Stopped getting preview browser status} other {Getting preview browser status}}"
+    },
+    "Open\nOpening\nOpened\na page in the preview browser": {
+      "detail": "{status, select, inProgress {Opening a page in the preview browser} completed {Opened a page in the preview browser} failed {Failed to open a page in the preview browser} declined {Declined to open a page in the preview browser} stopped {Stopped opening a page in the preview browser} other {Opening a page in the preview browser}}"
+    },
+    "Navigate\nNavigating\nNavigated\nthe preview browser": {
+      "detail": "{status, select, inProgress {Navigating the preview browser} completed {Navigated the preview browser} failed {Failed to navigate the preview browser} declined {Declined to navigate the preview browser} stopped {Stopped navigating the preview browser} other {Navigating the preview browser}}"
+    },
+    "Respond\nResponding\nResponded\nto a preview browser dialog": {
+      "detail": "{status, select, inProgress {Responding to a preview browser dialog} completed {Responded to a preview browser dialog} failed {Failed to respond to a preview browser dialog} declined {Declined to respond to a preview browser dialog} stopped {Stopped responding to a preview browser dialog} other {Responding to a preview browser dialog}}"
+    },
+    "Take a snapshot of\nTaking a snapshot of\nTook a snapshot of\nthe preview page": {
+      "detail": "{status, select, inProgress {Taking a snapshot of the preview page} completed {Took a snapshot of the preview page} failed {Failed to take a snapshot of the preview page} declined {Declined to take a snapshot of the preview page} stopped {Stopped taking a snapshot of the preview page} other {Taking a snapshot of the preview page}}"
+    },
+    "Use\nUsing\nUsed\nthe preview browser": {
+      "detail": "{status, select, inProgress {Using the preview browser} completed {Used the preview browser} failed {Failed to use the preview browser} declined {Declined to use the preview browser} stopped {Stopped using the preview browser} other {Using the preview browser}}"
+    },
+    "Click\nClicking\nClicked\nin the preview browser": {
+      "detail": "{status, select, inProgress {Clicking in the preview browser} completed {Clicked in the preview browser} failed {Failed to click in the preview browser} declined {Declined to click in the preview browser} stopped {Stopped clicking in the preview browser} other {Clicking in the preview browser}}"
+    },
+    "Press\nPressing\nPressed\na key in the preview browser": {
+      "detail": "{status, select, inProgress {Pressing a key in the preview browser} completed {Pressed a key in the preview browser} failed {Failed to press a key in the preview browser} declined {Declined to press a key in the preview browser} stopped {Stopped pressing a key in the preview browser} other {Pressing a key in the preview browser}}"
+    },
+    "Type\nTyping\nTyped\nin the preview browser": {
+      "detail": "{status, select, inProgress {Typing in the preview browser} completed {Typed in the preview browser} failed {Failed to type in the preview browser} declined {Declined to type in the preview browser} stopped {Stopped typing in the preview browser} other {Typing in the preview browser}}"
+    },
+    "Hover\nHovering\nHovered\nin the preview browser": {
+      "detail": "{status, select, inProgress {Hovering in the preview browser} completed {Hovered in the preview browser} failed {Failed to hover in the preview browser} declined {Declined to hover in the preview browser} stopped {Stopped hovering in the preview browser} other {Hovering in the preview browser}}"
+    },
+    "Choose\nChoosing\nChose\nan option in the preview browser": {
+      "detail": "{status, select, inProgress {Choosing an option in the preview browser} completed {Chose an option in the preview browser} failed {Failed to choose an option in the preview browser} declined {Declined to choose an option in the preview browser} stopped {Stopped choosing an option in the preview browser} other {Choosing an option in the preview browser}}"
+    },
+    "Drag\nDragging\nDragged\nin the preview browser": {
+      "detail": "{status, select, inProgress {Dragging in the preview browser} completed {Dragged in the preview browser} failed {Failed to drag in the preview browser} declined {Declined to drag in the preview browser} stopped {Stopped dragging in the preview browser} other {Dragging in the preview browser}}"
+    },
+    "Upload\nUploading\nUploaded\nfiles to the preview browser": {
+      "detail": "{status, select, inProgress {Uploading files to the preview browser} completed {Uploaded files to the preview browser} failed {Failed to upload files to the preview browser} declined {Declined to upload files to the preview browser} stopped {Stopped uploading files to the preview browser} other {Uploading files to the preview browser}}"
+    },
+    "Scroll\nScrolling\nScrolled\nthe preview browser": {
+      "detail": "{status, select, inProgress {Scrolling the preview browser} completed {Scrolled the preview browser} failed {Failed to scroll the preview browser} declined {Declined to scroll the preview browser} stopped {Stopped scrolling the preview browser} other {Scrolling the preview browser}}"
+    },
+    "Resize\nResizing\nResized\nthe preview browser": {
+      "detail": "{status, select, inProgress {Resizing the preview browser} completed {Resized the preview browser} failed {Failed to resize the preview browser} declined {Declined to resize the preview browser} stopped {Stopped resizing the preview browser} other {Resizing the preview browser}}"
+    },
+    "Evaluate\nEvaluating\nEvaluated\nscript in the preview browser": {
+      "detail": "{status, select, inProgress {Evaluating script in the preview browser} completed {Evaluated script in the preview browser} failed {Failed to evaluate script in the preview browser} declined {Declined to evaluate script in the preview browser} stopped {Stopped evaluating script in the preview browser} other {Evaluating script in the preview browser}}"
+    },
+    "Wait\nWaiting\nWaited\nfor the preview page": {
+      "detail": "{status, select, inProgress {Waiting for the preview page} completed {Waited for the preview page} failed {Failed to wait for the preview page} declined {Declined to wait for the preview page} stopped {Stopped waiting for the preview page} other {Waiting for the preview page}}"
+    },
+    "Set\nSetting\nSet\npreview browser appearance": {
+      "detail": "{status, select, inProgress {Setting preview browser appearance} completed {Set preview browser appearance} failed {Failed to set preview browser appearance} declined {Declined to set preview browser appearance} stopped {Stopped setting preview browser appearance} other {Setting preview browser appearance}}"
+    },
+    "Start\nStarting\nStarted\nrecording the preview browser": {
+      "detail": "{status, select, inProgress {Starting recording the preview browser} completed {Started recording the preview browser} failed {Failed to start recording the preview browser} declined {Declined to start recording the preview browser} stopped {Stopped starting recording the preview browser} other {Starting recording the preview browser}}"
+    },
+    "Stop\nStopping\nStopped\nrecording the preview browser": {
+      "detail": "{status, select, inProgress {Stopping recording the preview browser} completed {Stopped recording the preview browser} failed {Failed to stop recording the preview browser} declined {Declined to stop recording the preview browser} stopped {Stopped stopping recording the preview browser} other {Stopping recording the preview browser}}"
+    },
+    "List\nListing\nListed\nsimulators and emulators": {
+      "detail": "{status, select, inProgress {Listing simulators and emulators} completed {Listed simulators and emulators} failed {Failed to list simulators and emulators} declined {Declined to list simulators and emulators} stopped {Stopped listing simulators and emulators} other {Listing simulators and emulators}}"
+    },
+    "Open\nOpening\nOpened\na device in the Device panel": {
+      "detail": "{status, select, inProgress {Opening a device in the Device panel} completed {Opened a device in the Device panel} failed {Failed to open a device in the Device panel} declined {Declined to open a device in the Device panel} stopped {Stopped opening a device in the Device panel} other {Opening a device in the Device panel}}"
+    },
+    "Take a screenshot of\nTaking a screenshot of\nTook a screenshot of\nthe device": {
+      "detail": "{status, select, inProgress {Taking a screenshot of the device} completed {Took a screenshot of the device} failed {Failed to take a screenshot of the device} declined {Declined to take a screenshot of the device} stopped {Stopped taking a screenshot of the device} other {Taking a screenshot of the device}}"
+    },
+    "Close\nClosing\nClosed\na device": {
+      "detail": "{status, select, inProgress {Closing a device} completed {Closed a device} failed {Failed to close a device} declined {Declined to close a device} stopped {Stopped closing a device} other {Closing a device}}"
+    },
+    "Run\nRunning\nRequested a run of\na scheduled task": {
+      "detail": "{status, select, inProgress {Running a scheduled task} completed {Requested a run of a scheduled task} failed {Failed to run a scheduled task} declined {Declined to run a scheduled task} stopped {Stopped running a scheduled task} other {Running a scheduled task}}"
+    },
+    "Manage\nManaging\nManaged\nqueued messages": {
+      "detail": "{status, select, inProgress {Managing queued messages} completed {Managed queued messages} failed {Failed to manage queued messages} declined {Declined to manage queued messages} stopped {Stopped managing queued messages} other {Managing queued messages}}"
+    },
+    "Handle\nHandling\nHandled\npending questions": {
+      "detail": "{status, select, inProgress {Handling pending questions} completed {Handled pending questions} failed {Failed to handle pending questions} declined {Declined to handle pending questions} stopped {Stopped handling pending questions} other {Handling pending questions}}"
+    },
+    "List\nListing\nListed\nqueued messages": {
+      "detail": "{status, select, inProgress {Listing queued messages} completed {Listed queued messages} failed {Failed to list queued messages} declined {Declined to list queued messages} stopped {Stopped listing queued messages} other {Listing queued messages}}"
+    },
+    "Read\nReading\nRead\na queued message": {
+      "detail": "{status, select, inProgress {Reading a queued message} completed {Read a queued message} failed {Failed to read a queued message} declined {Declined to read a queued message} stopped {Stopped reading a queued message} other {Reading a queued message}}"
+    },
+    "Edit\nEditing\nEdited\na queued message": {
+      "detail": "{status, select, inProgress {Editing a queued message} completed {Edited a queued message} failed {Failed to edit a queued message} declined {Declined to edit a queued message} stopped {Stopped editing a queued message} other {Editing a queued message}}"
+    },
+    "Cancel\nCanceling\nRequested cancellation of\na queued run": {
+      "detail": "{status, select, inProgress {Canceling a queued run} completed {Requested cancellation of a queued run} failed {Failed to cancel a queued run} declined {Declined to cancel a queued run} stopped {Stopped canceling a queued run} other {Canceling a queued run}}"
+    },
+    "Reorder\nReordering\nReordered\na queued run": {
+      "detail": "{status, select, inProgress {Reordering a queued run} completed {Reordered a queued run} failed {Failed to reorder a queued run} declined {Declined to reorder a queued run} stopped {Stopped reordering a queued run} other {Reordering a queued run}}"
+    },
+    "Steer with\nSteering with\nRequested steering with\na queued message": {
+      "detail": "{status, select, inProgress {Steering with a queued message} completed {Requested steering with a queued message} failed {Failed to steer with a queued message} declined {Declined to steer with a queued message} stopped {Stopped steering with a queued message} other {Steering with a queued message}}"
+    },
+    "List\nListing\nListed\npending questions": {
+      "detail": "{status, select, inProgress {Listing pending questions} completed {Listed pending questions} failed {Failed to list pending questions} declined {Declined to list pending questions} stopped {Stopped listing pending questions} other {Listing pending questions}}"
+    },
+    "Read\nReading\nRead\npending questions": {
+      "detail": "{status, select, inProgress {Reading pending questions} completed {Read pending questions} failed {Failed to read pending questions} declined {Declined to read pending questions} stopped {Stopped reading pending questions} other {Reading pending questions}}"
+    },
+    "Answer\nAnswering\nAnswered\npending questions": {
+      "detail": "{status, select, inProgress {Answering pending questions} completed {Answered pending questions} failed {Failed to answer pending questions} declined {Declined to answer pending questions} stopped {Stopped answering pending questions} other {Answering pending questions}}"
+    },
+    "Read\nReading\nRead\nthread configuration": {
+      "detail": "{status, select, inProgress {Reading thread configuration} completed {Read thread configuration} failed {Failed to read thread configuration} declined {Declined to read thread configuration} stopped {Stopped reading thread configuration} other {Reading thread configuration}}"
+    },
+    "Use\nUsing\nUsed\nthread model settings": {
+      "detail": "{status, select, inProgress {Using thread model settings} completed {Used thread model settings} failed {Failed to use thread model settings} declined {Declined to use thread model settings} stopped {Stopped using thread model settings} other {Using thread model settings}}"
+    },
+    "Use\nUsing\nUsed\nthread transfers": {
+      "detail": "{status, select, inProgress {Using thread transfers} completed {Used thread transfers} failed {Failed to use thread transfers} declined {Declined to use thread transfers} stopped {Stopped using thread transfers} other {Using thread transfers}}"
+    },
+    "Fork\nForking\nRequested a fork of\nthis thread": {
+      "detail": "{status, select, inProgress {Forking this thread} completed {Requested a fork of this thread} failed {Failed to fork this thread} declined {Declined to fork this thread} stopped {Stopped forking this thread} other {Forking this thread}}"
+    },
+    "Merge\nMerging\nRequested a merge of\nthread context": {
+      "detail": "{status, select, inProgress {Merging thread context} completed {Requested a merge of thread context} failed {Failed to merge thread context} declined {Declined to merge thread context} stopped {Stopped merging thread context} other {Merging thread context}}"
+    },
+    "Search\nSearching\nSearched\nthread content": {
+      "detail": "{status, select, inProgress {Searching thread content} completed {Searched thread content} failed {Failed to search thread content} declined {Declined to search thread content} stopped {Stopped searching thread content} other {Searching thread content}}"
+    },
+    "Read\nReading\nRead\nthread transfers": {
+      "detail": "{status, select, inProgress {Reading thread transfers} completed {Read thread transfers} failed {Failed to read thread transfers} declined {Declined to read thread transfers} stopped {Stopped reading thread transfers} other {Reading thread transfers}}"
+    },
+    "Organize\nOrganizing\nOrganized\na thread": {
+      "detail": "{status, select, inProgress {Organizing a thread} completed {Organized a thread} failed {Failed to organize a thread} declined {Declined to organize a thread} stopped {Stopped organizing a thread} other {Organizing a thread}}"
+    },
+    "Update\nUpdating\nUpdated\nT3 thread metadata": {
+      "detail": "{status, select, inProgress {Updating T3 thread metadata} completed {Updated T3 thread metadata} failed {Failed to update T3 thread metadata} declined {Declined to update T3 thread metadata} stopped {Stopped updating T3 thread metadata} other {Updating T3 thread metadata}}"
+    },
+    "List\nListing\nListed\nworkspace branches": {
+      "detail": "{status, select, inProgress {Listing workspace branches} completed {Listed workspace branches} failed {Failed to list workspace branches} declined {Declined to list workspace branches} stopped {Stopped listing workspace branches} other {Listing workspace branches}}"
+    },
+    "List\nListing\nListed\npreview tabs": {
+      "detail": "{status, select, inProgress {Listing preview tabs} completed {Listed preview tabs} failed {Failed to list preview tabs} declined {Declined to list preview tabs} stopped {Stopped listing preview tabs} other {Listing preview tabs}}"
+    },
+    "Close\nClosing\nClosed\na preview tab": {
+      "detail": "{status, select, inProgress {Closing a preview tab} completed {Closed a preview tab} failed {Failed to close a preview tab} declined {Declined to close a preview tab} stopped {Stopped closing a preview tab} other {Closing a preview tab}}"
+    },
+    "Read\nReading\nRead\nenvironment preferences": {
+      "detail": "{status, select, inProgress {Reading environment preferences} completed {Read environment preferences} failed {Failed to read environment preferences} declined {Declined to read environment preferences} stopped {Stopped reading environment preferences} other {Reading environment preferences}}"
+    },
+    "List\nListing\nListed\nlinked environments": {
+      "detail": "{status, select, inProgress {Listing linked environments} completed {Listed linked environments} failed {Failed to list linked environments} declined {Declined to list linked environments} stopped {Stopped listing linked environments} other {Listing linked environments}}"
+    },
+    "Ask to link\nAsking to link\nAsked to link\nan environment": {
+      "detail": "{status, select, inProgress {Asking to link an environment} completed {Asked to link an environment} failed {Failed to ask to link an environment} declined {Declined to ask to link an environment} stopped {Stopped asking to link an environment} other {Asking to link an environment}}"
+    },
+    "Forget\nForgetting\nForgot\na linked environment": {
+      "detail": "{status, select, inProgress {Forgetting a linked environment} completed {Forgot a linked environment} failed {Failed to forget a linked environment} declined {Declined to forget a linked environment} stopped {Stopped forgetting a linked environment} other {Forgetting a linked environment}}"
+    },
+    "Update\nUpdating\nUpdated\nenvironment preferences": {
+      "detail": "{status, select, inProgress {Updating environment preferences} completed {Updated environment preferences} failed {Failed to update environment preferences} declined {Declined to update environment preferences} stopped {Stopped updating environment preferences} other {Updating environment preferences}}"
+    },
+    "Read\nReading\nRead\nthemes": {
+      "detail": "{status, select, inProgress {Reading themes} completed {Read themes} failed {Failed to read themes} declined {Declined to read themes} stopped {Stopped reading themes} other {Reading themes}}"
+    },
+    "Set\nSetting\nSet\nthe theme": {
+      "detail": "{status, select, inProgress {Setting the theme} completed {Set the theme} failed {Failed to set the theme} declined {Declined to set the theme} stopped {Stopped setting the theme} other {Setting the theme}}"
+    },
+    "Launch\nLaunching\nLaunched\na project thread": {
+      "detail": "{status, select, inProgress {Launching a project thread} completed {Launched a project thread} failed {Failed to launch a project thread} declined {Declined to launch a project thread} stopped {Stopped launching a project thread} other {Launching a project thread}}"
+    },
+    "List\nListing\nListed\nprojects": {
+      "detail": "{status, select, inProgress {Listing projects} completed {Listed projects} failed {Failed to list projects} declined {Declined to list projects} stopped {Stopped listing projects} other {Listing projects}}"
+    },
+    "Read\nReading\nRead\na project": {
+      "detail": "{status, select, inProgress {Reading a project} completed {Read a project} failed {Failed to read a project} declined {Declined to read a project} stopped {Stopped reading a project} other {Reading a project}}"
+    },
+    "Register\nRegistering\nRegistered\na project": {
+      "detail": "{status, select, inProgress {Registering a project} completed {Registered a project} failed {Failed to register a project} declined {Declined to register a project} stopped {Stopped registering a project} other {Registering a project}}"
+    },
+    "Update\nUpdating\nUpdated\na project": {
+      "detail": "{status, select, inProgress {Updating a project} completed {Updated a project} failed {Failed to update a project} declined {Declined to update a project} stopped {Stopped updating a project} other {Updating a project}}"
+    },
+    "Delete\nDeleting\nDeleted\na project": {
+      "detail": "{status, select, inProgress {Deleting a project} completed {Deleted a project} failed {Failed to delete a project} declined {Declined to delete a project} stopped {Stopped deleting a project} other {Deleting a project}}"
+    },
+    "Clone\nCloning\nCloned\na repository": {
+      "detail": "{status, select, inProgress {Cloning a repository} completed {Cloned a repository} failed {Failed to clone a repository} declined {Declined to clone a repository} stopped {Stopped cloning a repository} other {Cloning a repository}}"
+    },
+    "Prepare\nPreparing\nPrepared\nan attachment upload": {
+      "detail": "{status, select, inProgress {Preparing an attachment upload} completed {Prepared an attachment upload} failed {Failed to prepare an attachment upload} declined {Declined to prepare an attachment upload} stopped {Stopped preparing an attachment upload} other {Preparing an attachment upload}}"
+    },
+    "Discard\nDiscarding\nDiscarded\na pending attachment": {
+      "detail": "{status, select, inProgress {Discarding a pending attachment} completed {Discarded a pending attachment} failed {Failed to discard a pending attachment} declined {Declined to discard a pending attachment} stopped {Stopped discarding a pending attachment} other {Discarding a pending attachment}}"
+    },
+    "Send\nSending\nSent\nattachments": {
+      "detail": "{status, select, inProgress {Sending attachments} completed {Sent attachments} failed {Failed to send attachments} declined {Declined to send attachments} stopped {Stopped sending attachments} other {Sending attachments}}"
+    },
+    "Preview\nPreviewing\nPreviewed\nan HTML page": {
+      "detail": "{status, select, inProgress {Previewing an HTML page} completed {Previewed an HTML page} failed {Failed to preview an HTML page} declined {Declined to preview an HTML page} stopped {Stopped previewing an HTML page} other {Previewing an HTML page}}"
+    },
+    "Render\nRendering\nRendered\nan HTML page": {
+      "detail": "{status, select, inProgress {Rendering an HTML page} completed {Rendered an HTML page} failed {Failed to render an HTML page} declined {Declined to render an HTML page} stopped {Stopped rendering an HTML page} other {Rendering an HTML page}}"
+    },
+    "Send\nSending\nSent\na message": {
+      "detail": "{status, select, inProgress {Sending a message} completed {Sent a message} failed {Failed to send a message} declined {Declined to send a message} stopped {Stopped sending a message} other {Sending a message}}"
+    }
+  },
+  "summaries": {
+    "delegate": {
+      "count": "taskId",
+      "done": "{count, plural, one {Delegated {count} task} other {Delegated {count} tasks}}",
+      "tried": "{count, plural, one {Tried to delegate {count} task} other {Tried to delegate {count} tasks}}"
+    },
+    "thread-interrupt": {
+      "count": "threads",
+      "done": "{count, plural, one {Requested interrupts for {count} thread} other {Requested interrupts for {count} threads}}",
+      "tried": "{count, plural, one {Tried to interrupt {count} thread} other {Tried to interrupt {count} threads}}"
+    },
+    "workflow-stop": {
+      "count": "subagentId",
+      "done": "{count, plural, one {Requested stops for {count} workflow} other {Requested stops for {count} workflows}}",
+      "tried": "{count, plural, one {Tried to stop {count} workflow} other {Tried to stop {count} workflows}}"
+    },
+    "task-cancel": {
+      "count": "taskId",
+      "done": "{count, plural, one {Requested cancellation of {count} task} other {Requested cancellation of {count} tasks}}",
+      "tried": "{count, plural, one {Tried to cancel {count} task} other {Tried to cancel {count} tasks}}"
+    },
+    "schedule-create": {
+      "count": "scheduledTaskId",
+      "done": "{count, plural, one {Scheduled {count} task} other {Scheduled {count} tasks}}",
+      "tried": "{count, plural, one {Tried to schedule {count} task} other {Tried to schedule {count} tasks}}"
+    },
+    "schedule-update": {
+      "count": "scheduledTaskId",
+      "done": "{count, plural, one {Updated {count} scheduled task} other {Updated {count} scheduled tasks}}",
+      "tried": "{count, plural, one {Tried to update {count} scheduled task} other {Tried to update {count} scheduled tasks}}"
+    },
+    "schedule-delete": {
+      "count": "scheduledTaskId",
+      "done": "{count, plural, one {Requested deletion of {count} scheduled task} other {Requested deletion of {count} scheduled tasks}}",
+      "tried": "{count, plural, one {Tried to delete {count} scheduled task} other {Tried to delete {count} scheduled tasks}}"
+    },
+    "schedule-run": {
+      "count": "calls",
+      "done": "{count, plural, one {Requested {count} scheduled task run} other {Requested {count} scheduled task runs}}",
+      "tried": "{count, plural, one {Tried to request {count} scheduled task run} other {Tried to request {count} scheduled task runs}}"
+    },
+    "thread-fork": {
+      "count": "calls",
+      "done": "{count, plural, one {Requested {count} thread fork} other {Requested {count} thread forks}}",
+      "tried": "{count, plural, one {Tried to request {count} thread fork} other {Tried to request {count} thread forks}}"
+    },
+    "thread-merge": {
+      "count": "calls",
+      "done": "{count, plural, one {Requested {count} context merge} other {Requested {count} context merges}}",
+      "tried": "{count, plural, one {Tried to request {count} context merge} other {Tried to request {count} context merges}}"
+    },
+    "thread-update": {
+      "count": "threads",
+      "done": "{count, plural, one {Updated {count} thread} other {Updated {count} threads}}",
+      "tried": "{count, plural, one {Tried to update {count} thread} other {Tried to update {count} threads}}"
+    },
+    "queue-read": {
+      "count": "queuedRunId",
+      "done": "{count, plural, one {Read {count} queued message} other {Read {count} queued messages}}",
+      "tried": "{count, plural, one {Tried to read {count} queued message} other {Tried to read {count} queued messages}}"
+    },
+    "queue-edit": {
+      "count": "queuedRunId",
+      "done": "{count, plural, one {Edited {count} queued message} other {Edited {count} queued messages}}",
+      "tried": "{count, plural, one {Tried to edit {count} queued message} other {Tried to edit {count} queued messages}}"
+    },
+    "queue-cancel": {
+      "count": "queuedRunId",
+      "done": "{count, plural, one {Requested cancellation of {count} queued run} other {Requested cancellation of {count} queued runs}}",
+      "tried": "{count, plural, one {Tried to cancel {count} queued run} other {Tried to cancel {count} queued runs}}"
+    },
+    "queue-reorder": {
+      "count": "queuedRunId",
+      "done": "{count, plural, one {Reordered {count} queued run} other {Reordered {count} queued runs}}",
+      "tried": "{count, plural, one {Tried to reorder {count} queued run} other {Tried to reorder {count} queued runs}}"
+    },
+    "queue-steer": {
+      "count": "queuedRunId",
+      "done": "{count, plural, one {Requested steering with {count} queued message} other {Requested steering with {count} queued messages}}",
+      "tried": "{count, plural, one {Tried to steer with {count} queued message} other {Tried to steer with {count} queued messages}}"
+    },
+    "question-read": {
+      "count": "requestId",
+      "done": "{count, plural, one {Read {count} pending question request} other {Read {count} pending question requests}}",
+      "tried": "{count, plural, one {Tried to read {count} pending question request} other {Tried to read {count} pending question requests}}"
+    },
+    "question-respond": {
+      "count": "requestId",
+      "done": "{count, plural, one {Answered {count} pending question request} other {Answered {count} pending question requests}}",
+      "tried": "{count, plural, one {Tried to answer {count} pending question request} other {Tried to answer {count} pending question requests}}"
+    },
+    "secret-request": {
+      "count": "calls",
+      "done": "{count, plural, one {Asked for {count} secret} other {Asked for {count} secrets}}",
+      "tried": "{count, plural, one {Tried to ask for {count} secret} other {Tried to ask for {count} secrets}}"
+    },
+    "worktree-handoff": {
+      "count": "worktreePath",
+      "done": "{count, plural, one {Handed off to {count} worktree} other {Handed off to {count} worktrees}}",
+      "tried": "{count, plural, one {Tried to hand off to {count} worktree} other {Tried to hand off to {count} worktrees}}"
+    },
+    "project-read": {
+      "count": "projects",
+      "done": "{count, plural, one {Read {count} project} other {Read {count} projects}}",
+      "tried": "{count, plural, one {Tried to read {count} project} other {Tried to read {count} projects}}"
+    },
+    "project-create": {
+      "count": "projects",
+      "done": "{count, plural, one {Registered {count} project} other {Registered {count} projects}}",
+      "tried": "{count, plural, one {Tried to register {count} project} other {Tried to register {count} projects}}"
+    },
+    "project-update": {
+      "count": "projects",
+      "done": "{count, plural, one {Updated {count} project} other {Updated {count} projects}}",
+      "tried": "{count, plural, one {Tried to update {count} project} other {Tried to update {count} projects}}"
+    },
+    "project-delete": {
+      "count": "projects",
+      "done": "{count, plural, one {Deleted {count} project} other {Deleted {count} projects}}",
+      "tried": "{count, plural, one {Tried to delete {count} project} other {Tried to delete {count} projects}}"
+    },
+    "project-clone": {
+      "count": "cwd",
+      "done": "{count, plural, one {Cloned {count} repository} other {Cloned {count} repositories}}",
+      "tried": "{count, plural, one {Tried to clone {count} repository} other {Tried to clone {count} repositories}}"
+    },
+    "environment-link": {
+      "count": "calls",
+      "done": "{count, plural, one {Asked to link {count} environment} other {Asked to link {count} environments}}",
+      "tried": "{count, plural, one {Tried to ask to link {count} environment} other {Tried to ask to link {count} environments}}"
+    },
+    "environment-unlink": {
+      "count": "environmentId",
+      "done": "{count, plural, one {Forgot {count} linked environment} other {Forgot {count} linked environments}}",
+      "tried": "{count, plural, one {Tried to forget {count} linked environment} other {Tried to forget {count} linked environments}}"
+    },
+    "attachment-prepare": {
+      "count": "attachmentId",
+      "done": "{count, plural, one {Prepared {count} attachment upload} other {Prepared {count} attachment uploads}}",
+      "tried": "{count, plural, one {Tried to prepare {count} attachment upload} other {Tried to prepare {count} attachment uploads}}"
+    },
+    "attachment-discard": {
+      "count": "attachmentId",
+      "done": "{count, plural, one {Discarded {count} pending attachment} other {Discarded {count} pending attachments}}",
+      "tried": "{count, plural, one {Tried to discard {count} pending attachment} other {Tried to discard {count} pending attachments}}"
+    },
+    "watch-pr": {
+      "count": "calls",
+      "done": "{count, plural, one {Watching {count} pull request} other {Watching {count} pull requests}}",
+      "tried": "{count, plural, one {Tried to watch {count} pull request} other {Tried to watch {count} pull requests}}"
+    },
+    "unwatch-pr": {
+      "count": "calls",
+      "done": "{count, plural, one {Stopped watching {count} pull request} other {Stopped watching {count} pull requests}}",
+      "tried": "{count, plural, one {Tried to stop watching {count} pull request} other {Tried to stop watching {count} pull requests}}"
+    },
+    "read-pr-guide": {
+      "count": "calls",
+      "done": "{count, plural, one {Read {count} review guide} other {Read {count} review guides}}",
+      "tried": "{count, plural, one {Tried to read {count} review guide} other {Tried to read {count} review guides}}"
+    },
+    "list-issues": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed issues {count} time} other {Listed issues {count} times}}",
+      "tried": "{count, plural, one {Tried to list issues {count} time} other {Tried to list issues {count} times}}"
+    },
+    "read-issue": {
+      "count": "calls",
+      "done": "{count, plural, one {Read {count} issue} other {Read {count} issues}}",
+      "tried": "{count, plural, one {Tried to read {count} issue} other {Tried to read {count} issues}}"
+    },
+    "create-issue": {
+      "count": "calls",
+      "done": "{count, plural, one {Filed {count} issue} other {Filed {count} issues}}",
+      "tried": "{count, plural, one {Tried to file {count} issue} other {Tried to file {count} issues}}"
+    },
+    "comment-issue": {
+      "count": "calls",
+      "done": "{count, plural, one {Commented on {count} issue} other {Commented on {count} issues}}",
+      "tried": "{count, plural, one {Tried to comment on {count} issue} other {Tried to comment on {count} issues}}"
+    },
+    "set-issue-state": {
+      "count": "calls",
+      "done": "{count, plural, one {Changed the state of {count} issue} other {Changed the state of {count} issues}}",
+      "tried": "{count, plural, one {Tried to change the state of {count} issue} other {Tried to change the state of {count} issues}}"
+    },
+    "link-issue": {
+      "count": "calls",
+      "done": "{count, plural, one {Linked {count} issue} other {Linked {count} issues}}",
+      "tried": "{count, plural, one {Tried to link {count} issue} other {Tried to link {count} issues}}"
+    },
+    "unlink-issue": {
+      "count": "calls",
+      "done": "{count, plural, one {Unlinked {count} issue} other {Unlinked {count} issues}}",
+      "tried": "{count, plural, one {Tried to unlink {count} issue} other {Tried to unlink {count} issues}}"
+    },
+    "html-preview": {
+      "count": "calls",
+      "done": "{count, plural, one {Previewed {count} HTML page} other {Previewed {count} HTML pages}}",
+      "tried": "{count, plural, one {Tried to preview {count} HTML page} other {Tried to preview {count} HTML pages}}"
+    },
+    "html-render": {
+      "count": "calls",
+      "done": "{count, plural, one {Rendered {count} HTML page} other {Rendered {count} HTML pages}}",
+      "tried": "{count, plural, one {Tried to render {count} HTML page} other {Tried to render {count} HTML pages}}"
+    },
+    "send-to-user": {
+      "count": "calls",
+      "done": "{count, plural, one {Sent {count} message} other {Sent {count} messages}}",
+      "tried": "{count, plural, one {Tried to send {count} message} other {Tried to send {count} messages}}"
+    },
+    "thread-list": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed threads {count} time} other {Listed threads {count} times}}",
+      "tried": "{count, plural, one {Tried to list threads {count} time} other {Tried to list threads {count} times}}"
+    },
+    "task-status": {
+      "count": "calls",
+      "done": "{count, plural, one {Checked task status {count} time} other {Checked task status {count} times}}",
+      "tried": "{count, plural, one {Tried to check task status {count} time} other {Tried to check task status {count} times}}"
+    },
+    "background-wait": {
+      "count": "calls",
+      "done": "{count, plural, one {Updated background waits {count} time} other {Updated background waits {count} times}}",
+      "tried": "{count, plural, one {Tried to update background waits {count} time} other {Tried to update background waits {count} times}}"
+    },
+    "schedule-list": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed scheduled tasks {count} time} other {Listed scheduled tasks {count} times}}",
+      "tried": "{count, plural, one {Tried to list scheduled tasks {count} time} other {Tried to list scheduled tasks {count} times}}"
+    },
+    "thread-configuration": {
+      "count": "calls",
+      "done": "{count, plural, one {Checked thread configuration {count} time} other {Checked thread configuration {count} times}}",
+      "tried": "{count, plural, one {Tried to check thread configuration {count} time} other {Tried to check thread configuration {count} times}}"
+    },
+    "thread-configure": {
+      "count": "calls",
+      "done": "{count, plural, one {Set thread model {count} time} other {Set thread model {count} times}}",
+      "tried": "{count, plural, one {Tried to set thread model {count} time} other {Tried to set thread model {count} times}}"
+    },
+    "thread-search": {
+      "count": "calls",
+      "done": "{count, plural, one {Searched threads {count} time} other {Searched threads {count} times}}",
+      "tried": "{count, plural, one {Tried to search threads {count} time} other {Tried to search threads {count} times}}"
+    },
+    "thread-transfers": {
+      "count": "calls",
+      "done": "{count, plural, one {Checked thread transfers {count} time} other {Checked thread transfers {count} times}}",
+      "tried": "{count, plural, one {Tried to check thread transfers {count} time} other {Tried to check thread transfers {count} times}}"
+    },
+    "thread-organize": {
+      "count": "calls",
+      "done": "{count, plural, one {Organized threads {count} time} other {Organized threads {count} times}}",
+      "tried": "{count, plural, one {Tried to organize threads {count} time} other {Tried to organize threads {count} times}}"
+    },
+    "queue-list": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed queued messages {count} time} other {Listed queued messages {count} times}}",
+      "tried": "{count, plural, one {Tried to list queued messages {count} time} other {Tried to list queued messages {count} times}}"
+    },
+    "question-list": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed pending questions {count} time} other {Listed pending questions {count} times}}",
+      "tried": "{count, plural, one {Tried to list pending questions {count} time} other {Tried to list pending questions {count} times}}"
+    },
+    "worktree-list": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed workspace branches {count} time} other {Listed workspace branches {count} times}}",
+      "tried": "{count, plural, one {Tried to list workspace branches {count} time} other {Tried to list workspace branches {count} times}}"
+    },
+    "worktree-status": {
+      "count": "calls",
+      "done": "{count, plural, one {Checked worktree status {count} time} other {Checked worktree status {count} times}}",
+      "tried": "{count, plural, one {Tried to check worktree status {count} time} other {Tried to check worktree status {count} times}}"
+    },
+    "project-list": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed projects {count} time} other {Listed projects {count} times}}",
+      "tried": "{count, plural, one {Tried to list projects {count} time} other {Tried to list projects {count} times}}"
+    },
+    "environment-read": {
+      "count": "calls",
+      "done": "{count, plural, one {Checked environment preferences {count} time} other {Checked environment preferences {count} times}}",
+      "tried": "{count, plural, one {Tried to check environment preferences {count} time} other {Tried to check environment preferences {count} times}}"
+    },
+    "environment-update": {
+      "count": "calls",
+      "done": "{count, plural, one {Updated environment preferences {count} time} other {Updated environment preferences {count} times}}",
+      "tried": "{count, plural, one {Tried to update environment preferences {count} time} other {Tried to update environment preferences {count} times}}"
+    },
+    "theme-read": {
+      "count": "calls",
+      "done": "{count, plural, one {Checked themes {count} time} other {Checked themes {count} times}}",
+      "tried": "{count, plural, one {Tried to check themes {count} time} other {Tried to check themes {count} times}}"
+    },
+    "theme-set": {
+      "count": "calls",
+      "done": "{count, plural, one {Set the theme {count} time} other {Set the theme {count} times}}",
+      "tried": "{count, plural, one {Tried to set the theme {count} time} other {Tried to set the theme {count} times}}"
+    },
+    "environment-links": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed linked environments {count} time} other {Listed linked environments {count} times}}",
+      "tried": "{count, plural, one {Tried to list linked environments {count} time} other {Tried to list linked environments {count} times}}"
+    },
+    "browser": {
+      "count": "calls",
+      "done": "{count, plural, one {Used browser {count} time} other {Used browser {count} times}}",
+      "tried": "{count, plural, one {Tried to use browser {count} time} other {Tried to use browser {count} times}}"
+    },
+    "device": {
+      "count": "calls",
+      "done": "{count, plural, one {Used device controls {count} time} other {Used device controls {count} times}}",
+      "tried": "{count, plural, one {Tried to use device controls {count} time} other {Tried to use device controls {count} times}}"
+    },
+    "capabilities": {
+      "count": "calls",
+      "done": "{count, plural, one {Checked orchestration capabilities {count} time} other {Checked orchestration capabilities {count} times}}",
+      "tried": "{count, plural, one {Tried to check orchestration capabilities {count} time} other {Tried to check orchestration capabilities {count} times}}"
+    },
+    "read-pr": {
+      "count": "calls",
+      "done": "{count, plural, one {Read {count} pull request} other {Read {count} pull requests}}",
+      "tried": "{count, plural, one {Tried to read {count} pull request} other {Tried to read {count} pull requests}}"
+    },
+    "list-repo-prs": {
+      "count": "calls",
+      "done": "{count, plural, one {Listed pull requests {count} time} other {Listed pull requests {count} times}}",
+      "tried": "{count, plural, one {Tried to list pull requests {count} time} other {Tried to list pull requests {count} times}}"
+    },
+    "update-pr": {
+      "count": "calls",
+      "done": "{count, plural, one {Updated {count} pull request} other {Updated {count} pull requests}}",
+      "tried": "{count, plural, one {Tried to update {count} pull request} other {Tried to update {count} pull requests}}"
+    },
+    "respond-pr": {
+      "count": "calls",
+      "done": "{count, plural, one {Responded on pull requests {count} time} other {Responded on pull requests {count} times}}",
+      "tried": "{count, plural, one {Tried to respond on pull requests {count} time} other {Tried to respond on pull requests {count} times}}"
+    },
+    "ci-logs": {
+      "count": "calls",
+      "done": "{count, plural, one {Read CI logs {count} time} other {Read CI logs {count} times}}",
+      "tried": "{count, plural, one {Tried to read CI logs {count} time} other {Tried to read CI logs {count} times}}"
+    },
+    "review-pr": {
+      "count": "calls",
+      "done": "{count, plural, one {Reviewed {count} pull request} other {Reviewed {count} pull requests}}",
+      "tried": "{count, plural, one {Tried to review {count} pull request} other {Tried to review {count} pull requests}}"
+    }
+  },
+  "special": [
+    "attachment-send",
+    "ci-rerun",
+    "create-pr",
+    "link-pr",
+    "list-prs",
+    "list-thread-issues",
+    "merge-pr",
+    "thread-create",
+    "thread-read",
+    "thread-send",
+    "thread-wait",
+    "unlink-pr",
+    "write-pr-guides"
+  ]
+}

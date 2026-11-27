@@ -164,19 +164,23 @@ pub fn expand_source(href: &str) -> Option<ImageSource> {
 impl T3App {
     /// Markdown with host-file images pointed at signed asset URLs, minting any not yet known.
     pub(crate) fn resolve_images<'a>(&self, text: &'a str, cx: &mut Context<Self>) -> Cow<'a, str> {
-        let (Some(env), Some(thread_id)) = (self.env(), self.selected.clone()) else {
+        if self.env().is_none() || self.selected.is_none() {
             return Cow::Borrowed(text);
-        };
-        let cwd = self.thread_cwd();
-        rewrite_images(text, |dest| {
-            let (path, relative) = host_image_path(dest, cwd.as_deref())?;
-            let key = format!("{}\u{0}{thread_id}\u{0}{path}", env.key);
-            let mut resource = json!({ "_tag": "media-file", "threadId": thread_id, "path": path });
-            if relative {
-                resource["hostOnly"] = json!(true);
-            }
-            self.mint_asset_url(key, resource, cx)
-        })
+        }
+        rewrite_images(text, |dest| self.host_image_url(dest, cx))
+    }
+
+    /// The signed URL of an image on the environment's host that a thread names (absolute, or
+    /// relative to the thread's folder); `None` while it mints or when it isn't a host file.
+    pub(crate) fn host_image_url(&self, dest: &str, cx: &mut Context<Self>) -> Option<String> {
+        let (env, thread_id) = (self.env()?, self.selected.clone()?);
+        let (path, relative) = host_image_path(dest, self.thread_cwd().as_deref())?;
+        let key = format!("{}\u{0}{thread_id}\u{0}{path}", env.key);
+        let mut resource = json!({ "_tag": "media-file", "threadId": thread_id, "path": path });
+        if relative {
+            resource["hostOnly"] = json!(true);
+        }
+        self.mint_asset_url(key, resource, cx)
     }
 
     /// The signed URL for a host asset (`assets.createUrl`), minting it once per `key`; `None`

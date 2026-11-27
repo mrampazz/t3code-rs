@@ -363,13 +363,41 @@ impl T3App {
 
     /// The thread's transcript rows as the list shows them.
     pub(crate) fn rows(&self) -> Vec<Row<'_>> {
-        let active = self
+        let thread = self
             .selected
             .as_ref()
             .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
+            .filter(|t| t.is_running());
+        let live = thread.map(|t| LiveTurn {
+            run: t.active_run_id.as_deref(),
+            started: t
+                .activity_run_started_at
+                .clone()
+                .or_else(|| t.latest_run_started_at.clone()),
+            turn_ended: self.run_activity().turn_ended,
+        });
+        timeline_rows(self.thread.items(), &self.expanded, live.as_ref())
+    }
+
+    /// The open thread's unsettled run while it works.
+    fn live_run(&self) -> Option<&str> {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id))
             .filter(|t| t.is_running())
-            .and_then(|t| t.active_run_id.as_deref());
-        timeline_rows(self.thread.items(), &self.expanded, active)
+            .and_then(|t| t.active_run_id.as_deref())
+    }
+
+    /// The open thread's active run (`summarizeThreadRun`): provider starting, turn ended.
+    pub(crate) fn run_activity(&self) -> crate::model::RunActivity {
+        let drivers: Vec<(String, String)> = self
+            .config()
+            .providers
+            .iter()
+            .map(|p| (p.instance_id.clone(), p.driver.clone()))
+            .collect();
+        self.thread
+            .run_activity(self.selected.as_deref().unwrap_or(""), &drivers)
     }
 
     /// Agent questions: toggle options, then submit; composer text answers as a custom reply.
@@ -706,39 +734,79 @@ pub(crate) enum Row<'a> {
         open: bool,
         items: Vec<&'a TurnItem>,
     },
+    /// "Working for 12s", right after the prompt of the turn that is running.
+    Working {
+        started: Option<String>,
+    },
+    /// The running turn's latest tool call standing in for its work so far (web: `work-live`);
+    /// open, the work shows under it.
+    Live {
+        id: String,
+        group: String,
+        entry: &'a TurnItem,
+        /// The newest thought with text, shown above while the group is closed.
+        thought: Option<&'a TurnItem>,
+        items: Vec<&'a TurnItem>,
+        /// The latest call still runs, or succeeded with nothing waiting on the user.
+        active: bool,
+    },
+    /// "Thinking" at the end of a running turn with nothing else live; after a failed call it
+    /// opens to that work.
+    Thinking {
+        group: Option<(String, Vec<&'a TurnItem>)>,
+        label: Option<String>,
+    },
+    /// Thumbnails of the images a work group opened, under it.
+    Images {
+        id: String,
+        paths: Vec<String>,
+    },
 }
 
-pub(crate) fn group_rows<'a>(items: impl Iterator<Item = &'a TurnItem>) -> Vec<Row<'a>> {
-    let mut rows: Vec<Row<'a>> = Vec::new();
-    let mut run: Vec<&TurnItem> = Vec::new();
-    let flush = |run: &mut Vec<&'a TurnItem>, rows: &mut Vec<Row<'a>>| match run.len() {
-        0 => {}
-        1 => rows.push(Row::Item(run.pop().unwrap())),
-        _ => rows.push(Row::Group {
-            id: format!("work-toggle:{}", run[0].id),
-            items: std::mem::take(run),
-        }),
-    };
-    for item in items {
-        if is_work(item) {
-            run.push(item);
-        } else {
-            flush(&mut run, &mut rows);
-            rows.push(Row::Item(item));
-        }
+/// The running turn as the timeline needs it (`isWorking`, the unsettled run).
+pub(crate) struct LiveTurn<'a> {
+    pub run: Option<&'a str>,
+    pub started: Option<String>,
+    pub turn_ended: bool,
+}
+
+/// `workEntryIsVisibleInGroup`: thoughts with text, and calls that failed, finished or stopped
+/// (`running` also shows the ones still going).
+fn visible_in_group(item: &TurnItem, running: bool) -> bool {
+    if item.kind == "reasoning" {
+        return !item.str("text").trim().is_empty();
     }
-    flush(&mut run, &mut rows);
-    rows
+    let status = item.str("status");
+    let in_progress = matches!(status, "pending" | "running" | "waiting");
+    let stopped = matches!(status, "cancelled" | "interrupted");
+    let neutral = !crate::work_rows::failed(item) && (in_progress || stopped || status == "idle");
+    (running && in_progress) || stopped || !neutral
 }
 
 impl Row<'_> {
     fn key(&self) -> &str {
         match self {
             Row::Item(item) => &item.id,
-            Row::Group { id, .. } | Row::Fold { id, .. } => id,
+            Row::Group { id, .. }
+            | Row::Fold { id, .. }
+            | Row::Live { id, .. }
+            | Row::Images { id, .. } => id,
+            Row::Working { .. } => "working-indicator-row",
+            Row::Thinking { .. } => LIVE_ACTIVITY_ROW_ID,
+        }
+    }
+
+    /// Work log rows sit flush against each other (web: `continuesWorkLog`).
+    fn is_work_log(&self) -> bool {
+        match self {
+            Row::Item(item) => crate::work_rows::is_work_row(item),
+            Row::Group { .. } | Row::Live { .. } | Row::Thinking { .. } => true,
+            Row::Fold { .. } | Row::Working { .. } | Row::Images { .. } => false,
         }
     }
 }
+
+const LIVE_ACTIVITY_ROW_ID: &str = "live-activity-row";
 
 /// Kinds a finished turn folds away before its answer (web: `deriveTurnFolds`); approvals,
 /// questions, plans, subagents and errors stay in view.
@@ -783,18 +851,89 @@ pub(crate) fn format_duration(ms: i64) -> String {
     parts.join(" ")
 }
 
-/// `formatDayAwareTimestamp`: the time today, "yesterday at …", else the date and time.
-/// shortcut: 12-hour clock and month/day order regardless of the timestamp format setting.
+/// The `timestampFormat` client setting: `locale`, `12-hour` or `24-hour`.
+static TIMESTAMP_FORMAT: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Follows a saved change to the `timestampFormat` preference.
+pub(crate) fn set_timestamp_format(prefs: &serde_json::Value) {
+    *TIMESTAMP_FORMAT.write().unwrap() = Some(
+        prefs["timestampFormat"]
+            .as_str()
+            .unwrap_or("locale")
+            .to_owned(),
+    );
+}
+
+fn timestamp_format() -> String {
+    if let Some(format) = TIMESTAMP_FORMAT.read().unwrap().clone() {
+        return format;
+    }
+    set_timestamp_format(&crate::settings::load_prefs());
+    timestamp_format()
+}
+
+/// Formats `at` in the local zone from an ICU skeleton (`jmm`, `Md`, `yMd`) the way the
+/// system's locale lays it out, as the web's `Intl.DateTimeFormat` does.
+#[cfg(target_os = "macos")]
+fn system_format(at: jiff::Timestamp, skeleton: &str) -> String {
+    use objc2_foundation::{NSDate, NSDateFormatter, NSString};
+    let formatter = NSDateFormatter::new();
+    formatter.setLocalizedDateFormatFromTemplate(&NSString::from_str(skeleton));
+    let date = NSDate::dateWithTimeIntervalSince1970(at.as_millisecond() as f64 / 1_000.);
+    formatter.stringFromDate(&date).to_string()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_format(at: jiff::Timestamp, skeleton: &str) -> String {
+    let local = at.to_zoned(jiff::tz::TimeZone::system());
+    let pattern = match skeleton {
+        "Hmm" => "%H:%M",
+        "Md" => "%-m/%-d",
+        "yMd" => "%-m/%-d/%Y",
+        _ => "%-I:%M %p",
+    };
+    local.strftime(pattern).to_string()
+}
+
+/// `formatDayAwareTimestamp`: the time today, "yesterday at …", else the numeric date and time,
+/// in the system locale and the `timestampFormat` hour cycle.
 pub(crate) fn day_aware_time(at: jiff::Timestamp) -> String {
     let tz = jiff::tz::TimeZone::system();
     let (local, today) = (at.to_zoned(tz.clone()), jiff::Timestamp::now().to_zoned(tz));
-    let time = local.strftime("%-I:%M %p").to_string();
+    let skeleton = match timestamp_format().as_str() {
+        "12-hour" => "hmm",
+        "24-hour" => "Hmm",
+        _ => "jmm",
+    };
+    let time = system_format(at, skeleton);
     let days = (today.date() - local.date()).get_days();
     match days {
         ..=0 => time,
         1 => crate::i18n::tv("yesterday at {time}", &[("time", &time)]),
-        _ if local.year() == today.year() => format!("{} {time}", local.strftime("%-m/%-d")),
-        _ => format!("{} {time}", local.strftime("%-m/%-d/%Y")),
+        _ if local.year() == today.year() => format!("{} {time}", system_format(at, "Md")),
+        _ => format!("{} {time}", system_format(at, "yMd")),
+    }
+}
+
+/// `formatUpcomingTimestamp`: a time today, "tomorrow at …", else the date and time.
+pub(crate) fn upcoming_time(at: jiff::Timestamp) -> String {
+    let tz = jiff::tz::TimeZone::system();
+    let (local, today) = (at.to_zoned(tz.clone()), jiff::Timestamp::now().to_zoned(tz));
+    let days = (local.date() - today.date()).get_days();
+    if days < 0 {
+        return day_aware_time(at);
+    }
+    let skeleton = match timestamp_format().as_str() {
+        "12-hour" => "hmm",
+        "24-hour" => "Hmm",
+        _ => "jmm",
+    };
+    let time = system_format(at, skeleton);
+    match days {
+        0 => time,
+        1 => crate::i18n::tv("tomorrow at {time}", &[("time", &time)]),
+        _ if local.year() == today.year() => format!("{} {time}", system_format(at, "Md")),
+        _ => format!("{} {time}", system_format(at, "yMd")),
     }
 }
 
@@ -810,17 +949,18 @@ fn timestamp(item: &TurnItem, key: &str) -> Option<jiff::Timestamp> {
     item.str(key).parse().ok()
 }
 
-/// The transcript's rows: work grouped as `group_rows` does, and each finished turn's work before
+/// The transcript's rows: consecutive work of one run grouped, and each finished turn's work before
 /// its final answer folded into one "Worked for …" row that expands in place.
 pub(crate) fn timeline_rows<'a>(
     items: impl Iterator<Item = &'a TurnItem>,
     expanded: &std::collections::HashSet<String>,
-    active_run: Option<&str>,
+    live: Option<&LiveTurn>,
 ) -> Vec<Row<'a>> {
     use std::collections::{HashMap, HashSet};
     let items: Vec<&TurnItem> = items
         .filter(|i| !crate::work_rows::hidden_from_timeline(i))
         .collect();
+    let active_run = live.and_then(|l| l.run);
     let mut terminal: HashMap<&str, usize> = HashMap::new();
     let mut prompt: HashMap<&str, &TurnItem> = HashMap::new();
     let mut interrupted: HashSet<&str> = HashSet::new();
@@ -849,26 +989,155 @@ pub(crate) fn timeline_rows<'a>(
                 && foldable(item)
         })
     };
+
+    // The running turn: its prompt (`lastResponseBoundaryIndex`), and the work at its tail.
+    let header = match live {
+        Some(_) => items
+            .iter()
+            .rposition(|i| {
+                (i.kind == "user_message"
+                    && !matches!(i.str("inputIntent"), "steer" | "promoted_queued_to_steer"))
+                    || i.kind == "notification"
+            })
+            .map_or(0, |p| p + 1),
+        None => items.len(),
+    };
+    let pending_approval = items
+        .iter()
+        .any(|i| i.kind == "approval_request" && is_open(i));
+    let mut tail: Vec<&TurnItem> = Vec::new();
+    if live.is_some() && active_run.is_some() {
+        for (i, item) in items.iter().enumerate().skip(header).rev() {
+            if !is_work(item) || item.run_id.as_deref() != active_run || folds(i, item) {
+                break;
+            }
+            tail.push(item);
+        }
+        tail.reverse();
+    }
+    let visible: Vec<&TurnItem> = tail
+        .iter()
+        .copied()
+        .filter(|i| visible_in_group(i, true))
+        .collect();
+    let running = |i: &&&TurnItem| matches!(i.str("status"), "pending" | "running" | "waiting");
+    let latest_running = visible.iter().rfind(running).copied();
+    let latest = visible.last().copied();
+    let succeeded = latest.is_some_and(|i| {
+        !crate::work_rows::failed(i) && matches!(i.str("status"), "completed" | "")
+    });
+    let keeps_live = latest_running.is_some() || (succeeded && !pending_approval);
+    let latest_failed = latest_running.is_none()
+        && latest.is_some_and(|i| i.str("status") != "declined" && crate::work_rows::failed(i));
+    let anchor = tail.first().copied();
+    let group_id = anchor.map(|a| format!("work-toggle:{}", a.id));
+    let mut live_row = match (anchor, latest, &group_id) {
+        (Some(anchor), Some(latest), Some(group)) if !latest_failed => Some(Row::Live {
+            id: if keeps_live {
+                LIVE_ACTIVITY_ROW_ID.to_owned()
+            } else {
+                format!("work-live:{}", anchor.id)
+            },
+            group: group.clone(),
+            entry: latest_running.unwrap_or(latest),
+            thought: visible
+                .iter()
+                .rfind(|i| i.kind == "reasoning" && !i.str("text").trim().is_empty())
+                .copied(),
+            items: visible.clone(),
+            active: keeps_live,
+        }),
+        _ => None,
+    };
+    let has_live = live_row.is_some();
+    let placement = latest.map(|i| i.id.as_str());
+    let taken: HashSet<&str> = if has_live || latest_failed {
+        tail.iter().map(|i| i.id.as_str()).collect()
+    } else {
+        HashSet::new()
+    };
+
     let mut rows = Vec::new();
+    let mut working_pushed = false;
+    let mut run: Vec<&TurnItem> = Vec::new();
+    let flush = |run: &mut Vec<&'a TurnItem>, rows: &mut Vec<Row<'a>>| {
+        let visible: Vec<&'a TurnItem> = run
+            .drain(..)
+            .filter(|i| visible_in_group(i, false))
+            .collect();
+        match visible.len() {
+            0 => {}
+            1 => rows.push(Row::Item(visible[0])),
+            _ => {
+                let id = format!("work-toggle:{}", visible[0].id);
+                let paths = crate::work_rows::viewed_image_paths(&visible);
+                rows.push(Row::Group {
+                    id: id.clone(),
+                    items: visible,
+                });
+                if !paths.is_empty() {
+                    rows.push(Row::Images {
+                        id: format!("{id}:viewed-images"),
+                        paths,
+                    });
+                }
+            }
+        }
+    };
     let mut i = 0;
     while i < items.len() {
+        if live.is_some() && i == header && !working_pushed {
+            flush(&mut run, &mut rows);
+            rows.push(Row::Working {
+                started: live.and_then(|l| l.started.clone()),
+            });
+            working_pushed = true;
+        }
         let fold = folds(i, items[i]);
+        if !fold {
+            let item = items[i];
+            if Some(item.id.as_str()) == placement
+                && let Some(row) = live_row.take()
+            {
+                flush(&mut run, &mut rows);
+                let images = match &row {
+                    Row::Live { group, items, .. } => Some((
+                        format!("{group}:viewed-images"),
+                        crate::work_rows::viewed_image_paths(items),
+                    )),
+                    _ => None,
+                };
+                rows.push(row);
+                if let Some((id, paths)) = images.filter(|(_, p)| !p.is_empty()) {
+                    rows.push(Row::Images { id, paths });
+                }
+            }
+            if !taken.contains(item.id.as_str()) {
+                let continues = run.last().is_none_or(|last| last.run_id == item.run_id);
+                if is_work(item) && continues {
+                    run.push(item);
+                } else {
+                    flush(&mut run, &mut rows);
+                    if is_work(item) {
+                        run.push(item);
+                    } else {
+                        rows.push(Row::Item(item));
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+        flush(&mut run, &mut rows);
         let start = i;
-        while i < items.len()
-            && folds(i, items[i]) == fold
-            && (!fold || items[i].run_id == items[start].run_id)
-        {
+        while i < items.len() && folds(i, items[i]) && items[i].run_id == items[start].run_id {
             i += 1;
         }
         let chunk = &items[start..i];
-        if !fold {
-            rows.extend(group_rows(chunk.iter().copied()));
-            continue;
-        }
-        let run = chunk[0].run_id.as_deref().unwrap_or_default();
-        let answer = items[terminal[run]];
+        let run_id = chunk[0].run_id.as_deref().unwrap_or_default();
+        let answer = items[terminal[run_id]];
         let started = prompt
-            .get(run)
+            .get(run_id)
             .and_then(|p| timestamp(p, "startedAt").or_else(|| timestamp(p, "updatedAt")))
             .or_else(|| timestamp(chunk[0], "startedAt"));
         let ended = timestamp(answer, "completedAt").or_else(|| timestamp(answer, "updatedAt"));
@@ -893,10 +1162,78 @@ pub(crate) fn timeline_rows<'a>(
             items: chunk.to_vec(),
         });
         if open {
-            rows.extend(group_rows(chunk.iter().copied()));
+            let mut inner = Vec::new();
+            for item in chunk {
+                if is_work(item) && inner_run_continues(&inner, item) {
+                    inner.push(*item);
+                } else {
+                    flush(&mut inner, &mut rows);
+                    if is_work(item) {
+                        inner.push(*item);
+                    } else {
+                        rows.push(Row::Item(item));
+                    }
+                }
+            }
+            flush(&mut inner, &mut rows);
+        }
+    }
+    flush(&mut run, &mut rows);
+    let Some(live) = live else {
+        return rows;
+    };
+    if !working_pushed {
+        rows.push(Row::Working {
+            started: live.started.clone(),
+        });
+    }
+    let reply_streaming = items.last().is_some_and(|i| {
+        i.kind == "assistant_message"
+            && (i.raw["streaming"] == true || i.str("status") == "running")
+    });
+    if !live.turn_ended && !reply_streaming && (latest_failed || (!has_live && !pending_approval)) {
+        let group = latest_failed
+            .then(|| group_id.clone().map(|id| (id, visible.clone())))
+            .flatten();
+        // `runningSubagentsAtRunTail`: the run's finished reply parks on children still running.
+        let waiting = active_run.map_or(0, |run| {
+            items
+                .iter()
+                .rev()
+                .filter(|i| {
+                    !(i.kind == "assistant_message"
+                        && i.raw["streaming"] != true
+                        && i.run_id.as_deref() == Some(run))
+                })
+                .take_while(|i| i.kind == "subagent" && i.run_id.as_deref() == Some(run))
+                .filter(|i| matches!(i.str("status"), "pending" | "running" | "waiting"))
+                .count()
+        });
+        let images = group.as_ref().map(|(id, items)| {
+            (
+                format!("{id}:viewed-images"),
+                crate::work_rows::viewed_image_paths(items),
+            )
+        });
+        rows.push(Row::Thinking {
+            label: (waiting > 0 && group.is_none()).then(|| {
+                crate::i18n::tp(
+                    "{count, plural, =1 {Waiting on a subagent} other {Waiting on {count} subagents}}",
+                    waiting,
+                    &[],
+                )
+            }),
+            group,
+        });
+        if let Some((id, paths)) = images.filter(|(_, p)| !p.is_empty()) {
+            rows.push(Row::Images { id, paths });
         }
     }
     rows
+}
+
+fn inner_run_continues(run: &[&TurnItem], item: &TurnItem) -> bool {
+    run.last().is_none_or(|last| last.run_id == item.run_id)
 }
 
 /// The list splice that turns rows `old` into `new`: the range between their common prefix and
@@ -927,7 +1264,7 @@ impl T3App {
         let (owner, old) = &mut self.transcript_rows;
         if *owner != self.selected {
             *owner = self.selected.clone();
-            self.transcript.reset(keys.len() + 1);
+            self.transcript.reset(keys.len());
             self.transcript.set_follow_mode(FollowMode::Tail);
         } else if let Some((range, count)) = row_splice(old, &keys) {
             self.transcript.splice(range, count);
@@ -935,7 +1272,7 @@ impl T3App {
         *old = keys;
     }
 
-    /// One transcript list item: row `i`, or past the last row, the working indicator.
+    /// One transcript list item: row `i`, spaced like the web's rows (`TimelineRowContent`).
     pub(crate) fn render_transcript_row(
         &self,
         i: usize,
@@ -945,24 +1282,42 @@ impl T3App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().colors;
-        let frame = div().w_full().max_w(px(768.)).px_4().py_2();
         let rows = self.rows();
         let Some(row) = rows.get(i) else {
-            let thread = self
-                .selected
-                .as_ref()
-                .and_then(|id| self.shell().threads.iter().find(|t| &t.id == id));
-            return match thread.filter(|t| t.is_running()).and_then(|t| {
-                t.activity_run_started_at
-                    .clone()
-                    .or_else(|| t.latest_run_started_at.clone())
-            }) {
-                Some(started) => frame
-                    .child(self.render_working(&started, cx))
-                    .into_any_element(),
-                None => div().into_any_element(),
-            };
+            return div().into_any_element();
         };
+        let next = rows.get(i + 1);
+        let expanded_group = match row {
+            Row::Group { id, .. } => self.expanded.contains(id),
+            Row::Live { group, .. } => self.expanded.contains(group),
+            Row::Thinking {
+                group: Some((id, _)),
+                ..
+            } => self.expanded.contains(id),
+            _ => false,
+        };
+        let bottom = match row {
+            _ if row.is_work_log() && expanded_group => 4.,
+            _ if row.is_work_log() && next.is_some_and(Row::is_work_log) => 0.,
+            _ if row.is_work_log() => 8.,
+            Row::Fold { .. } | Row::Working { .. } => 6.,
+            // `showAssistantMeta`: a turn's last answer, once its run settled, gets more room.
+            Row::Item(item) if item.kind == "assistant_message" => {
+                let settled = item.run_id.as_deref() != self.live_run();
+                let last = !rows[i + 1..].iter().any(|r| {
+                    matches!(r, Row::Item(next) if next.kind == "assistant_message"
+                        && next.run_id == item.run_id)
+                });
+                if settled && last { 16. } else { 8. }
+            }
+            Row::Item(item) if item.kind == "user_message" => {
+                let grouped =
+                    next.is_some_and(|n| matches!(n, Row::Item(u) if u.kind == "user_message"));
+                if grouped { 4. } else { 16. }
+            }
+            _ => 8.,
+        };
+        let frame = div().w_full().max_w(px(768.)).px_4().pb(px(bottom));
         let element = match row {
             Row::Item(item) => self.render_item(item, revert_turns.get(&item.id).copied(), cx),
             Row::Group { id, items } => self.render_work_group(id.clone(), items, cx),
@@ -973,6 +1328,19 @@ impl T3App {
                 open,
                 ..
             } => self.render_fold(id.clone(), label, time, *open, cx),
+            Row::Working { started } => self.render_working(started.as_deref(), cx),
+            Row::Live {
+                group,
+                entry,
+                thought,
+                items,
+                active,
+                ..
+            } => self.render_live(group, entry, *thought, items, *active, cx),
+            Row::Thinking { group, label } => {
+                self.render_thinking(group.as_ref(), label.as_deref(), cx)
+            }
+            Row::Images { paths, .. } => self.render_viewed_images(paths, cx),
         };
         frame
             .when(matches.contains(&i), |d| {
@@ -999,12 +1367,15 @@ pub(crate) fn working_timer(seconds: u64) -> String {
 
 impl T3App {
     /// "Working for 1m 3s" under a running thread; re-renders once a second while shown.
-    pub(crate) fn render_working(&self, started: &str, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_working(
+        &self,
+        started: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let c = cx.theme().colors;
         let elapsed = started
-            .parse::<jiff::Timestamp>()
-            .map(|t| (jiff::Timestamp::now().as_second() - t.as_second()).max(0) as u64)
-            .unwrap_or(0);
+            .and_then(|s| s.parse::<jiff::Timestamp>().ok())
+            .map(|t| (jiff::Timestamp::now().as_second() - t.as_second()).max(0) as u64);
         if !self.working_tick.replace(true) {
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
@@ -1018,7 +1389,6 @@ impl T3App {
             })
             .detach();
         }
-        // shortcut: no shimmer sweep; it would repaint every frame (AGENTS.md).
         div()
             .pt_1()
             .pb_2()
@@ -1031,10 +1401,13 @@ impl T3App {
                     .text_sm()
                     .line_height(relative(1.625))
                     .text_color(c.muted_foreground)
-                    .child(crate::i18n::tv(
-                        "Working for {time}",
-                        &[("time", &working_timer(elapsed))],
-                    )),
+                    .child(match elapsed {
+                        Some(elapsed) => crate::i18n::tv(
+                            "Working for {time}",
+                            &[("time", &working_timer(elapsed))],
+                        ),
+                        None => crate::i18n::t("Working..."),
+                    }),
             )
             .into_any_element()
     }
@@ -1043,7 +1416,7 @@ impl T3App {
 #[cfg(test)]
 mod tests {
     use super::{
-        Row, TurnItem, approval_options, group_rows, row_splice, tool_parts, working_timer,
+        Row, TurnItem, approval_options, row_splice, timeline_rows, tool_parts, working_timer,
     };
     use crate::work_rows::summarize as summarize_group;
     use serde_json::{Value, json};
@@ -1129,12 +1502,12 @@ mod tests {
             mk("a", "assistant_message", json!({})),
             mk("solo", "command_execution", json!({})),
         ];
-        let rows = group_rows(items.iter());
+        let rows = timeline_rows(items.iter(), &Default::default(), None);
         assert_eq!(rows.len(), 4);
         let Row::Group { items: group, .. } = &rows[1] else {
             panic!("expected a group")
         };
-        assert_eq!(group.len(), 7);
+        assert_eq!(group.len(), 6, "a thought without text is left out");
         assert_eq!(
             summarize_group(group),
             "Ran 2 commands, changed 2 files, and performed 1 other action"
@@ -1171,11 +1544,25 @@ mod tests {
         ];
         let none = std::collections::HashSet::new();
         let keys = |rows: &[Row]| rows.iter().map(|r| r.key().to_owned()).collect::<Vec<_>>();
-        let rows = super::timeline_rows(items.iter(), &none, Some("r2"));
+        let live = super::LiveTurn {
+            run: Some("r2"),
+            started: None,
+            turn_ended: false,
+        };
+        let rows = super::timeline_rows(items.iter(), &none, Some(&live));
         assert_eq!(
             keys(&rows),
-            ["u", "fold:t", "a", "u2", "c2", "a2"],
-            "a running turn stays open"
+            [
+                "u",
+                "fold:t",
+                "a",
+                "u2",
+                "working-indicator-row",
+                "c2",
+                "a2",
+                "live-activity-row"
+            ],
+            "a running turn stays open, timed after its prompt and thinking at its end"
         );
         let Row::Fold {
             label,
@@ -1191,19 +1578,101 @@ mod tests {
         let rows = super::timeline_rows(items.iter(), &open, None);
         assert_eq!(
             keys(&rows),
-            [
-                "u",
-                "fold:t",
-                "work-toggle:t",
-                "m",
-                "a",
-                "u2",
-                "fold:c2",
-                "a2"
-            ],
-            "an open fold shows its rows after it"
+            ["u", "fold:t", "c", "m", "a", "u2", "fold:c2", "a2"],
+            "an open fold shows its rows after it; a thought without text is left out"
         );
         assert_eq!(super::format_duration(75_000), "1m 15s");
+    }
+
+    #[test]
+    fn a_running_turn_shows_its_live_rows_like_the_web() {
+        let mk = |id: &str, kind: &str, status: &str, extra: Value| {
+            let mut v =
+                json!({"id": id, "ordinal": 1, "type": kind, "runId": "r", "status": status});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            item(v)
+        };
+        let live = super::LiveTurn {
+            run: Some("r"),
+            started: None,
+            turn_ended: false,
+        };
+        let none = std::collections::HashSet::new();
+        let keys = |rows: &[Row]| rows.iter().map(|r| r.key().to_owned()).collect::<Vec<_>>();
+
+        let running = [
+            mk("u", "user_message", "completed", json!({})),
+            mk(
+                "t",
+                "reasoning",
+                "completed",
+                json!({"text": "**Plan**\nlook"}),
+            ),
+            mk(
+                "c",
+                "command_execution",
+                "running",
+                json!({"input": "vp test"}),
+            ),
+        ];
+        let rows = timeline_rows(running.iter(), &none, Some(&live));
+        assert_eq!(
+            keys(&rows),
+            ["u", "working-indicator-row", "live-activity-row"]
+        );
+        let Row::Live {
+            entry,
+            thought,
+            active,
+            ..
+        } = &rows[2]
+        else {
+            panic!("expected a live row")
+        };
+        assert_eq!(entry.id, "c");
+        assert_eq!(thought.map(|t| t.id.as_str()), Some("t"));
+        assert!(*active);
+        assert_eq!(
+            crate::work_rows::live_label(entry, None, true),
+            "Running vp"
+        );
+
+        let failed = [
+            mk("u", "user_message", "completed", json!({})),
+            mk(
+                "c",
+                "command_execution",
+                "completed",
+                json!({"input": "ls", "exitCode": 2}),
+            ),
+        ];
+        let rows = timeline_rows(failed.iter(), &none, Some(&live));
+        assert_eq!(
+            keys(&rows),
+            ["u", "working-indicator-row", "live-activity-row"]
+        );
+        assert!(
+            matches!(&rows[2], Row::Thinking { group: Some((_, items)), .. } if items.len() == 1),
+            "a failed call leaves Thinking, which opens to it"
+        );
+
+        let answering = [
+            mk("u", "user_message", "completed", json!({})),
+            mk(
+                "a",
+                "assistant_message",
+                "running",
+                json!({"streaming": true}),
+            ),
+        ];
+        let rows = timeline_rows(answering.iter(), &none, Some(&live));
+        assert_eq!(
+            keys(&rows),
+            ["u", "working-indicator-row", "a"],
+            "no Thinking while the answer streams"
+        );
     }
 
     #[test]

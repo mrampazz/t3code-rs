@@ -2,8 +2,6 @@
 //! `V2ItemInspector`, `CommandOutputPanel`): one line per thought, task list or tool call that
 //! opens to its detail. Labels follow `workEntryDisplayLabel` and `summarizeToolGroup` in
 //! `apps/web/src/components/chat/MessagesTimeline.logic.ts` and `client-runtime/src/work-log`.
-//! shortcut: T3's own MCP tools show their tool name, not the web's generated sentences
-//! (`t3ToolSentences.ts`); failure comes from status and exit code, not output text heuristics.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,18 +17,155 @@ use crate::i18n::{t, tc, tp, tv};
 use crate::model::TurnItem;
 use crate::{T3App, on_tokio};
 
-/// Kinds the web shows as work rows.
+/// Kinds the web shows as work rows (`WorkEntryLogRow`): work, task lists, notices,
+/// notifications, created threads, answered questions and failed provider errors.
 pub(crate) fn is_work_row(item: &TurnItem) -> bool {
-    matches!(
-        item.kind.as_str(),
-        "reasoning"
-            | "command_execution"
-            | "file_change"
-            | "file_search"
-            | "web_search"
-            | "dynamic_tool"
-            | "todo_list"
-    )
+    match item.kind.as_str() {
+        "reasoning" | "command_execution" | "file_change" | "file_search" | "web_search"
+        | "dynamic_tool" | "todo_list" | "system_notice" | "notification" | "thread_created" => {
+            true
+        }
+        "error" => item.str("status") == "failed",
+        "user_input_request" => item
+            .raw
+            .get("questionAnswer")
+            .is_some_and(|a| a.is_object()),
+        _ => false,
+    }
+}
+
+/// `workEntryViewedImagePath`: the image file a tool opened, if it can be previewed.
+pub(crate) fn viewed_image_path(item: &TurnItem) -> Option<&str> {
+    item.raw["viewedImagePath"]
+        .as_str()
+        .map(str::trim)
+        .filter(|p| !p.contains(['\n', '\r']) && crate::files::is_image(p))
+}
+
+/// `workEntriesViewedImagePaths`: distinct images a group opened, in viewing order.
+pub(crate) fn viewed_image_paths(items: &[&TurnItem]) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for path in items.iter().filter_map(|i| viewed_image_path(i)) {
+        if !paths.iter().any(|p| p == path) {
+            paths.push(path.to_owned());
+        }
+    }
+    paths
+}
+
+/// `getQuestionAnswerText`: an answer as text, context chips in their readable form.
+fn answer_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => context_text_for_display(s),
+        Value::Array(list) => list
+            .iter()
+            .map(answer_text)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::Object(o) => o.get("answers").map(answer_text).unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// `composerContextProviderTextForDisplay`: `[Kind: name; ref=…]` plus its envelope reads as
+/// `[Kind: name]`.
+fn context_text_for_display(text: &str) -> String {
+    static MARKER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\[([A-Z][^\[\]:;\n]*): ([^\[\];\n]*); ref=([^\[\]\s]+)\]").unwrap()
+    });
+    const PREFIX: &str = "\n\n<t3_context version=\"1\">\n<context kind=\"";
+    const CLOSE: &str = "</t3_context>";
+    let escape = |v: &str| {
+        v.replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let mut out = String::new();
+    let mut cursor = 0;
+    for captures in MARKER.captures_iter(text) {
+        let whole = captures.get(0).unwrap();
+        if whole.start() < cursor || !text[whole.end()..].starts_with(PREFIX) {
+            continue;
+        }
+        let kind_start = whole.end() + PREFIX.len();
+        let Some(kind_end) = text[kind_start..].find('"').map(|k| k + kind_start) else {
+            continue;
+        };
+        if !text[kind_end + 1..].starts_with(&format!(" id=\"{}\"", escape(&captures[3]))) {
+            continue;
+        }
+        let Some(close) = text[kind_end..].find(CLOSE).map(|c| c + kind_end) else {
+            continue;
+        };
+        out.push_str(&text[cursor..whole.start()]);
+        out.push_str(&format!("[{}: {}]", &captures[1], &captures[2]));
+        cursor = close + CLOSE.len();
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+fn collapse(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `getQuestionTextPreview`.
+fn question_text_preview(answer: &Value) -> String {
+    answer["questionTextById"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, t)| t.as_str().map(collapse))
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// `hasQuestionAnswer`.
+fn has_answer(answer: &Value) -> bool {
+    answer["answers"]
+        .as_object()
+        .is_some_and(|a| a.values().any(|v| !answer_text(v).is_empty()))
+        || answer["attachmentsByQuestionId"]
+            .as_object()
+            .is_some_and(|a| {
+                a.values()
+                    .any(|v| v.as_array().is_some_and(|l| !l.is_empty()))
+            })
+}
+
+/// `getQuestionAnswerPreview`.
+fn answer_preview(answer: &Value) -> String {
+    let answers: Vec<String> = answer["answers"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(_, v)| answer_text(v))
+        .filter(|t| !t.is_empty())
+        .collect();
+    let attachments: Vec<String> = answer["attachmentsByQuestionId"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .flat_map(|(_, v)| v.as_array().cloned().unwrap_or_default())
+        .filter_map(|a| a["name"].as_str().map(str::to_owned))
+        .collect();
+    let text = if !answers.is_empty() {
+        answers.join(" · ")
+    } else if !attachments.is_empty() {
+        attachments.join(", ")
+    } else {
+        answer["questionTextById"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    collapse(&text)
 }
 
 /// `turnItemIsWorkspacePreparation`, and checkpoints: items the web keeps out of the timeline.
@@ -62,8 +197,40 @@ fn tool_token(name: &str) -> Option<String> {
     )
 }
 
-/// `toolGroupAction`: read, edit, command, search, code-search or other.
+/// The T3 Code MCP tool a row calls, as the web words it (`resolveWorkEntryToolPresentation`);
+/// `fallback` is the status a row without one reads as.
+fn t3_presentation(
+    item: &TurnItem,
+    fallback: Option<&str>,
+) -> Option<crate::t3_tools::Presentation> {
+    if item.kind != "dynamic_tool" {
+        return None;
+    }
+    let status = match item.str("status") {
+        "pending" | "running" | "waiting" => "inProgress",
+        "cancelled" | "interrupted" => "stopped",
+        "" => fallback.unwrap_or(""),
+        s => s,
+    };
+    crate::t3_tools::presentation(
+        item.str("toolName"),
+        &item.raw["input"],
+        &item.raw["output"],
+        status,
+    )
+}
+
+/// `toolGroupAction`: read, edit, command, search, code-search, a T3 pull request action,
+/// browser, device, or other.
 pub(crate) fn action(item: &TurnItem) -> &'static str {
+    if let Some(t3) = t3_presentation(item, None) {
+        match (t3.action, t3.icon) {
+            (Some(action), _) => return action,
+            (None, "browser") => return "browser",
+            (None, "device") => return "device",
+            _ => {}
+        }
+    }
     match item.kind.as_str() {
         "file_change" => "edit",
         "command_execution" => "command",
@@ -99,6 +266,10 @@ fn action_icon(action: &str) -> &'static str {
         "command" => "terminal",
         "search" => "globe",
         "code-search" => "search",
+        "link-pr" | "unlink-pr" | "list-prs" | "watch-pr" | "unwatch-pr" => "pull-request",
+        "thread-create" => "t3-code",
+        "browser" => "browser",
+        "device" => "device",
         _ => "wrench",
     }
 }
@@ -132,6 +303,9 @@ pub(crate) fn icon_name(item: &TurnItem) -> &'static str {
     {
         return "code";
     }
+    if let Some(t3) = t3_presentation(item, None) {
+        return t3.icon;
+    }
     match action(item) {
         "other" if item.kind == "subagent" => "bot",
         "other" if item.kind == "dynamic_tool" => "wrench",
@@ -146,6 +320,12 @@ pub(crate) fn group_icon(items: &[&TurnItem]) -> &'static str {
     let Some(first) = tools.first() else {
         return "brain";
     };
+    if tools
+        .iter()
+        .all(|i| t3_presentation(i, None).is_some_and(|t| t.icon == "pull-request"))
+    {
+        return "pull-request";
+    }
     let first = action(first);
     if !tools.iter().all(|i| action(i) == first) {
         return "hammer";
@@ -153,6 +333,16 @@ pub(crate) fn group_icon(items: &[&TurnItem]) -> &'static str {
     match first {
         "other" => "hammer",
         action => action_icon(action),
+    }
+}
+
+/// The Lucide file behind a web icon name.
+fn lucide(name: &str) -> &str {
+    match name {
+        "pull-request" => "git-pull-request-arrow",
+        "device" => "smartphone",
+        "code" => "code-xml",
+        name => name,
     }
 }
 
@@ -228,11 +418,109 @@ pub(crate) fn icon_url(icon: &Value, dark: bool) -> Option<String> {
     }
 }
 
-/// `workEntryDisplayIndicatesToolFailure` without the output text scan.
+/// `workEntryDisplayIndicatesToolFailure`: failed status, a T3 tool's error result, a command's
+/// exit code, or output that reads as a failure.
 pub(crate) fn failed(item: &TurnItem) -> bool {
-    matches!(item.str("status"), "failed" | "declined")
-        || (item.kind == "command_execution"
-            && item.raw["exitCode"].as_i64().is_some_and(|c| c != 0))
+    let raw = &item.raw;
+    if matches!(item.str("status"), "failed" | "declined") {
+        return true;
+    }
+    if !matches!(
+        item.kind.as_str(),
+        "command_execution" | "file_change" | "file_search" | "web_search" | "dynamic_tool"
+    ) {
+        return false;
+    }
+    if item.kind == "dynamic_tool"
+        && crate::t3_tools::definition(item.str("toolName"), &raw["input"]).is_some()
+        && crate::t3_tools::result_failed(&raw["output"])
+    {
+        return true;
+    }
+    if item.kind == "command_execution" {
+        if let Some(code) = raw["exitCode"].as_i64() {
+            return code != 0;
+        }
+        if raw["outputIndicatesFailure"] == true {
+            return true;
+        }
+        if let Some(output) = raw["output"].as_str() {
+            let cut = output
+                .char_indices()
+                .nth(32_768)
+                .map_or(output.len(), |(i, _)| i);
+            if output_indicates_failure(&output[..cut]) {
+                return true;
+            }
+        }
+    }
+    let detail = match item.kind.as_str() {
+        "file_search" => item.str("pattern").to_owned(),
+        "web_search" => raw["patterns"]
+            .as_array()
+            .map(|p| {
+                p.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    !detail.is_empty() && output_indicates_failure(&detail)
+}
+
+/// `toolOutputIndicatesFailure`: providers sometimes report completion for output that says
+/// the command or file was not found, or that it exited non-zero.
+pub(crate) fn output_indicates_failure(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let has = |needle: &str| lower.contains(needle);
+    let hint = [
+        "enoent",
+        "no such",
+        "no files found",
+        "not found",
+        "commandnotfound",
+        "not recognized",
+        "cannot find path",
+        "cannot be found",
+        "exit",
+    ]
+    .iter()
+    .any(|n| has(n));
+    hint && ([
+        "file not found",
+        "no files found",
+        "enoent",
+        "no such file",
+        "commandnotfoundexception",
+        "command not found",
+        "is not recognized as the name of a cmdlet",
+        "a parameter cannot be found that matches parameter name",
+    ]
+    .iter()
+    .any(|n| has(n))
+        || (has("cannot find path") && has("because it does not exist"))
+        || (has("is not recognized") && has("the term '"))
+        || nonzero_exit_code(&lower))
+}
+
+/// `exit code: 2`, `exit code 2`, `exited with exit code 2`: a non-zero code after the words.
+fn nonzero_exit_code(lower: &str) -> bool {
+    lower.match_indices("exit code").any(|(at, needle)| {
+        let rest = &lower[at + needle.len()..];
+        let trimmed = rest.trim_start();
+        let trimmed = trimmed.strip_prefix(':').unwrap_or(trimmed).trim_start();
+        if trimmed.len() == rest.len() {
+            return false;
+        }
+        let digits: String = trimmed.chars().take_while(char::is_ascii_digit).collect();
+        let boundary = trimmed[digits.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        !digits.is_empty() && !digits.starts_with('0') && boundary
+    })
 }
 
 fn running(item: &TurnItem) -> bool {
@@ -416,52 +704,13 @@ fn dynamic_title(item: &TurnItem) -> Option<String> {
         .map(|skill| tv("Skill: {name}", &[("name", skill)]))
 }
 
-/// `commandDisplayText`: a `sh -c '…'` wrapper shows just its script, control bytes as pictures.
+/// `commandDisplayText`.
 pub(crate) fn command_text(command: &str) -> String {
-    visible_controls(&unwrap_shell(command))
+    crate::command_label::display_text(command)
 }
 
 pub(crate) fn visible_controls(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            '\t' | '\n' | '\r' => c,
-            '\u{7f}' => '␡',
-            c if (c as u32) < 0x20 => char::from_u32(0x2400 + c as u32).unwrap_or(c),
-            c => c,
-        })
-        .collect()
-}
-
-/// `withoutShellWrapper` for the common `bash -lc "script"` shape.
-/// shortcut: one quoted script after `-c`/`-lc`; the web's full shell tokenizer also unwraps
-/// PowerShell and cmd and keeps chained wrappers intact.
-fn unwrap_shell(command: &str) -> String {
-    let trimmed = command.trim();
-    let mut words = trimmed.splitn(3, ' ');
-    let (Some(program), Some(flag), Some(script)) = (words.next(), words.next(), words.next())
-    else {
-        return trimmed.to_owned();
-    };
-    let program = program.rsplit('/').next().unwrap_or(program);
-    let shell = matches!(program, "sh" | "bash" | "zsh" | "dash" | "fish");
-    let script_flag = flag.starts_with('-') && flag.ends_with('c') && flag.len() <= 4;
-    let script = script.trim();
-    let quoted = |q: char| {
-        script.len() >= 2
-            && script.starts_with(q)
-            && script.ends_with(q)
-            && !script[1..script.len() - 1].contains(q)
-    };
-    if !shell || !script_flag {
-        return trimmed.to_owned();
-    }
-    if quoted('\'') || quoted('"') {
-        script[1..script.len() - 1].trim().to_owned()
-    } else if !script.contains([' ', '\'', '"']) {
-        script.to_owned()
-    } else {
-        trimmed.to_owned()
-    }
+    crate::command_label::visible_controls(text)
 }
 
 /// `commandlessCommandLabel` / `genericCommandStatusLabel`.
@@ -548,6 +797,21 @@ pub(crate) fn label(item: &TurnItem, root: Option<&str>, single: bool) -> String
                 ),
             };
         }
+        "system_notice" => return item.str("message").to_owned(),
+        "notification" => return item.str("summary").to_owned(),
+        "thread_created" => return t("Created thread"),
+        "user_input_request" => {
+            let preview = question_text_preview(&raw["questionAnswer"]);
+            return if !preview.is_empty() {
+                preview
+            } else if !title.is_empty() {
+                title.to_owned()
+            } else if raw["questionAnswer"].is_object() {
+                t("Answered questions")
+            } else {
+                t("Input requested")
+            };
+        }
         "file_change" if single => return tp(EDIT_COUNT, changed_files(item).len(), &[]),
         "web_search" if single => {
             return if title.is_empty() {
@@ -557,6 +821,9 @@ pub(crate) fn label(item: &TurnItem, root: Option<&str>, single: bool) -> String
             };
         }
         _ => {}
+    }
+    if let Some(t3) = t3_presentation(item, single.then_some("completed")) {
+        return t3.display_name;
     }
     if item.kind == "dynamic_tool"
         && let Some(title) = dynamic_title(item)
@@ -679,6 +946,33 @@ fn action_label(action: &str, count: usize) -> String {
             "code-search" => {
                 "{count, plural, one {Searched code {count} time} other {Searched code {count} times}}"
             }
+            "thread-create" => {
+                "{count, plural, one {Created {count} thread} other {Created {count} threads}}"
+            }
+            "device" => {
+                "{count, plural, one {Used device controls {count} time} other {Used device controls {count} times}}"
+            }
+            "browser" => {
+                "{count, plural, one {Used browser {count} time} other {Used browser {count} times}}"
+            }
+            "update" => {
+                "{count, plural, one {Received {count} update} other {Received {count} updates}}"
+            }
+            "link-pr" => {
+                "{count, plural, one {Linked {count} pull request} other {Linked {count} pull requests}}"
+            }
+            "unlink-pr" => {
+                "{count, plural, one {Unlinked {count} pull request} other {Unlinked {count} pull requests}}"
+            }
+            "watch-pr" => {
+                "{count, plural, one {Watching {count} pull request} other {Watching {count} pull requests}}"
+            }
+            "unwatch-pr" => {
+                "{count, plural, one {Stopped watching {count} pull request} other {Stopped watching {count} pull requests}}"
+            }
+            "list-prs" => {
+                "{count, plural, =1 {Checked linked pull requests} other {Checked linked pull requests {count} times}}"
+            }
             _ => "{count, plural, one {Used {count} tool} other {Used {count} tools}}",
         },
         count,
@@ -712,42 +1006,79 @@ pub(crate) fn summarize(items: &[&TurnItem]) -> String {
             tv("Thought (×{count})", &[("count", &items.len().to_string())])
         };
     }
-    // (action, entries); integrations with a source name are told apart by name.
-    let mut groups: Vec<(&str, Vec<&TurnItem>)> = Vec::new();
+    // (key, T3 action?, entries); integrations with a source name are told apart by name.
+    let mut groups: Vec<(String, bool, Vec<&TurnItem>)> = Vec::new();
     let mut sources: Vec<(String, bool)> = Vec::new();
     for item in &tools {
-        if let Some(name) = item.raw["toolSource"]["name"].as_str() {
+        let t3 = (item.kind == "dynamic_tool")
+            .then(|| crate::t3_tools::summary_action(item.str("toolName"), &item.raw["input"]))
+            .flatten();
+        if t3.is_none()
+            && let Some(name) = item.raw["toolSource"]["name"].as_str()
+        {
             let integration = item.raw["toolSource"]["kind"] == "integration";
             if !sources.iter().any(|(n, _)| n == name) {
                 sources.push((name.to_owned(), integration));
             }
             continue;
         }
-        let action = action(item);
-        match groups.iter_mut().find(|g| g.0 == action) {
-            Some(group) => group.1.push(item),
-            None => groups.push((action, vec![item])),
+        let (key, is_t3) = match t3 {
+            Some(action) => (action, true),
+            None => (action(item).to_owned(), false),
+        };
+        match groups.iter_mut().find(|g| g.0 == key) {
+            Some(group) => group.2.push(item),
+            None => groups.push((key, is_t3, vec![item])),
         }
     }
     let mut summaries: Vec<(usize, u8, usize, String)> = groups
         .iter()
         .enumerate()
-        .map(|(index, (action, entries))| {
-            let count = if *action == "edit" {
-                let mut files: Vec<String> = Vec::new();
-                for entry in entries {
-                    for f in changed_files(entry) {
-                        if !files.contains(&f) {
-                            files.push(f);
+        .map(|(index, (action, is_t3, entries))| {
+            let priority = match action.as_str() {
+                "command" | "edit" => 0,
+                "other" | "update" => 2,
+                a if *is_t3 => crate::t3_tools::priority(a),
+                _ => 1,
+            };
+            let label = if *is_t3 {
+                let calls: Vec<crate::t3_tools::Call> = entries
+                    .iter()
+                    .map(|entry| crate::t3_tools::Call {
+                        input: &entry.raw["input"],
+                        output: &entry.raw["output"],
+                        outcome: if matches!(entry.str("status"), "failed" | "declined") {
+                            "failed"
+                        } else if entry.str("status") == "completed" {
+                            "completed"
+                        } else {
+                            "unfinished"
+                        },
+                    })
+                    .collect();
+                crate::t3_tools::summarize(action, &calls).0
+            } else {
+                let count = if action == "edit" {
+                    let mut files: Vec<String> = Vec::new();
+                    let mut without = 0;
+                    for entry in entries {
+                        let changed = changed_files(entry);
+                        if changed.iter().all(|f| f.is_empty()) {
+                            without += 1;
+                        }
+                        for f in changed.into_iter().filter(|f| !f.is_empty()) {
+                            if !files.contains(&f) {
+                                files.push(f);
+                            }
                         }
                     }
-                }
-                files.len()
-            } else {
-                entries.len()
+                    files.len() + without
+                } else {
+                    entries.len()
+                };
+                action_label(action, count)
             };
-            let priority = if *action == "other" { 2 } else { 1 };
-            (index, priority, entries.len(), action_label(action, count))
+            (index, priority, entries.len(), label)
         })
         .collect();
     summaries.sort_by_key(|s| (s.1, s.0));
@@ -772,7 +1103,10 @@ pub(crate) fn summarize(items: &[&TurnItem]) -> String {
     }
     let sourced = tools
         .iter()
-        .filter(|i| i.raw["toolSource"]["name"].is_string())
+        .filter(|i| {
+            i.raw["toolSource"]["name"].is_string()
+                && crate::t3_tools::definition(i.str("toolName"), &i.raw["input"]).is_none()
+        })
         .count();
     let shown: usize = summaries.iter().map(|s| s.2).sum();
     let rest = tools.len() - sourced - shown;
@@ -842,7 +1176,11 @@ pub(crate) fn has_detail(item: &TurnItem) -> bool {
                 args.is_some() || text.is_some()
             }
         }
+        _ if viewed_image_path(item).is_some() => true,
         "todo_list" => any(&raw["steps"]),
+        "notification" => nonempty(&raw["detail"]),
+        "system_notice" => nonempty(&raw["message"]),
+        "user_input_request" => raw["questionAnswer"].is_object() || any(&raw["questions"]),
         _ => false,
     }
 }
@@ -1065,7 +1403,7 @@ fn output_image_count(item: &Value) -> usize {
 }
 
 /// The web's terminal palette (`TERMINAL_PALETTES`), dark then light.
-const PALETTE: [[u32; 16]; 2] = [
+pub(crate) const PALETTE: [[u32; 16]; 2] = [
     [
         0x3b4048, 0xf47067, 0x57ab5a, 0xc69026, 0x539bf5, 0xb083f0, 0x39c5cf, 0xadbac7, 0x768390,
         0xff938a, 0x6bc46d, 0xdaaa3f, 0x6cb6ff, 0xdcbdfb, 0x56d4dd, 0xcdd9e5,
@@ -1076,123 +1414,45 @@ const PALETTE: [[u32; 16]; 2] = [
     ],
 ];
 
-fn xterm(index: u32, palette: &[u32; 16]) -> u32 {
-    if index < 16 {
-        return palette[index as usize];
-    }
-    if index >= 232 {
-        let level = 8 + (index - 232) * 10;
-        return level << 16 | level << 8 | level;
-    }
-    let cube = index - 16;
-    let channel = |v: u32| if v == 0 { 0 } else { 55 + v * 40 };
-    channel(cube / 36) << 16 | channel(cube / 6 % 6) << 8 | channel(cube % 6)
-}
-
-/// `terminalOutputSpans`: SGR escapes become styles over the plain text. Each escape carries the
-/// whole pen, as the server folds output.
+/// `terminalOutputSpans` resolved for gpui: plain text and a highlight per styled run.
 pub(crate) fn terminal_spans(
     text: &str,
     dark: bool,
 ) -> (String, Vec<(std::ops::Range<usize>, HighlightStyle)>) {
     let palette = &PALETTE[usize::from(!dark)];
-    let mut plain = String::with_capacity(text.len());
-    let mut styles = Vec::new();
-    let mut pen: Option<HighlightStyle> = None;
-    let mut start = 0;
-    let mut rest = text;
-    while let Some(escape) = rest.find("\u{1b}[") {
-        plain.push_str(&rest[..escape]);
-        let Some(end) = rest[escape..].find(|c: char| c.is_ascii_alphabetic()) else {
-            rest = "";
-            break;
-        };
-        let params = &rest[escape + 2..escape + end];
-        let is_sgr = rest[escape + end..].starts_with('m');
-        rest = &rest[escape + end + 1..];
-        if !is_sgr {
-            continue;
-        }
-        if let Some(style) = pen.take()
-            && plain.len() > start
-        {
-            styles.push((start..plain.len(), style));
-        }
-        start = plain.len();
-        pen = sgr_style(params, palette);
-    }
-    plain.push_str(rest);
-    if let Some(style) = pen
-        && plain.len() > start
-    {
-        styles.push((start..plain.len(), style));
-    }
-    (plain, styles)
-}
-
-fn sgr_style(params: &str, palette: &[u32; 16]) -> Option<HighlightStyle> {
-    let codes: Vec<u32> = params
-        .split([';', ':'])
-        .map(|p| p.parse().unwrap_or(0))
+    let (plain, runs) = crate::terminal_output::spans(text, 2_000);
+    let color = |c: u32| Hsla::from(gpui_kit::rgb(c));
+    let styles = runs
+        .into_iter()
+        .filter_map(|(range, pen)| {
+            let style = crate::terminal_output::span_style(&pen, palette)?;
+            Some((
+                range,
+                HighlightStyle {
+                    color: style.color.map(color),
+                    background_color: style.background.map(color),
+                    font_weight: style.bold.then_some(FontWeight::SEMIBOLD),
+                    font_style: style.italic.then_some(FontStyle::Italic),
+                    fade_out: style.dim.then_some(0.35),
+                    underline: style.underline.then(|| UnderlineStyle {
+                        thickness: px(1.),
+                        ..Default::default()
+                    }),
+                    strikethrough: style.strike.then(|| StrikethroughStyle {
+                        thickness: px(1.),
+                        ..Default::default()
+                    }),
+                },
+            ))
+        })
         .collect();
-    let mut style = HighlightStyle::default();
-    let mut any = false;
-    let mut i = 0;
-    let rgb = |c: u32| Some(Hsla::from(gpui_kit::rgb(c)));
-    while i < codes.len() {
-        let code = codes[i];
-        let extended = |i: &mut usize| -> Option<u32> {
-            match codes.get(*i + 1) {
-                Some(5) => {
-                    *i += 2;
-                    codes.get(*i).map(|n| xterm(*n, palette))
-                }
-                Some(2) => {
-                    *i += 4;
-                    let c = |k: usize| codes.get(*i + k - 3).copied().unwrap_or(0).min(255);
-                    Some(c(1) << 16 | c(2) << 8 | c(3))
-                }
-                _ => None,
-            }
-        };
-        match code {
-            1 => style.font_weight = Some(FontWeight::SEMIBOLD),
-            2 => style.fade_out = Some(0.35),
-            3 => style.font_style = Some(FontStyle::Italic),
-            4 => {
-                style.underline = Some(UnderlineStyle {
-                    thickness: px(1.),
-                    ..Default::default()
-                })
-            }
-            9 => {
-                style.strikethrough = Some(StrikethroughStyle {
-                    thickness: px(1.),
-                    ..Default::default()
-                })
-            }
-            30..=37 => style.color = rgb(palette[(code - 30) as usize]),
-            90..=97 => style.color = rgb(palette[(code - 82) as usize]),
-            40..=47 => style.background_color = rgb(palette[(code - 40) as usize]),
-            100..=107 => style.background_color = rgb(palette[(code - 92) as usize]),
-            38 => style.color = extended(&mut i).and_then(rgb),
-            48 => style.background_color = extended(&mut i).and_then(rgb),
-            _ => {
-                i += 1;
-                continue;
-            }
-        }
-        any = true;
-        i += 1;
-    }
-    any.then_some(style)
+    (plain, styles)
 }
 
 /// One expanded command row's output (`CommandOutputView`), fed by `subscribeCommandOutput`.
 #[derive(Default)]
 pub(crate) struct CommandOutput {
-    pub(crate) text: String,
-    truncated: bool,
+    pub(crate) output: crate::terminal_output::TerminalOutput,
     pub(crate) running: bool,
     loaded: bool,
     error: Option<String>,
@@ -1201,29 +1461,23 @@ pub(crate) struct CommandOutput {
 }
 
 impl CommandOutput {
-    /// `applyCommandOutputFrame`.
-    /// shortcut: appended live text keeps only SGR styling and carriage-return line rewrites;
-    /// the final `replace` frame is the server's fully folded output.
+    /// `applyCommandOutputFrame`: a `replace` starts over from the whole bounded tail, an
+    /// `append` folds raw terminal text onto what is there.
     pub(crate) fn apply(&mut self, frame: &Value) {
-        let text = frame["text"].as_str().unwrap_or("");
-        if frame["kind"] == "replace" {
-            self.text.clear();
-            self.truncated = false;
-        }
-        self.truncated |= frame["truncated"] == true;
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
-            match c {
-                '\r' if chars.peek() == Some(&'\n') => {}
-                '\r' => {
-                    let line_start = self.text.rfind('\n').map_or(0, |n| n + 1);
-                    self.text.truncate(line_start);
-                }
-                c => self.text.push(c),
-            }
-        }
+        let base = if frame["kind"] == "replace" {
+            crate::terminal_output::TerminalOutput::default()
+        } else {
+            std::mem::take(&mut self.output)
+        };
+        let mut output = base.append(frame["text"].as_str().unwrap_or(""));
+        output.truncated |= frame["truncated"] == true;
+        self.output = output;
         self.running = frame["running"] != false;
         self.loaded = true;
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.output.text
     }
 }
 
@@ -1240,6 +1494,14 @@ pub(crate) enum Fetched {
 pub(crate) struct WorkDetails {
     outputs: RefCell<HashMap<String, CommandOutput>>,
     fetched: RefCell<HashMap<(String, String), Fetched>>,
+    /// A repaint for the sweep's next step is scheduled.
+    sweep_tick: std::cell::Cell<bool>,
+    /// The work row under the pointer.
+    hovered: RefCell<Option<String>>,
+    /// Whether each notice's label was cut off when last painted.
+    cut_off: RefCell<HashMap<String, std::rc::Rc<std::cell::Cell<bool>>>>,
+    /// Each live row's content width as last painted, so its icon can follow the sweep.
+    sweep_widths: RefCell<HashMap<String, std::rc::Rc<std::cell::Cell<f32>>>>,
 }
 
 impl WorkDetails {
@@ -1310,7 +1572,7 @@ impl T3App {
                     .h(px(10.))
                     .opacity(0.7)
                     .into_any_element(),
-                name => crate::ui::icon(name)
+                name => crate::ui::icon(lucide(name))
                     .size(px(16.))
                     .text_color(color)
                     .into_any_element(),
@@ -1348,6 +1610,44 @@ impl T3App {
             .into_any_element()
     }
 
+    /// `threadReadLabel`: a T3 thread read names the thread it read, while that thread is listed.
+    /// Returns the environment, thread id, title and the whole sentence.
+    fn thread_read(&self, item: &TurnItem) -> Option<(String, String, String, String)> {
+        let input = &item.raw["input"];
+        let definition = crate::t3_tools::definition(item.str("toolName"), input)?;
+        if item.kind != "dynamic_tool" || definition.summary_action != "thread-read" {
+            return None;
+        }
+        let thread = input["threadId"]
+            .as_str()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())?;
+        let env = self.env()?;
+        let title = env
+            .shell
+            .threads
+            .iter()
+            .find(|t| t.id == thread)
+            .map(|t| t.title.trim().to_owned())
+            .filter(|t| !t.is_empty())?;
+        let status = if crate::t3_tools::result_failed(&item.raw["output"]) {
+            "failed"
+        } else {
+            match item.str("status") {
+                "completed" => "completed",
+                "failed" => "failed",
+                "declined" => "declined",
+                "cancelled" | "interrupted" => "stopped",
+                _ => "inProgress",
+            }
+        };
+        let text = crate::i18n::tf(
+            "{status, select, inProgress {Reading thread “{title}”} completed {Read thread “{title}”} failed {Failed to read thread “{title}”} declined {Declined to read thread “{title}”} stopped {Stopped reading thread “{title}”} other {Reading thread “{title}”}}",
+            &[("status", status), ("title", &title)],
+        );
+        Some((env.key.clone(), thread.to_owned(), title, text))
+    }
+
     /// A native app's icon, served by the host as an asset.
     fn native_app_icon(&self, app: &Value, cx: &mut Context<Self>) -> Option<String> {
         let env = self.env()?;
@@ -1364,12 +1664,63 @@ impl T3App {
         grouped: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if item.kind == "error" {
+            return self.render_error_row(item, cx);
+        }
+        let child = (item.kind == "notification")
+            .then(|| {
+                let source = &item.raw["source"];
+                matches!(source["kind"].as_str(), Some("subagent" | "delegated_task"))
+                    .then(|| source["childThreadId"].as_str())
+                    .flatten()
+            })
+            .flatten()
+            .map(str::to_owned);
+        // `SubagentNotificationLink`: a child's result shows as that subagent's own row.
+        if let Some(child) = &child
+            && let Some(subagent) = self
+                .thread
+                .items()
+                .find(|i| i.kind == "subagent" && i.str("childThreadId") == child)
+        {
+            let subagent = subagent.clone();
+            return self.render_item(&subagent, None, cx);
+        }
         let c = cx.theme().colors;
         let tokens = crate::web_theme::current(cx);
         let expanded = self.expanded.contains(&item.id);
-        let can_expand = has_detail(item);
+        let notice = item.kind == "system_notice";
+        let warning = notice && item.raw["level"] != "info";
+        // A notice opens only when its row cuts the message off.
+        let cut_off = self.label_cut_off(&item.id);
+        let can_expand = has_detail(item) && (!notice || cut_off.get());
         let reasoning = item.kind == "reasoning";
         let root = self.thread_cwd();
+        let tool_like = matches!(
+            item.kind.as_str(),
+            "reasoning"
+                | "command_execution"
+                | "file_change"
+                | "file_search"
+                | "web_search"
+                | "dynamic_tool"
+                | "subagent"
+                | "thread_created"
+                | "user_input_request"
+                | "approval_request"
+        );
+        let heading = if warning {
+            tokens.warning_foreground
+        } else if tool_like {
+            tokens.secondary_label
+        } else {
+            c.foreground.opacity(0.8)
+        };
+        let answer = item.raw.get("questionAnswer").filter(|a| a.is_object());
+        let answer_shown = answer
+            .filter(|a| has_answer(a))
+            .map(answer_preview)
+            .filter(|p| !p.is_empty());
         let text = if reasoning && expanded {
             if running(item) {
                 tc("Thinking", "status of an agent reasoning")
@@ -1401,25 +1752,112 @@ impl T3App {
                     .justify_center()
                     .child(self.work_icon(item, cx)),
             )
-            .child(
-                div()
+            .child(match self.thread_read(item) {
+                // `ThreadReadLabel`: the thread's title links to it.
+                Some((env, thread, title, text)) => {
+                    let (before, after) = text
+                        .split_once(title.as_str())
+                        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+                        .unwrap_or((text.clone(), String::new()));
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(tokens.secondary_label)
+                        .child(div().flex_none().child(before))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("thread-link-{}", item.id)))
+                                .min_w_0()
+                                .truncate()
+                                .text_color(c.foreground)
+                                .cursor_pointer()
+                                .hover(|s| s.underline())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.select_thread(env.clone(), thread.clone(), cx)
+                                }))
+                                .child(title),
+                        )
+                        .child(div().flex_none().child(after))
+                        .into_any_element()
+                }
+                None => h_flex()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .text_color(tokens.secondary_label)
-                    .child(text),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .mr_1()
-                    .text_xs()
-                    .text_color(c.muted_foreground)
-                    .absolute()
-                    .invisible()
-                    .group_hover(group.clone(), |s| s.relative().visible())
-                    .child(time),
-            )
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .relative()
+                            .when(answer_shown.is_none(), |d| d.flex_1())
+                            .min_w_0()
+                            .truncate()
+                            .text_color(heading)
+                            .when(warning, |d| d.font_weight(FontWeight::MEDIUM))
+                            .child(text.clone())
+                            .when(notice, |d| {
+                                d.child(measure_cut_off(text.clone(), cut_off.clone()))
+                            }),
+                    )
+                    .children(answer_shown.clone().map(|preview| {
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(if expanded {
+                                c.muted_foreground
+                            } else {
+                                c.foreground
+                            })
+                            .child(preview)
+                    }))
+                    .into_any_element(),
+            })
+            // `TimelineRowTimestamp`: the time takes room only while the row is hovered.
+            .when(!notice && self.work_hovered(&item.id), |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .mr_1()
+                        .text_xs()
+                        .text_color(c.muted_foreground)
+                        .child(time),
+                )
+            })
+            .on_hover(self.hover_listener(&item.id, cx))
+            .when(item.kind == "thread_created", |row| {
+                let target = item.str("targetThreadId").to_owned();
+                let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
+                row.child(
+                    div()
+                        .id(SharedString::from(format!("open-chat-{}", item.id)))
+                        .flex_none()
+                        .text_sm()
+                        .text_color(c.primary)
+                        .cursor_pointer()
+                        .hover(|s| s.underline())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.select_thread(env.clone(), target.clone(), cx)
+                        }))
+                        .child(t("Open chat")),
+                )
+            })
+            .when_some(child.clone(), |row, child| {
+                let env = self.env().map(|e| e.key.clone()).unwrap_or_default();
+                row.child(
+                    div()
+                        .id(SharedString::from(format!("open-subagent-{}", item.id)))
+                        .flex_none()
+                        .text_sm()
+                        .text_color(c.primary)
+                        .cursor_pointer()
+                        .hover(|s| s.underline())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.select_thread(env.clone(), child.clone(), cx)
+                        }))
+                        .child(t("Open subagent")),
+                )
+            })
             .when(failed && !has_image_icon, |row| {
                 row.child(
                     crate::ui::icon("x")
@@ -1461,6 +1899,229 @@ impl T3App {
             .into_any_element()
     }
 
+    fn work_hovered(&self, key: &str) -> bool {
+        self.work_details.hovered.borrow().as_deref() == Some(key)
+    }
+
+    /// Tracks the hovered work row, whose time then shows.
+    fn hover_listener(
+        &self,
+        key: &str,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+        let key = key.to_owned();
+        cx.listener(move |this, hovered: &bool, _, cx| {
+            let mut current = this.work_details.hovered.borrow_mut();
+            if *hovered {
+                *current = Some(key.clone());
+            } else if current.as_deref() == Some(key.as_str()) {
+                *current = None;
+            } else {
+                return;
+            }
+            drop(current);
+            cx.notify();
+        })
+    }
+
+    /// Whether a notice's row label was cut off, as last painted.
+    fn label_cut_off(&self, id: &str) -> std::rc::Rc<std::cell::Cell<bool>> {
+        self.work_details
+            .cut_off
+            .borrow_mut()
+            .entry(id.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    /// `QuestionAnswerHistory`: each question, its answer, and attached files.
+    fn question_answer_history(&self, answer: &Value, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors;
+        let texts = answer["questionTextById"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let answers = answer["answers"].as_object().cloned().unwrap_or_default();
+        let files = answer["attachmentsByQuestionId"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let mut ids: Vec<String> = Vec::new();
+        for id in texts.keys().chain(answers.keys()).chain(files.keys()) {
+            if !ids.contains(id) {
+                ids.push(id.clone());
+            }
+        }
+        v_flex()
+            .ml(px(28.))
+            .mt_2()
+            .gap_2()
+            .text_sm()
+            .text_color(c.muted_foreground)
+            .children(ids.into_iter().map(|id| {
+                let reply = answers.get(&id).map(answer_text).unwrap_or_default();
+                let attached: Vec<String> = files
+                    .get(&id)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| f["name"].as_str().map(str::to_owned))
+                    .collect();
+                v_flex()
+                    .gap_1()
+                    .children(
+                        texts
+                            .get(&id)
+                            .and_then(Value::as_str)
+                            .map(|q| div().child(q.to_owned())),
+                    )
+                    .when(!reply.is_empty(), |col| {
+                        col.child(div().ml_3().child(reply))
+                    })
+                    .when(!attached.is_empty(), |col| {
+                        col.child(
+                            h_flex().flex_wrap().gap_2().children(
+                                attached
+                                    .into_iter()
+                                    .map(|name| div().underline().child(name)),
+                            ),
+                        )
+                    })
+            }))
+            .into_any_element()
+    }
+
+    /// A failed provider error (web: the error branch of `WorkEntryLogRow`): a warning for a
+    /// usage limit, otherwise the failure and its message, and Retry for a workspace that
+    /// failed to prepare.
+    fn render_error_row(&self, item: &TurnItem, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors;
+        let tokens = crate::web_theme::current(cx);
+        let failure = &item.raw["failure"];
+        let warning = failure["class"] == "usage_limit";
+        let color = if warning {
+            tokens.warning_foreground
+        } else {
+            tokens.error_foreground
+        };
+        let label = if warning {
+            match failure["resetAt"]
+                .as_str()
+                .and_then(|r| r.parse::<jiff::Timestamp>().ok())
+            {
+                Some(at) => {
+                    let zone = jiff::tz::TimeZone::system();
+                    let name = zone.iana_name().unwrap_or("").to_owned();
+                    let time = format!("{} ({name})", crate::timeline::upcoming_time(at));
+                    tv(
+                        "Usage limit reached. Retry after {resetTime}.",
+                        &[("resetTime", &time)],
+                    )
+                }
+                None => t("Usage limit reached."),
+            }
+        } else if item.raw.get("retry").is_some_and(|r| r.is_object()) {
+            let retry = &item.raw["retry"];
+            let attempt = retry["attempt"].as_u64().unwrap_or(1);
+            let progress = match retry["maxAttempts"].as_u64() {
+                Some(max) => format!("{attempt}/{max}"),
+                None => attempt.to_string(),
+            };
+            tp(
+                "{attempt, plural, one {Provider error after {progress} retries} other {Provider error after {progress} retries}}",
+                attempt as usize,
+                &[("progress", &progress), ("attempt", &attempt.to_string())],
+            )
+        } else {
+            let title = item.str("title").trim();
+            if title.is_empty() {
+                t("Provider error")
+            } else {
+                title.to_owned()
+            }
+        };
+        let retry_run = (!warning
+            && failure["code"] == "workspace_preparation_failed"
+            && self
+                .thread
+                .workspace_preparation_failed(item.run_id.as_deref()))
+        .then(|| item.run_id.clone())
+        .flatten();
+        let thread_id = item.str("threadId").to_owned();
+        v_flex()
+            .w_full()
+            .rounded_md()
+            .px(px(2.))
+            .py(px(2.))
+            .child(
+                h_flex()
+                    .items_start()
+                    .min_h(px(24.))
+                    .gap(px(6.))
+                    .text_sm()
+                    .line_height(relative(1.625))
+                    .child(
+                        div()
+                            .size(px(24.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                crate::ui::icon("circle-alert")
+                                    .size(px(16.))
+                                    .text_color(color),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(color)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .mr_1()
+                            .text_xs()
+                            .text_color(c.muted_foreground)
+                            .child(crate::timeline::row_time(item)),
+                    ),
+            )
+            .when(!warning, |col| {
+                col.child(
+                    div()
+                        .ml(px(28.))
+                        .py_1()
+                        .text_sm()
+                        .line_height(relative(1.625))
+                        .text_color(c.foreground.opacity(0.8))
+                        .child(failure["message"].as_str().unwrap_or("").to_owned()),
+                )
+            })
+            .when_some(retry_run, |col, run| {
+                col.child(
+                    div().ml(px(28.)).pb_1().child(
+                        Button::new(SharedString::from(format!("{}-retry", item.id)))
+                            .xsmall()
+                            .outline()
+                            .icon(crate::ui::icon("rotate-ccw"))
+                            .label(t("Retry"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.dispatch(
+                                    json!({ "type": "prepared-run.retry",
+                                        "threadId": thread_id, "runId": run }),
+                                    cx,
+                                )
+                            })),
+                    ),
+                )
+            })
+            .into_any_element()
+    }
+
     /// A run of work folded into one line (web: `WorkGroupHeader`); open, its rows follow.
     pub(crate) fn render_work_group(
         &self,
@@ -1484,7 +2145,12 @@ impl T3App {
                     .opacity(0.7)
                     .into_any_element()
             }
-            None => crate::ui::icon(group_icon(items))
+            None if group_icon(items) == "t3-code" => crate::ui::svg_image(T3_WORDMARK, cx)
+                .w(px(16.))
+                .h(px(10.))
+                .opacity(0.7)
+                .into_any_element(),
+            None => crate::ui::icon(lucide(group_icon(items)))
                 .size(px(16.))
                 .text_color(c.muted_foreground.opacity(0.7))
                 .into_any_element(),
@@ -1518,17 +2184,17 @@ impl T3App {
                     .text_color(tokens.secondary_label)
                     .child(summarize(items)),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .mr_1()
-                    .text_xs()
-                    .text_color(c.muted_foreground)
-                    .absolute()
-                    .invisible()
-                    .group_hover(group, |s| s.relative().visible())
-                    .child(time),
-            )
+            .when(self.work_hovered(&id), |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .mr_1()
+                        .text_xs()
+                        .text_color(c.muted_foreground)
+                        .child(time),
+                )
+            })
+            .on_hover(self.hover_listener(&id, cx))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.expanded.remove(&id) {
                     this.expanded.insert(id.clone());
@@ -1637,6 +2303,24 @@ impl T3App {
         if item.kind == "reasoning" {
             return self.reasoning_trace(&item.id, item.str("text"), cx);
         }
+        if let Some(answer) = item.raw.get("questionAnswer").filter(|a| a.is_object()) {
+            return self.question_answer_history(answer, cx);
+        }
+        // An image a tool viewed shows itself (web: `WorkLogDetails kind="media"`).
+        let viewed = viewed_image_path(item).map(|path| self.viewed_image(path, 256., cx));
+        if let Some(text) = match item.kind.as_str() {
+            "notification" => Some(item.str("detail")),
+            "system_notice" => Some(item.str("message")),
+            "user_input_request" => None,
+            _ => None,
+        } {
+            return div()
+                .mt(px(2.))
+                .mb(px(6.))
+                .pb_2()
+                .child(self.structured_value(format!("{}-text", item.id), text, false, cx))
+                .into_any_element();
+        }
         let c = cx.theme().colors;
         let tokens = crate::web_theme::current(cx);
         let id = item.id.clone();
@@ -1709,7 +2393,12 @@ impl T3App {
                     b.child(
                         div()
                             .text_color(c.foreground.opacity(0.85))
-                            .child(self.code_text(format!("{id}-cmd"), "bash", &command, cx)),
+                            .child(self.code_text(
+                                format!("{id}-cmd"),
+                                crate::command_label::highlight_language(&command),
+                                &command,
+                                cx,
+                            )),
                     )
                 })
                 .children(output)
@@ -1993,7 +2682,53 @@ impl T3App {
             .pb_2()
             .cursor_default()
             .on_click(|_, _, cx| cx.stop_propagation())
+            .children(viewed.map(|image| div().mt_1().mb_2().child(image)))
             .child(body)
+            .into_any_element()
+    }
+
+    /// An image a tool opened (`ChatMarkdownAssetImage`), up to `max_height` tall; it opens full
+    /// size on click.
+    pub(crate) fn viewed_image(
+        &self,
+        path: &str,
+        max_height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(url) = self.host_image_url(path, cx) else {
+            return div().into_any_element();
+        };
+        let source = ImageSource::from(SharedUri::from(url));
+        let open = source.clone();
+        div()
+            .id(SharedString::from(format!("viewed-{path}")))
+            .cursor_pointer()
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                crate::media::open_expanded(open.clone(), window, cx)
+            })
+            .child(
+                img(source)
+                    .max_h(px(max_height))
+                    .max_w_full()
+                    .rounded_md()
+                    .object_fit(ObjectFit::Contain),
+            )
+            .into_any_element()
+    }
+
+    /// `ViewedImagesTimelineRow`: the images a group opened, as thumbnails under it.
+    pub(crate) fn render_viewed_images(
+        &self,
+        paths: &[String],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        h_flex()
+            .flex_wrap()
+            .items_start()
+            .gap_2()
+            .px(px(2.))
+            .children(paths.iter().map(|path| self.viewed_image(path, 160., cx)))
             .into_any_element()
     }
 
@@ -2113,7 +2848,7 @@ impl T3App {
         }
         let outputs = self.work_details.outputs.borrow();
         let output = outputs.get(&item.id)?;
-        if output.text.is_empty() {
+        if output.text().is_empty() {
             return match (&output.error, output.loaded, output.running) {
                 (Some(error), _, _) => Some(
                     div()
@@ -2138,7 +2873,7 @@ impl T3App {
                 ),
             };
         }
-        let (plain, styles) = terminal_spans(&output.text, cx.theme().mode.is_dark());
+        let (plain, styles) = terminal_spans(output.text(), cx.theme().mode.is_dark());
         let scroll = self
             .work_scrolls
             .borrow_mut()
@@ -2158,7 +2893,7 @@ impl T3App {
                 .overflow_y_scroll()
                 .track_scroll(&scroll)
                 .text_color(c.muted_foreground)
-                .when(output.truncated, |d| {
+                .when(output.output.truncated, |d| {
                     d.child(div().italic().child(t("Earlier output not shown")))
                 })
                 .child(StyledText::new(plain).with_highlights(styles))
@@ -2181,6 +2916,690 @@ impl T3App {
         let input = json!({ "threadId": item.raw["threadId"], "itemId": item.id,
             "revision": detail_revision(item) });
         self.show_tool_diff(label, diff, fetch.map(|client| (client, input)), cx);
+    }
+}
+
+/// Paints nothing; records whether `text` overflows the label it sits in (a notice opens only
+/// when its row cut it off) and repaints when that changes.
+fn measure_cut_off(text: String, cut: std::rc::Rc<std::cell::Cell<bool>>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let font = window.text_style().font();
+            let shaped = window.text_system().shape_line(
+                SharedString::from(text.clone()),
+                px(14.),
+                &[TextRun {
+                    len: text.len(),
+                    font,
+                    color: Hsla::default(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            );
+            let over = shaped.width() > bounds.size.width + px(0.5);
+            if cut.replace(over) != over {
+                window.refresh();
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// The web's live sweep: 2.2s across, in 30 steps (`live-tool-shine`, `live-activity-focus`).
+const SWEEP_MS: u64 = 2_200;
+const SWEEP_STEPS: u64 = 30;
+/// `--live-activity-focus-width`, 4.5rem.
+const SWEEP_BAND: f32 = 72.;
+/// The label's offset in a row: the 24px icon slot and its 6px gap.
+const LABEL_LEAD: f32 = 30.;
+
+#[derive(Clone, Copy)]
+enum Sweep {
+    /// `live-tool-shine`: a band of foreground across the label text.
+    Shine,
+    /// `ActivityShimmerOverlay`: the highlighted row revealed through a moving soft mask.
+    Focus,
+}
+
+impl Sweep {
+    /// Where the band starts, in row coordinates, for content `width` wide.
+    fn start(self, phase: f32, width: f32) -> f32 {
+        match self {
+            // The gradient image moves from just left of the label to its right edge.
+            Sweep::Shine => LABEL_LEAD - SWEEP_BAND + phase * (width - LABEL_LEAD + SWEEP_BAND),
+            // The mask spans the row plus a band on each side and slides its own width.
+            Sweep::Focus => -SWEEP_BAND + phase * (width + 2. * SWEEP_BAND),
+        }
+    }
+
+    /// How bright a point `offset` into the band is.
+    fn alpha(self, offset: f32) -> f32 {
+        if !(0.0..=SWEEP_BAND).contains(&offset) {
+            return 0.;
+        }
+        match self {
+            Sweep::Shine => 1. - (offset - SWEEP_BAND / 2.).abs() / (SWEEP_BAND / 2.),
+            Sweep::Focus => {
+                const STOPS: [(f32, f32); 7] = [
+                    (0., 0.),
+                    (10.8, 0.12),
+                    (25.2, 0.55),
+                    (36., 1.),
+                    (46.8, 0.55),
+                    (61.2, 0.12),
+                    (72., 0.),
+                ];
+                STOPS.windows(2).find(|w| offset <= w[1].0).map_or(0., |w| {
+                    let t = (offset - w[0].0) / (w[1].0 - w[0].0);
+                    w[0].1 + (w[1].1 - w[0].1) * t
+                })
+            }
+        }
+    }
+}
+
+/// `liveThoughtLine`: a thought's bold heading, else its first sentence, as plain text.
+pub(crate) fn live_thought_line(markdown: &str) -> String {
+    let trimmed = markdown.trim_start();
+    let heading = trimmed.strip_prefix("**").and_then(|rest| {
+        let end = rest.find("**")?;
+        let after = rest[end + 2..].trim_start_matches([' ', '\t']);
+        (!rest[..end].contains(['*', '\n', '\r'])
+            && (after.is_empty() || after.starts_with(['\n', '\r'])))
+        .then(|| rest[..end].to_owned())
+    });
+    let text = thought_preview(heading.as_deref().unwrap_or(markdown));
+    if heading.is_some() {
+        return text;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        let closer = |k: usize| chars.get(k).is_some_and(|c| "\"'”’)".contains(*c));
+        let cjk_closer = |k: usize| chars.get(k).is_some_and(|c| "\"'”’）」』".contains(*c));
+        if matches!(c, '.' | '?' | '!') {
+            let end = if closer(i + 1) { i + 2 } else { i + 1 };
+            if chars.get(end).is_some_and(|c| c.is_whitespace()) {
+                return chars[..end].iter().collect();
+            }
+        }
+        if matches!(c, '。' | '！' | '？') {
+            let end = if cjk_closer(i + 1) { i + 2 } else { i + 1 };
+            return chars[..end].iter().collect();
+        }
+    }
+    text
+}
+
+/// `liveActivityToolStatus`.
+fn live_status(item: &TurnItem, present: bool) -> &'static str {
+    match item.str("status") {
+        "failed" => "failed",
+        "declined" => "declined",
+        "cancelled" | "interrupted" => "stopped",
+        "idle" => "idle",
+        "pending" | "running" | "waiting" => "inProgress",
+        _ if present => "inProgress",
+        _ => "completed",
+    }
+}
+
+/// `liveWorkEntryLabel`: a running call in the present tense, by the program it runs.
+pub(crate) fn live_label(item: &TurnItem, root: Option<&str>, active: bool) -> String {
+    let status = live_status(item, active);
+    if item.kind == "reasoning" {
+        let thought = thought_preview(item.str("text"));
+        return if !thought.is_empty() {
+            thought
+        } else if status == "inProgress" {
+            t("Thinking")
+        } else {
+            t("Thought")
+        };
+    }
+    if item.kind == "dynamic_tool"
+        && let Some(t3) = crate::t3_tools::presentation(
+            item.str("toolName"),
+            &item.raw["input"],
+            &item.raw["output"],
+            status,
+        )
+    {
+        return t3.display_name;
+    }
+    let command = item.str("input").trim();
+    if item.kind == "command_execution" && !command.is_empty() {
+        return match crate::command_label::program_name(command) {
+            None => generic_command_label(status),
+            Some(program) => tv(
+                match status {
+                    "inProgress" => "Running {program}",
+                    "failed" => "Failed {program}",
+                    "declined" => "Declined {program}",
+                    "stopped" => "Stopped {program}",
+                    _ => "Ran {program}",
+                },
+                &[("program", &program)],
+            ),
+        };
+    }
+    if item.kind == "command_execution" {
+        let title = item.str("title").trim();
+        let title = title
+            .trim_end_matches(" completed")
+            .trim_end_matches(" complete");
+        if matches!(title, "" | "Ran command" | "Run command" | "Command") {
+            return generic_command_label(status);
+        }
+    }
+    label(item, root, false)
+}
+
+/// `genericCommandStatusLabel`.
+fn generic_command_label(status: &str) -> String {
+    t(match status {
+        "inProgress" => "Running command",
+        "failed" => "Failed command",
+        "declined" => "Declined command",
+        "stopped" => "Stopped command",
+        _ => "Ran command",
+    })
+}
+
+/// `PROVIDER_DISPLAY_NAMES`.
+fn provider_display_name(driver: &str) -> Option<&'static str> {
+    Some(match driver {
+        "antigravity" => "Antigravity",
+        "codex" => "Codex",
+        "claudeAgent" => "Claude",
+        "cursor" => "Cursor",
+        "grok" => "Grok",
+        "fx" => "fx",
+        "kiro" => "Kiro",
+        "muse" => "Muse Code",
+        "acpRegistry" => "ACP Registry",
+        "pi" => "Pi",
+        "opencode" => "OpenCode",
+        _ => return None,
+    })
+}
+
+/// `presentProviderStarting`: the step a launching provider reports.
+fn provider_starting_label(driver: Option<&str>, phase: Option<&str>) -> String {
+    let Some(provider) = driver.and_then(provider_display_name) else {
+        return tc("Starting", "a provider is launching");
+    };
+    tv(
+        match phase {
+            Some("plugins") => "Loading {provider} plugins",
+            Some("mcp") => "Starting {provider} MCP servers",
+            Some("hooks") => "Loading {provider} hooks",
+            Some("skills") => "Loading {provider} rules and skills",
+            Some("resume") => "Resuming {provider} session",
+            Some("connecting") => "Connecting to {provider}",
+            _ => "Starting {provider}",
+        },
+        &[("provider", provider)],
+    )
+}
+
+/// A label whose characters brighten as the sweep passes, cut with an ellipsis like `truncate`.
+/// It reports the row width it painted so the row's icon can follow the same band.
+fn sweep_text(
+    text: String,
+    base: Hsla,
+    bright: Hsla,
+    phase: f32,
+    sweep: Sweep,
+    painted: std::rc::Rc<std::cell::Cell<f32>>,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, cx| {
+            let font = window.text_style().font();
+            let size = px(14.);
+            let run = |len: usize, color: Hsla| TextRun {
+                len,
+                font: font.clone(),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shape = |text: &str, runs: &[TextRun], window: &mut Window| {
+                window.text_system().shape_line(
+                    SharedString::from(text.to_owned()),
+                    size,
+                    runs,
+                    None,
+                )
+            };
+            let mut text = text.clone();
+            let mut shaped = shape(&text, &[run(text.len(), base)], window);
+            if shaped.width() > bounds.size.width {
+                let ellipsis = shape("…", &[run("…".len(), base)], window).width();
+                let cut = shaped
+                    .index_for_x(bounds.size.width - ellipsis)
+                    .unwrap_or(0)
+                    .min(text.len());
+                let cut = (0..=cut)
+                    .rev()
+                    .find(|&i| text.is_char_boundary(i))
+                    .unwrap_or(0);
+                text = format!("{}…", text[..cut].trim_end());
+                shaped = shape(&text, &[run(text.len(), base)], window);
+            }
+            let width = f32::from(shaped.width());
+            painted.set(LABEL_LEAD + width);
+            let start = sweep.start(phase, LABEL_LEAD + width);
+            let mut runs: Vec<TextRun> = Vec::new();
+            for (i, c) in text.char_indices() {
+                let (x0, x1) = (
+                    f32::from(shaped.x_for_index(i)),
+                    f32::from(shaped.x_for_index(i + c.len_utf8())),
+                );
+                let alpha = sweep.alpha(LABEL_LEAD + (x0 + x1) / 2. - start);
+                let color = base.blend(bright.opacity(alpha));
+                match runs.last_mut() {
+                    Some(last) if last.color == color => last.len += c.len_utf8(),
+                    _ => runs.push(run(c.len_utf8(), color)),
+                }
+            }
+            let shaped = shape(&text, &runs, window);
+            shaped
+                .paint(
+                    bounds.origin,
+                    bounds.size.height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                )
+                .ok();
+        },
+    )
+    .flex_1()
+    .min_w_0()
+    .h(px(22.75))
+}
+
+impl T3App {
+    /// Where the live sweep is (0..1), stepped like the web's; while a live row is drawn, the
+    /// next step's repaint is scheduled. Rows out of view aren't drawn, so nothing ticks.
+    fn sweep_phase(&self, cx: &mut Context<Self>) -> f32 {
+        static START: std::sync::LazyLock<std::time::Instant> =
+            std::sync::LazyLock::new(std::time::Instant::now);
+        let elapsed = START.elapsed().as_millis() as u64 % SWEEP_MS;
+        let step = elapsed * SWEEP_STEPS / SWEEP_MS;
+        if !self.work_details.sweep_tick.replace(true) {
+            let wait = (step + 1) * SWEEP_MS / SWEEP_STEPS - elapsed;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(wait.max(1)))
+                    .await;
+                this.update(cx, |app, cx| {
+                    app.work_details.sweep_tick.set(false);
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        step as f32 / SWEEP_STEPS as f32
+    }
+
+    fn sweep_width(&self, key: &str) -> std::rc::Rc<std::cell::Cell<f32>> {
+        self.work_details
+            .sweep_widths
+            .borrow_mut()
+            .entry(key.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    /// `LiveActivityRow`: icon and label, swept while `active` (`shine` brightens the label,
+    /// otherwise the whole row is revealed through the moving mask).
+    #[allow(clippy::too_many_arguments)]
+    fn live_activity_row(
+        &self,
+        key: &str,
+        icon: AnyElement,
+        label: AnyElement,
+        text: String,
+        failed: bool,
+        sweep: Option<Sweep>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let c = cx.theme().colors;
+        let tokens = crate::web_theme::current(cx);
+        let label = match sweep.filter(|_| !failed) {
+            Some(sweep) => {
+                let phase = self.sweep_phase(cx);
+                sweep_text(
+                    text,
+                    tokens.secondary_label,
+                    c.foreground,
+                    phase,
+                    sweep,
+                    self.sweep_width(key),
+                )
+                .into_any_element()
+            }
+            None => label,
+        };
+        h_flex()
+            .min_h(px(24.))
+            .max_w_full()
+            .gap(px(6.))
+            .text_sm()
+            .line_height(relative(1.625))
+            .child(
+                div()
+                    .size(px(24.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon),
+            )
+            .child(label)
+            .when(failed, |row| {
+                row.child(
+                    crate::ui::icon("x")
+                        .size(px(12.))
+                        .text_color(tokens.error_foreground.opacity(0.4)),
+                )
+            })
+    }
+
+    /// The live row's icon color: highlighted where the focus band passes over it.
+    fn swept_icon_color(&self, key: &str, sweep: Option<Sweep>, cx: &mut Context<Self>) -> Hsla {
+        let c = cx.theme().colors;
+        let muted = c.muted_foreground.opacity(0.7);
+        match sweep {
+            Some(Sweep::Focus) => {
+                let phase = self.sweep_phase(cx);
+                let width = self.sweep_width(key).get().max(LABEL_LEAD);
+                let alpha = Sweep::Focus.alpha(12. - Sweep::Focus.start(phase, width));
+                muted.blend(c.foreground.opacity(alpha))
+            }
+            _ => muted,
+        }
+    }
+
+    /// The running turn's latest call (web: `LiveWorkEntryTimelineRow`); the newest thought shows
+    /// above it, and clicking opens the turn's work.
+    pub(crate) fn render_live(
+        &self,
+        group: &str,
+        entry: &TurnItem,
+        thought: Option<&TurnItem>,
+        items: &[&TurnItem],
+        active: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = crate::web_theme::current(cx);
+        let expanded = self.expanded.contains(group);
+        let root = self.thread_cwd();
+        let thought_line = thought
+            .filter(|_| !expanded)
+            .map(|t| {
+                let text = t.str("text");
+                let cut = text
+                    .char_indices()
+                    .nth(8_192)
+                    .map_or(text.len(), |(i, _)| i);
+                live_thought_line(&text[..cut])
+            })
+            .unwrap_or_default();
+        let thought_is_status =
+            !thought_line.is_empty() && thought.is_some_and(|t| t.id == entry.id);
+        let failed = failed(entry);
+        let text = if thought_is_status {
+            if active { t("Thinking") } else { t("Thought") }
+        } else if let Some((_, _, _, sentence)) = self.thread_read(entry) {
+            sentence
+        } else {
+            live_label(entry, root.as_deref(), active)
+        };
+        let key = format!("live-{group}");
+        let sweep = active.then_some(Sweep::Shine);
+        let icon = self.work_icon(entry, cx);
+        let label = div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_color(tokens.secondary_label)
+            .child(text.clone())
+            .into_any_element();
+        let group_id = group.to_owned();
+        let mut col = v_flex()
+            .id(SharedString::from(format!("live-row-{group}")))
+            .w_full()
+            .rounded_md()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.expanded.remove(&group_id) {
+                    this.expanded.insert(group_id.clone());
+                }
+                cx.notify();
+            }));
+        if !thought_line.is_empty() {
+            col = col.child(
+                h_flex()
+                    .items_start()
+                    .gap(px(6.))
+                    .text_sm()
+                    .line_height(relative(1.625))
+                    .child(
+                        div()
+                            .size(px(24.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                crate::ui::icon("brain")
+                                    .size(px(16.))
+                                    .text_color(cx.theme().colors.muted_foreground.opacity(0.7)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .line_clamp(4)
+                            .text_color(tokens.secondary_label)
+                            .child(thought_line),
+                    ),
+            );
+        }
+        col = col.child(self.live_activity_row(&key, icon, label, text, failed, sweep, cx));
+        if expanded {
+            col = col.child(self.render_group_rows(items, cx));
+        }
+        col.into_any_element()
+    }
+
+    /// The rows of an opened work group, or one trace when they are all thoughts.
+    fn render_group_rows(&self, items: &[&TurnItem], cx: &mut Context<Self>) -> AnyElement {
+        let visible: Vec<&&TurnItem> = items
+            .iter()
+            .filter(|i| i.kind != "reasoning" || !i.str("text").trim().is_empty())
+            .collect();
+        if !visible.is_empty() && visible.iter().all(|i| i.kind == "reasoning") {
+            let text = visible
+                .iter()
+                .map(|i| i.str("text"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            return self.reasoning_trace(&format!("{}-trace", visible[0].id), &text, cx);
+        }
+        let capped = !visible.iter().any(|i| self.expanded.contains(&i.id));
+        div()
+            .id(SharedString::from(format!(
+                "{}-rows",
+                visible.first().map_or("", |i| i.id.as_str())
+            )))
+            .when(capped, |d| d.max_h(px(288.)).overflow_y_scroll())
+            .children(
+                visible
+                    .into_iter()
+                    .map(|item| self.render_work_row(item, false, true, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// "Thinking" at the end of a running turn (web: `ThinkingTimelineRow`): the launching
+    /// provider's logo and step while it starts; after a failed call it opens to that work.
+    pub(crate) fn render_thinking(
+        &self,
+        group: Option<&(String, Vec<&TurnItem>)>,
+        waiting: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = crate::web_theme::current(cx);
+        let dark = cx.theme().mode.is_dark();
+        let starting = self.run_activity().provider_starting;
+        let text = starting
+            .as_ref()
+            .map(|(_, driver, phase)| provider_starting_label(driver.as_deref(), phase.as_deref()))
+            .or_else(|| waiting.map(str::to_owned))
+            .unwrap_or_else(|| t("Thinking"));
+        // Nothing thinks while an approval waits.
+        let live = !self.thread.items().any(|i| {
+            i.kind == "approval_request"
+                && i.str("status") != "completed"
+                && !matches!(i.str("status"), "failed" | "cancelled" | "interrupted")
+        });
+        let sweep = live.then_some(Sweep::Focus);
+        let key = "thinking".to_owned();
+        let color = self.swept_icon_color(&key, sweep, cx);
+        let logo = starting.as_ref().and_then(|(instance, driver, _)| {
+            let driver = driver.as_deref()?;
+            Some(self.provider_starting_icon(instance, driver, dark))
+        });
+        let icon = match logo {
+            Some(logo) => div()
+                .opacity(
+                    if color == cx.theme().colors.muted_foreground.opacity(0.7) {
+                        0.7
+                    } else {
+                        1.
+                    },
+                )
+                .child(logo)
+                .into_any_element(),
+            None => crate::ui::icon("brain")
+                .size(px(16.))
+                .text_color(color)
+                .into_any_element(),
+        };
+        let label = div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_color(tokens.secondary_label)
+            .child(text.clone())
+            .into_any_element();
+        let row = self.live_activity_row(&key, icon, label, text, false, sweep, cx);
+        let Some((id, items)) = group else {
+            return row.into_any_element();
+        };
+        let expanded = self.expanded.contains(id);
+        let group_id = id.clone();
+        v_flex()
+            .child(
+                div()
+                    .id(SharedString::from(format!("thinking-{id}")))
+                    .w_full()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.expanded.remove(&group_id) {
+                            this.expanded.insert(group_id.clone());
+                        }
+                        cx.notify();
+                    }))
+                    .child(row),
+            )
+            .when(expanded, |col| col.child(self.render_group_rows(items, cx)))
+            .into_any_element()
+    }
+
+    /// `ProviderStartingIcon`: the instance's logo, or its ACP registry agent's icon.
+    fn provider_starting_icon(&self, instance: &str, driver: &str, dark: bool) -> AnyElement {
+        if driver == "acpRegistry" {
+            let config = &self.config().settings["providerInstances"][instance]["config"];
+            let registry = (config["source"] != "local")
+                .then(|| {
+                    config["registryIconUrl"]
+                        .as_str()
+                        .filter(|u| u.starts_with("https://cdn.agentclientprotocol.com/"))
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            config["agentId"]
+                                .as_str()
+                                .map(str::trim)
+                                .filter(|id| {
+                                    !id.is_empty()
+                                        && id.chars().next().is_some_and(|c| {
+                                            c.is_ascii_lowercase() || c.is_ascii_digit()
+                                        })
+                                        && id.chars().all(|c| {
+                                            c.is_ascii_lowercase()
+                                                || c.is_ascii_digit()
+                                                || "._-".contains(c)
+                                        })
+                                })
+                                .map(|id| {
+                                    format!(
+                                        "https://cdn.agentclientprotocol.com/registry/v1/latest/{id}.svg"
+                                    )
+                                })
+                        })
+                })
+                .flatten();
+            if let Some(url) = registry {
+                let driver = driver.to_owned();
+                return img(SharedUri::from(url))
+                    .size(px(16.))
+                    .with_fallback(move || match crate::ui::provider_logo(&driver, dark) {
+                        Some(logo) => logo.into_any_element(),
+                        None => div().into_any_element(),
+                    })
+                    .into_any_element();
+            }
+        }
+        match crate::ui::provider_logo(driver, dark) {
+            Some(logo) => logo.into_any_element(),
+            None => {
+                // `providerInstanceInitials` of the provider's name.
+                let name = self
+                    .config()
+                    .providers
+                    .iter()
+                    .find(|p| p.instance_id == instance)
+                    .and_then(|p| p.display_name.clone())
+                    .or_else(|| provider_display_name(driver).map(str::to_owned))
+                    .unwrap_or_default();
+                let initials: String = name
+                    .split_whitespace()
+                    .filter_map(|w| w.chars().next())
+                    .take(2)
+                    .collect::<String>()
+                    .to_uppercase();
+                div()
+                    .text_size(px(9.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .line_height(px(9.))
+                    .child(initials)
+                    .into_any_element()
+            }
+        }
     }
 }
 
@@ -2260,6 +3679,17 @@ mod tests {
     fn unwraps_shell_wrappers_only_when_safe() {
         assert_eq!(command_text("/bin/zsh -lc \"git status\""), "git status");
         assert_eq!(command_text("bash -c 'a' extra"), "bash -c 'a' extra");
+        assert_eq!(command_text("bash -lc 'cd x && make'"), "cd x && make");
+        assert_eq!(command_text("bash -lc 'a'; echo b"), "bash -lc 'a'; echo b");
+        assert_eq!(
+            command_text("pwsh -NoProfile -Command Get-ChildItem"),
+            "Get-ChildItem"
+        );
+        assert_eq!(command_text(r#"cmd.exe /d /c "dir""#), "dir");
+        assert_eq!(
+            command_text(r#"bash -c 'echo "hi"' 2>&1"#),
+            r#"bash -c 'echo "hi"' 2>&1"#
+        );
         assert_eq!(command_text("echo \u{1b}"), "echo ␛");
     }
 
@@ -2308,7 +3738,7 @@ mod tests {
 
     #[test]
     fn styles_terminal_output() {
-        let (plain, styles) = terminal_spans("ok \u{1b}[32mpass\u{1b}[0m done\u{1b}[K", true);
+        let (plain, styles) = terminal_spans("ok \u{1b}[0;32mpass\u{1b}[0m done", true);
         assert_eq!(plain, "ok pass done");
         assert_eq!(styles.len(), 1);
         assert_eq!(styles[0].0, 3..7);
@@ -2318,8 +3748,24 @@ mod tests {
             &json!({ "kind": "replace", "text": "a\n", "truncated": false, "running": true }),
         );
         out.apply(&json!({ "kind": "append", "text": "10%\r50%\n", "truncated": false, "running": false }));
-        assert_eq!(out.text, "a\n50%\n");
+        assert_eq!(out.text(), "a\n50%\n");
         assert!(!out.running);
+    }
+
+    #[test]
+    fn live_thoughts_and_sweep_match_the_web() {
+        use super::{Sweep, live_thought_line};
+        assert_eq!(
+            live_thought_line("**Reading files**\nthen more"),
+            "Reading files"
+        );
+        assert_eq!(live_thought_line("First step. Second step."), "First step.");
+        assert_eq!(Sweep::Focus.alpha(36.), 1.);
+        assert_eq!(Sweep::Focus.alpha(-1.), 0.);
+        assert!((Sweep::Focus.alpha(10.8) - 0.12).abs() < 1e-4);
+        assert_eq!(Sweep::Shine.alpha(36.), 1.);
+        assert_eq!(Sweep::Focus.start(0., 100.), -72.);
+        assert_eq!(Sweep::Focus.start(1., 100.), 172.);
     }
 
     #[test]

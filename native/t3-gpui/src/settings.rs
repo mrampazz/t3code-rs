@@ -38,6 +38,7 @@ pub fn load_prefs() -> Value {
 }
 
 pub(crate) fn save_prefs(prefs: &Value) {
+    crate::timeline::set_timestamp_format(prefs);
     let Some(path) = prefs_path() else { return };
     let _ = std::fs::create_dir_all(path.parent().unwrap());
     let _ = std::fs::write(path, serde_json::to_vec_pretty(prefs).unwrap());

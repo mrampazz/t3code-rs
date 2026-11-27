@@ -749,6 +749,18 @@ struct Run {
     ordinal: u64,
     queue_position: Option<u64>,
     user_message_id: String,
+    provider_instance_id: String,
+    active_attempt_id: Option<String>,
+    workspace_preparation: bool,
+}
+
+/// The active run as the timeline shows it (`summarizeThreadRun`).
+#[derive(Debug, Default, PartialEq)]
+pub struct RunActivity {
+    /// The provider is still launching: its instance, driver if known, and the step it reports.
+    pub provider_starting: Option<(String, Option<String>, Option<String>)>,
+    /// The provider's turn finished while the run settles.
+    pub turn_ended: bool,
 }
 
 /// A message waiting for its own turn (`deriveThreadQueueWorkflowState`).
@@ -778,6 +790,9 @@ pub struct ThreadView {
     pub has_more_history: bool,
     /// The projection's `thread` (`OrchestrationV2AppThread`), replaced by every `thread.*` event.
     pub app_thread: Value,
+    /// `providerSessions` and `providerTurns` by id.
+    provider_sessions: Vec<Value>,
+    provider_turns: HashMap<String, Value>,
 }
 
 fn projected_rows(rows: &Value) -> Vec<Row> {
@@ -972,6 +987,88 @@ impl ThreadView {
             .map(|(id, _)| id.as_str())
     }
 
+    /// `summarizeThreadRun` for the newest active run: whether its provider is still starting
+    /// (and the step it reports) or its turn already ended. `drivers` names instances' drivers
+    /// before a provider session exists.
+    pub fn run_activity(&self, thread_id: &str, drivers: &[(String, String)]) -> RunActivity {
+        let Some((run_id, run)) = self
+            .runs
+            .iter()
+            .filter(|(_, r)| {
+                matches!(
+                    r.status.as_str(),
+                    "preparing" | "starting" | "running" | "waiting"
+                )
+            })
+            .max_by_key(|(_, r)| r.ordinal)
+        else {
+            return RunActivity::default();
+        };
+        let turn_status = run.active_attempt_id.as_ref().and_then(|attempt| {
+            self.provider_turns
+                .values()
+                .filter(|t| t["runAttemptId"].as_str() == Some(attempt))
+                .max_by_key(|t| t["ordinal"].as_u64().unwrap_or(0))
+                .and_then(|t| t["status"].as_str())
+        });
+        let session = self
+            .provider_sessions
+            .iter()
+            .rev()
+            .find(|s| s["providerInstanceId"].as_str() == Some(&run.provider_instance_id));
+        let phase = session
+            .filter(|s| {
+                s["startupPhaseThreadId"]
+                    .as_str()
+                    .is_none_or(|t| t == thread_id)
+            })
+            .and_then(|s| s["startupPhase"].as_str())
+            .map(str::to_owned);
+        let starting = || {
+            let driver = session
+                .and_then(|s| s["driver"].as_str().map(str::to_owned))
+                .or_else(|| {
+                    drivers
+                        .iter()
+                        .find(|(instance, _)| *instance == run.provider_instance_id)
+                        .map(|(_, d)| d.clone())
+                });
+            Some((run.provider_instance_id.clone(), driver, phase.clone()))
+        };
+        // A provider can keep preparing after its turn opens; the step shows until first output.
+        let has_output = || {
+            self.rows.iter().any(|r| {
+                r.item.run_id.as_deref() == Some(run_id.as_str())
+                    && !r.item.raw["providerTurnId"].is_null()
+                    && r.item.kind != "user_message"
+            })
+        };
+        match turn_status {
+            None if matches!(run.status.as_str(), "starting" | "running") => RunActivity {
+                provider_starting: starting(),
+                turn_ended: false,
+            },
+            None => RunActivity::default(),
+            Some("pending" | "running") if phase.is_none() || has_output() => {
+                RunActivity::default()
+            }
+            Some("pending" | "running") => RunActivity {
+                provider_starting: starting(),
+                turn_ended: false,
+            },
+            Some(_) => RunActivity {
+                provider_starting: None,
+                turn_ended: true,
+            },
+        }
+    }
+
+    /// `workspacePreparationRetryRunIds`: the run failed while preparing its workspace.
+    pub fn workspace_preparation_failed(&self, run: Option<&str>) -> bool {
+        run.and_then(|r| self.runs.get(r))
+            .is_some_and(|r| r.status == "failed" && r.workspace_preparation)
+    }
+
     pub fn latest_turn(&self) -> Option<u64> {
         self.checkpoints.first().map(|c| c.turn)
     }
@@ -1007,6 +1104,16 @@ impl ThreadView {
                 }
                 self.rows = projected_rows(&projection["visibleTurnItems"]);
                 self.app_thread = projection["thread"].clone();
+                self.provider_sessions = projection["providerSessions"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                self.provider_turns = projection["providerTurns"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| Some((t["id"].as_str()?.to_owned(), t.clone())))
+                    .collect();
                 self.history_cursor = item["historyCursor"].as_str().map(str::to_owned);
                 self.has_more_history = item["hasMoreHistory"] == true;
             }
@@ -1028,6 +1135,26 @@ impl ThreadView {
                         self.apply_attempt(payload)
                     }
                     Some("checkpoint.captured") => self.apply_checkpoint(payload),
+                    Some("provider-turn.updated") => {
+                        if let Some(id) = payload["id"].as_str() {
+                            self.provider_turns.insert(id.to_owned(), payload.clone());
+                        }
+                    }
+                    Some("provider-session.attached" | "provider-session.updated") => {
+                        let id = &payload["id"];
+                        match self.provider_sessions.iter_mut().find(|s| &s["id"] == id) {
+                            Some(session) => *session = payload.clone(),
+                            None => self.provider_sessions.push(payload.clone()),
+                        }
+                    }
+                    Some("provider-session.detached") => {
+                        let id = &payload["providerSessionId"];
+                        if let Some(session) =
+                            self.provider_sessions.iter_mut().find(|s| &s["id"] == id)
+                        {
+                            session["status"] = Value::from("stopped");
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1051,6 +1178,14 @@ impl ThreadView {
                     ordinal: run["ordinal"].as_u64().unwrap_or(0),
                     queue_position: run["queuePosition"].as_u64(),
                     user_message_id: run["userMessageId"].as_str().unwrap_or("").to_owned(),
+                    provider_instance_id: run["providerInstanceId"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                    active_attempt_id: run["activeAttemptId"].as_str().map(str::to_owned),
+                    workspace_preparation: run
+                        .get("workspacePreparation")
+                        .is_some_and(|w| !w.is_null()),
                 },
             );
         }
