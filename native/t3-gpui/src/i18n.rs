@@ -124,9 +124,80 @@ pub fn tv(text: &str, vars: &[(&str, &str)]) -> String {
     })
 }
 
+/// Translates an ICU `{count, plural, …}` message and fills its variables (`count` included).
+/// shortcut: English plural rules (`=n`, `one`, `other`) in every locale; Russian or Arabic
+/// forms fall back to `other`.
+pub fn tp(text: &str, count: usize, vars: &[(&str, &str)]) -> String {
+    let message = lookup(text, None);
+    let n = count.to_string();
+    let chosen = plural_branch(&message, count).unwrap_or(message);
+    tv(&chosen, vars).replace("{count}", &n)
+}
+
+/// The branch of a top-level `{x, plural, …}` for `count`, with its text around the block kept.
+fn plural_branch(message: &str, count: usize) -> Option<String> {
+    let start = message.find(", plural,")?;
+    let open = message[..start].rfind('{')?;
+    let mut depth = 0;
+    let close = open
+        + message[open..]
+            .char_indices()
+            .find(|&(_, c)| {
+                depth += match c {
+                    '{' => 1,
+                    '}' => -1,
+                    _ => 0,
+                };
+                depth == 0
+            })?
+            .0;
+    let mut rest = &message[start + ", plural,".len()..close];
+    let mut branches = Vec::new();
+    while let Some(brace) = rest.find('{') {
+        let key = rest[..brace].trim();
+        let mut depth = 0;
+        let end = brace
+            + rest[brace..]
+                .char_indices()
+                .find(|&(_, c)| {
+                    depth += match c {
+                        '{' => 1,
+                        '}' => -1,
+                        _ => 0,
+                    };
+                    depth == 0
+                })?
+                .0;
+        branches.push((key, &rest[brace + 1..end]));
+        rest = &rest[end + 1..];
+    }
+    let exact = format!("={count}");
+    let body = branches
+        .iter()
+        .find(|(k, _)| *k == exact)
+        .or_else(|| branches.iter().find(|(k, _)| count == 1 && *k == "one"))
+        .or_else(|| branches.iter().find(|(k, _)| *k == "other"))?
+        .1;
+    Some(format!(
+        "{}{body}{}",
+        &message[..open],
+        &message[close + 1..]
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picks_plural_branches() {
+        let m = "{count, plural, one {Ran {count} command} other {Ran {count} commands}}";
+        assert_eq!(tp(m, 1, &[]), "Ran 1 command");
+        assert_eq!(tp(m, 3, &[]), "Ran 3 commands");
+        let m = "{count, plural, =1 {Checked linked pull requests} other {Checked {count} times}}";
+        assert_eq!(tp(m, 1, &[]), "Checked linked pull requests");
+        assert_eq!(tp(m, 2, &[]), "Checked 2 times");
+    }
 
     #[test]
     fn keys_match_the_web_catalogs() {

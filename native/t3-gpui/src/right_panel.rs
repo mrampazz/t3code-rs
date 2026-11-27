@@ -187,7 +187,7 @@ impl T3App {
             }
             None => {}
             // A pull request's diff stays chosen; otherwise the thread or turn diff refreshes.
-            Some(Surface::Diff) if self.diff_pr.is_some() => {}
+            Some(Surface::Diff) if self.diff_pr.is_some() || self.diff_tool.is_some() => {}
             Some(Surface::Diff) => self.load_diff(self.diff_target, cx),
             Some(Surface::Files) => self.ensure_file_tree(cx),
             Some(Surface::File(path)) => {

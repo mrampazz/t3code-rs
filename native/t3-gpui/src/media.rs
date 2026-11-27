@@ -168,45 +168,55 @@ impl T3App {
             return Cow::Borrowed(text);
         };
         let cwd = self.thread_cwd();
-        let base = env.session.base_url.trim_end_matches('/').to_owned();
-        let client = env.client.clone();
         rewrite_images(text, |dest| {
             let (path, relative) = host_image_path(dest, cwd.as_deref())?;
             let key = format!("{}\u{0}{thread_id}\u{0}{path}", env.key);
-            if let Some(known) = self.asset_urls.borrow().get(&key) {
-                return known.clone();
-            }
-            self.asset_urls.borrow_mut().insert(key.clone(), None);
-            let client = client.clone()?;
             let mut resource = json!({ "_tag": "media-file", "threadId": thread_id, "path": path });
             if relative {
                 resource["hostOnly"] = json!(true);
             }
-            let base = base.clone();
-            cx.spawn(async move |this, cx| {
-                let minted = on_tokio(async move {
-                    client
-                        .call("assets.createUrl", json!({ "resource": resource }))
-                        .await
-                })
-                .await;
-                let url = match minted {
-                    Ok(Ok(result)) => result["relativeUrl"]
-                        .as_str()
-                        .map(|relative| format!("{base}{relative}")),
-                    _ => None,
-                };
-                this.update(cx, |app, cx| {
-                    if url.is_some() {
-                        app.asset_urls.borrow_mut().insert(key, url);
-                        cx.notify();
-                    }
-                })
-                .ok();
-            })
-            .detach();
-            None
+            self.mint_asset_url(key, resource, cx)
         })
+    }
+
+    /// The signed URL for a host asset (`assets.createUrl`), minting it once per `key`; `None`
+    /// until it arrives, then the app repaints.
+    pub(crate) fn mint_asset_url(
+        &self,
+        key: String,
+        resource: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        if let Some(known) = self.asset_urls.borrow().get(&key) {
+            return known.clone();
+        }
+        let env = self.env()?;
+        let client = env.client.clone()?;
+        let base = env.session.base_url.trim_end_matches('/').to_owned();
+        self.asset_urls.borrow_mut().insert(key.clone(), None);
+        cx.spawn(async move |this, cx| {
+            let minted = on_tokio(async move {
+                client
+                    .call("assets.createUrl", json!({ "resource": resource }))
+                    .await
+            })
+            .await;
+            let url = match minted {
+                Ok(Ok(result)) => result["relativeUrl"]
+                    .as_str()
+                    .map(|relative| format!("{base}{relative}")),
+                _ => None,
+            };
+            this.update(cx, |app, cx| {
+                if url.is_some() {
+                    app.asset_urls.borrow_mut().insert(key, url);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        None
     }
 }
 

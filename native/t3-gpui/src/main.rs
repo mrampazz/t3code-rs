@@ -50,6 +50,7 @@ mod thread_chips;
 mod timeline;
 mod ui;
 mod web_theme;
+mod work_rows;
 mod workflows;
 mod workspace;
 
@@ -300,6 +301,8 @@ struct T3App {
     diff_target: Option<u64>,
     /// The linked pull request (repository, number) the diff panel shows instead of turns.
     diff_pr: Option<serde_json::Value>,
+    /// The edit (file name) whose own diff the panel shows instead of turns.
+    diff_tool: Option<String>,
     /// Pending review line comments per pull request (repository, number), kept until submitted.
     pr_drafts: std::collections::HashMap<(String, u64), Vec<serde_json::Value>>,
     diff_state: Option<Entity<gpui_kit::component::diff::DiffState>>,
@@ -324,6 +327,10 @@ struct T3App {
     stash_open: bool,
     /// Signed URLs for host-file images by environment, thread and path; `None` while minting.
     asset_urls: std::cell::RefCell<std::collections::HashMap<String, Option<String>>>,
+    /// Opened work rows' command output streams and fetched items.
+    work_details: work_rows::WorkDetails,
+    /// Command output scrollers, so a streaming one can follow its tail.
+    work_scrolls: std::cell::RefCell<std::collections::HashMap<String, ScrollHandle>>,
     /// The thread and row keys the list was last spliced to (`sync_transcript`).
     transcript_rows: (Option<String>, Vec<String>),
     _subscriptions: Vec<Subscription>,
@@ -537,6 +544,7 @@ impl T3App {
             snooze_wake_at: None,
             diff_target: None,
             diff_pr: None,
+            diff_tool: None,
             pr_drafts: Default::default(),
             diff_state: None,
             diff_note: None,
@@ -553,6 +561,8 @@ impl T3App {
             stash: stash::load(),
             stash_open: false,
             asset_urls: Default::default(),
+            work_details: Default::default(),
+            work_scrolls: Default::default(),
             _subscriptions,
         };
         app.listen_for_notification_clicks(cx);
@@ -837,8 +847,11 @@ impl T3App {
             self.diff_generation += 1;
             self.diff_target = None;
             self.diff_pr = None;
+            self.diff_tool = None;
             self.diff_state = None;
             self.diff_note = None;
+            self.work_details.reset(self.client().as_ref());
+            self.work_scrolls.borrow_mut().clear();
         }
         let switched = !same_env || self.selected.as_deref() != Some(id.as_str());
         self.selected = Some(id);

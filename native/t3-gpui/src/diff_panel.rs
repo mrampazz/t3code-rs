@@ -33,6 +33,7 @@ impl T3App {
     pub(crate) fn load_diff(&mut self, target: Option<u64>, cx: &mut Context<Self>) {
         self.diff_target = target;
         self.diff_pr = None;
+        self.diff_tool = None;
         self.diff_generation += 1;
         let generation = self.diff_generation;
         let (Some(client), Some(thread_id), Some(latest)) = (
@@ -83,6 +84,7 @@ impl T3App {
             return;
         };
         self.diff_pr = Some(input.clone());
+        self.diff_tool = None;
         self.diff_generation += 1;
         let generation = self.diff_generation;
         let mut input = input;
@@ -111,6 +113,48 @@ impl T3App {
                     .map_err(anyhow::Error::from)
                     .and_then(|r| r)
                     .and_then(|pages| parse_pr_diff(&pages));
+                app.show_diff(generation, loaded, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// One edit's own patch (web: `ToolCallDiffTarget`): the wire copy's, or the full item's when
+    /// the wire withheld it.
+    pub(crate) fn show_tool_diff(
+        &mut self,
+        label: String,
+        diff: Option<String>,
+        fetch: Option<(crate::rpc::RpcClient, Value)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.diff_pr = None;
+        self.diff_tool = Some(label);
+        self.diff_generation += 1;
+        let generation = self.diff_generation;
+        self.open_surface(crate::panel::Surface::Diff, cx);
+        let parse = |patch: String| {
+            let files = DiffFile::parse(&patch).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+            anyhow::Ok((vec![patch], files, None))
+        };
+        let Some((client, input)) = fetch else {
+            let loaded = parse(diff.unwrap_or_default());
+            return self.show_diff(generation, loaded, cx);
+        };
+        self.diff_note = Some("Loading…".into());
+        cx.spawn(async move |this, cx| {
+            let result =
+                on_tokio(async move { client.call("orchestration.getTurnItem", input).await })
+                    .await;
+            this.update(cx, |app, cx| {
+                let loaded = result
+                    .map_err(anyhow::Error::from)
+                    .and_then(|r| r)
+                    .and_then(|value| {
+                        let patch = value["item"]["diffStr"].as_str().map(str::to_owned);
+                        parse(patch.or(diff).unwrap_or_default())
+                    });
                 app.show_diff(generation, loaded, cx);
             })
             .ok();
@@ -298,7 +342,12 @@ impl T3App {
                         }
                     })),
             )
-            .child(self.turn_button("diff-all", "All turns".into(), None, cx));
+            .child(self.turn_button("diff-all", "All turns".into(), None, cx))
+            .children(
+                self.diff_tool
+                    .clone()
+                    .map(|label| Button::new("diff-tool").xsmall().primary().label(label)),
+            );
         for (i, link) in self.thread_pull_requests().into_iter().enumerate() {
             let key = pr_key(&link);
             let button = Button::new(("diff-pr", i))
@@ -750,7 +799,7 @@ impl T3App {
             .xsmall()
             .label(label)
             .on_click(cx.listener(move |this, _, _, cx| this.load_diff(target, cx)));
-        if self.diff_pr.is_none() && self.diff_target == target {
+        if self.diff_pr.is_none() && self.diff_tool.is_none() && self.diff_target == target {
             button.primary()
         } else {
             button.ghost()

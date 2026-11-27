@@ -505,6 +505,8 @@ pub struct ServerConfig {
     pub thread_force_stop: bool,
     /// Scripts save to `projectSettingsOverrides`; older servers use `projectScriptOverrides`.
     pub project_settings_overrides: bool,
+    /// `capabilities.commandOutputStreaming`: open command rows stream their output.
+    pub command_output_streaming: bool,
 }
 
 /// Picker key for a model selection: provider instance and model slug.
@@ -535,6 +537,8 @@ impl ServerConfig {
                     config["environment"]["capabilities"]["threadForceStop"] == true;
                 self.project_settings_overrides =
                     config["environment"]["capabilities"]["projectSettingsOverrides"] == true;
+                self.command_output_streaming =
+                    config["environment"]["capabilities"]["commandOutputStreaming"] == true;
                 self.snooze_presets = config["settings"].get("snoozePresets").cloned();
                 self.settings = config["settings"].clone();
                 self.keybindings = config["keybindings"]

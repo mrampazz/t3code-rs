@@ -6,7 +6,6 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, ThemeColor, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use serde_json::Value;
 
 use crate::T3App;
 use crate::model::TurnItem;
@@ -14,9 +13,6 @@ use crate::model::TurnItem;
 fn open_link(url: &SharedString, _: &ClickEvent, window: &mut Window, cx: &mut App) {
     window.dispatch_action(Box::new(crate::editors::OpenLink { url: url.clone() }), cx);
 }
-
-/// Long tool output is cut to its tail; the full text stays on the server.
-const OUTPUT_TAIL_CHARS: usize = 8_000;
 
 impl T3App {
     pub(crate) fn render_item(
@@ -30,6 +26,7 @@ impl T3App {
         let expanded = self.expanded.contains(&item.id);
         let text = item.str("text").to_string();
         match item.kind.as_str() {
+            _ if crate::work_rows::is_work_row(item) => self.render_work_row(item, true, false, cx),
             "user_message" => h_flex()
                 .group("user-row")
                 .justify_end()
@@ -141,28 +138,6 @@ impl T3App {
                     )
                     .into_any_element()
             }
-            "todo_list" => v_flex()
-                .gap_1()
-                .text_sm()
-                .children(
-                    item.raw["steps"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .map(|step| {
-                            let (mark, color) = match step["status"].as_str() {
-                                Some("completed") => ("☑", c.muted_foreground),
-                                Some("running") => ("◐", c.foreground),
-                                _ => ("☐", c.muted_foreground),
-                            };
-                            h_flex()
-                                .gap_2()
-                                .text_color(color)
-                                .child(mark)
-                                .child(step["text"].as_str().unwrap_or("").to_string())
-                        }),
-                )
-                .into_any_element(),
             "error" => div()
                 .text_sm()
                 .px_3()
@@ -326,53 +301,6 @@ impl T3App {
         .join("\n")
     }
 
-    /// A folded run of work items; expands to the individual rows.
-    pub(crate) fn render_group(
-        &self,
-        id: String,
-        items: &[&TurnItem],
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let c = cx.theme().colors;
-        let expanded = self.expanded.contains(&id);
-        let failed = items
-            .iter()
-            .rev()
-            .find(|i| i.kind != "reasoning")
-            .is_some_and(|i| i.str("status") == "failed");
-        let running = items
-            .iter()
-            .any(|i| matches!(i.str("status"), "running" | "pending" | "waiting"));
-        let mut col = v_flex().gap_1().child(
-            h_flex()
-                .id(SharedString::from(id.clone()))
-                .gap_2()
-                .text_sm()
-                .cursor_pointer()
-                .text_color(if failed { c.danger } else { c.muted_foreground })
-                .hover(|r| r.text_color(c.foreground))
-                .child(if expanded { "▾" } else { "▸" })
-                .child(icon(
-                    group_icon(items),
-                    if failed { c.danger } else { c.muted_foreground },
-                ))
-                .child(summarize_group(items))
-                .when(running, |r| r.child(div().text_color(c.info).child("●")))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if !this.expanded.remove(&id) {
-                        this.expanded.insert(id.clone());
-                    }
-                    cx.notify();
-                })),
-        );
-        if expanded {
-            for item in items {
-                col = col.child(div().pl_4().child(self.render_item(item, None, cx)));
-            }
-        }
-        col.into_any_element()
-    }
-
     /// A folded turn's header (web: `MessagesTimeline` work summary): label and chevron, the
     /// answer's time, and a rule under it.
     fn render_fold(
@@ -384,38 +312,52 @@ impl T3App {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let c = cx.theme().colors;
+        let group: SharedString = format!("fold-row-{id}").into();
         h_flex()
-            .id(SharedString::from(id.clone()))
+            .group(group.clone())
+            .pt_1()
             .pb_2()
+            .pr(px(2.))
+            .gap_1()
             .border_b_1()
-            .border_color(c.border)
-            .cursor_pointer()
-            .text_color(c.foreground.opacity(0.85))
-            .hover(|s| s.text_color(c.foreground))
+            .border_color(c.border.opacity(0.6))
             .child(
-                h_flex().flex_1().gap_1().child(label.to_owned()).child(
-                    crate::ui::icon(if open {
-                        "chevron-down"
-                    } else {
-                        "chevron-right"
-                    })
-                    .size(px(16.)),
-                ),
+                h_flex()
+                    .id(SharedString::from(id.clone()))
+                    .px_1()
+                    .gap_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_sm()
+                    .line_height(relative(1.625))
+                    .text_color(c.muted_foreground)
+                    .hover(|s| s.text_color(c.foreground))
+                    .child(label.to_owned())
+                    .child(
+                        crate::ui::icon(if open {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        })
+                        .size(px(14.)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.expanded.remove(&id) {
+                            this.expanded.insert(id.clone());
+                        }
+                        cx.notify();
+                    })),
             )
-            .when(open, |row| {
-                row.child(
-                    div()
-                        .text_sm()
-                        .text_color(c.muted_foreground)
-                        .child(time.to_owned()),
-                )
-            })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if !this.expanded.remove(&id) {
-                    this.expanded.insert(id.clone());
-                }
-                cx.notify();
-            }))
+            .child(
+                div()
+                    .ml_auto()
+                    .mr_1()
+                    .text_xs()
+                    .text_color(c.muted_foreground)
+                    .invisible()
+                    .group_hover(group, |s| s.visible())
+                    .child(time.to_owned()),
+            )
             .into_any_element()
     }
 
@@ -591,7 +533,7 @@ impl T3App {
                                 cx.notify();
                             }))
                     })
-                    .child(icon(tool_icon(item), glyph_color))
+                    .child(icon(crate::work_rows::icon_name(item), glyph_color))
                     .child(div().flex_1().truncate().child(summary)),
             )
             .when_some(detail.filter(|_| expanded), |col, detail| {
@@ -674,72 +616,6 @@ fn title_or(item: &TurnItem, fallback: &str) -> String {
 pub(crate) fn tool_parts(item: &TurnItem) -> (String, Option<String>) {
     let raw = &item.raw;
     match item.kind.as_str() {
-        "reasoning" => {
-            let text = item.str("text");
-            let first = text
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("Thinking");
-            (
-                "Thinking · ".to_string() + first.trim_matches('*'),
-                non_empty(text),
-            )
-        }
-        "command_execution" => {
-            let mut summary = format!("$ {}", item.str("input").lines().next().unwrap_or(""));
-            if let Some(code) = raw["exitCode"].as_i64().filter(|&c| c != 0) {
-                summary += &format!("  (exit {code})");
-            }
-            let output = raw["output"].as_str().map(tail);
-            (
-                summary,
-                Some(format!(
-                    "$ {}\n{}",
-                    item.str("input"),
-                    output.unwrap_or_default()
-                )),
-            )
-        }
-        "file_change" => {
-            let mut summary = format!("Edited {}", item.str("fileName"));
-            if let (Some(a), Some(d)) = (raw["additions"].as_u64(), raw["deletions"].as_u64()) {
-                summary += &format!("  +{a} −{d}");
-            }
-            (summary, raw["diffStr"].as_str().map(tail))
-        }
-        "file_search" => {
-            let n = raw["results"].as_array().map_or(0, Vec::len);
-            (
-                format!("Searched files for {} · {n} results", item.str("pattern")),
-                None,
-            )
-        }
-        "web_search" => {
-            let patterns: Vec<&str> = raw["patterns"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
-            (format!("Searched the web: {}", patterns.join(", ")), None)
-        }
-        "dynamic_tool" => {
-            let name = raw["toolName"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| title_or(item, "Tool"));
-            let detail = [&raw["input"], &raw["output"]]
-                .into_iter()
-                .filter(|v| !v.is_null())
-                .map(|v| {
-                    v.as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| serde_json::to_string_pretty(v).unwrap_or_default())
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            (name, non_empty(&tail(&detail)))
-        }
         "subagent" => {
             let prompt = item.str("prompt").lines().next().unwrap_or("").to_string();
             (
@@ -771,13 +647,6 @@ fn non_empty(s: &str) -> Option<String> {
     (!s.trim().is_empty()).then(|| s.to_string())
 }
 
-fn tail(s: &str) -> String {
-    match s.char_indices().rev().nth(OUTPUT_TAIL_CHARS - 1) {
-        Some((i, _)) => format!("…{}", &s[i..]),
-        None => s.to_string(),
-    }
-}
-
 /// `subagentDetailPreview`: the result once finished, else the progress, whitespace collapsed
 /// and cut at 280 characters.
 pub(crate) fn subagent_preview(
@@ -800,40 +669,6 @@ pub(crate) fn subagent_preview(
         Some((cut, _)) => format!("{}…", compact[..cut].trim_end()),
         None => compact,
     })
-}
-
-/// `workEntryIconName`: the lucide icon for one work row.
-/// shortcut: built-in icons only; the web also shows MCP favicons and provider logos.
-pub(crate) fn tool_icon(item: &TurnItem) -> &'static str {
-    match item.kind.as_str() {
-        "reasoning" => "brain",
-        "command_execution" => "terminal",
-        "file_change" => "square-pen",
-        "file_search" => "search",
-        "web_search" => "globe",
-        "dynamic_tool" => "hammer",
-        "subagent" => "bot",
-        "todo_list" => "list-todo",
-        "user_input_request" | "approval_request" => "message-circle",
-        "system_notice" if item.raw["level"] == "info" => "zap",
-        "system_notice" => "circle-alert",
-        "notification" if item.str("outcome") == "failed" => "circle-alert",
-        "notification" => "zap",
-        _ => "wrench",
-    }
-}
-
-/// `toolGroupSummaryIconName`: one action's icon, a hammer for mixed groups, a brain for thoughts.
-pub(crate) fn group_icon(items: &[&TurnItem]) -> &'static str {
-    let mut icons = items
-        .iter()
-        .filter(|i| i.kind != "reasoning")
-        .map(|i| tool_icon(i));
-    match icons.next() {
-        None => "brain",
-        Some(first) if icons.all(|i| i == first) => first,
-        Some(_) => "hammer",
-    }
 }
 
 fn icon(name: &str, color: Hsla) -> Icon {
@@ -948,6 +783,29 @@ pub(crate) fn format_duration(ms: i64) -> String {
     parts.join(" ")
 }
 
+/// `formatDayAwareTimestamp`: the time today, "yesterday at …", else the date and time.
+/// shortcut: 12-hour clock and month/day order regardless of the timestamp format setting.
+pub(crate) fn day_aware_time(at: jiff::Timestamp) -> String {
+    let tz = jiff::tz::TimeZone::system();
+    let (local, today) = (at.to_zoned(tz.clone()), jiff::Timestamp::now().to_zoned(tz));
+    let time = local.strftime("%-I:%M %p").to_string();
+    let days = (today.date() - local.date()).get_days();
+    match days {
+        ..=0 => time,
+        1 => crate::i18n::tv("yesterday at {time}", &[("time", &time)]),
+        _ if local.year() == today.year() => format!("{} {time}", local.strftime("%-m/%-d")),
+        _ => format!("{} {time}", local.strftime("%-m/%-d/%Y")),
+    }
+}
+
+/// A work row's time (`projectedItemCreatedAt`): when it started, else when it last changed.
+pub(crate) fn row_time(item: &TurnItem) -> String {
+    timestamp(item, "startedAt")
+        .or_else(|| timestamp(item, "updatedAt"))
+        .map(day_aware_time)
+        .unwrap_or_default()
+}
+
 fn timestamp(item: &TurnItem, key: &str) -> Option<jiff::Timestamp> {
     item.str(key).parse().ok()
 }
@@ -960,7 +818,9 @@ pub(crate) fn timeline_rows<'a>(
     active_run: Option<&str>,
 ) -> Vec<Row<'a>> {
     use std::collections::{HashMap, HashSet};
-    let items: Vec<&TurnItem> = items.collect();
+    let items: Vec<&TurnItem> = items
+        .filter(|i| !crate::work_rows::hidden_from_timeline(i))
+        .collect();
     let mut terminal: HashMap<&str, usize> = HashMap::new();
     let mut prompt: HashMap<&str, &TurnItem> = HashMap::new();
     let mut interrupted: HashSet<&str> = HashSet::new();
@@ -1022,13 +882,7 @@ pub(crate) fn timeline_rows<'a>(
             ),
             None => crate::i18n::t("Worked"),
         };
-        let time = ended
-            .map(|t| {
-                t.to_zoned(jiff::tz::TimeZone::system())
-                    .strftime("%-I:%M %p")
-                    .to_string()
-            })
-            .unwrap_or_default();
+        let time = ended.map(day_aware_time).unwrap_or_default();
         let id = format!("fold:{}", chunk[0].id);
         let open = expanded.contains(&id);
         rows.push(Row::Fold {
@@ -1111,7 +965,7 @@ impl T3App {
         };
         let element = match row {
             Row::Item(item) => self.render_item(item, revert_turns.get(&item.id).copied(), cx),
-            Row::Group { id, items } => self.render_group(id.clone(), items, cx),
+            Row::Group { id, items } => self.render_work_group(id.clone(), items, cx),
             Row::Fold {
                 id,
                 label,
@@ -1127,95 +981,6 @@ impl T3App {
             .when(current == Some(i), |d| d.bg(theme.secondary))
             .child(element)
             .into_any_element()
-    }
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!(
-        "{} {n} {}",
-        one.split(' ').next().unwrap(),
-        if n == 1 {
-            &one[one.find(' ').unwrap() + 1..]
-        } else {
-            many
-        }
-    )
-}
-
-/// `summarizeToolGroup` (client-runtime/src/work-log/presentation.ts) for the core actions.
-pub(crate) fn summarize_group(items: &[&TurnItem]) -> String {
-    let tools: Vec<&&TurnItem> = items.iter().filter(|i| i.kind != "reasoning").collect();
-    if tools.is_empty() {
-        return if items.len() == 1 {
-            "Thought".into()
-        } else {
-            format!("Thought (×{})", items.len())
-        };
-    }
-    // (action, priority, first index, count)
-    let mut groups: Vec<(&str, u8, usize, usize)> = Vec::new();
-    let mut edited = std::collections::HashSet::new();
-    for (index, item) in tools.iter().enumerate() {
-        let (action, priority) = match item.kind.as_str() {
-            "command_execution" => ("command", 0),
-            "file_change" => ("edit", 0),
-            "file_search" => ("code-search", 1),
-            "web_search" => ("search", 1),
-            _ => ("other", 2),
-        };
-        if action == "edit" && !edited.insert(item.str("fileName").to_owned()) {
-            continue;
-        }
-        match groups.iter_mut().find(|g| g.0 == action) {
-            Some(g) => g.3 += 1,
-            None => groups.push((action, priority, index, 1)),
-        }
-    }
-    let mut selected = groups.clone();
-    selected.sort_by_key(|g| (g.1, g.2));
-    selected.truncate(2);
-    selected.sort_by_key(|g| g.2);
-    let mut labels: Vec<String> = selected
-        .iter()
-        .map(|&(action, _, _, n)| match action {
-            "command" => plural(n, "Ran command", "commands"),
-            "edit" => plural(n, "Changed file", "files"),
-            "code-search" => format!(
-                "Searched code {n} {}",
-                if n == 1 { "time" } else { "times" }
-            ),
-            "search" => format!(
-                "Searched the web {n} {}",
-                if n == 1 { "time" } else { "times" }
-            ),
-            _ => plural(n, "Used tool", "tools"),
-        })
-        .collect();
-    let shown: usize = selected.iter().map(|g| g.3).sum();
-    let all: usize = groups.iter().map(|g| g.3).sum();
-    if all > shown {
-        labels.push(plural(
-            all - shown,
-            "Performed other action",
-            "other actions",
-        ));
-    }
-    let labels: Vec<String> = labels
-        .into_iter()
-        .enumerate()
-        .map(|(i, l)| {
-            if i == 0 {
-                l
-            } else {
-                l[..1].to_lowercase() + &l[1..]
-            }
-        })
-        .collect();
-    match labels.len() {
-        0 => String::new(),
-        1 => labels[0].clone(),
-        2 => format!("{} and {}", labels[0], labels[1]),
-        n => format!("{}, and {}", labels[..n - 1].join(", "), labels[n - 1]),
     }
 }
 
@@ -1253,15 +1018,24 @@ impl T3App {
             })
             .detach();
         }
-        h_flex()
-            .gap_2()
-            .text_sm()
-            .text_color(c.muted_foreground)
-            .child(div().text_color(c.info).child("●"))
-            .child(crate::i18n::tv(
-                "Working for {time}",
-                &[("time", &working_timer(elapsed))],
-            ))
+        // shortcut: no shimmer sweep; it would repaint every frame (AGENTS.md).
+        div()
+            .pt_1()
+            .pb_2()
+            .border_b_1()
+            .border_color(c.border.opacity(0.6))
+            .child(
+                h_flex()
+                    .h(px(24.))
+                    .px_1()
+                    .text_sm()
+                    .line_height(relative(1.625))
+                    .text_color(c.muted_foreground)
+                    .child(crate::i18n::tv(
+                        "Working for {time}",
+                        &[("time", &working_timer(elapsed))],
+                    )),
+            )
             .into_any_element()
     }
 }
@@ -1269,9 +1043,9 @@ impl T3App {
 #[cfg(test)]
 mod tests {
     use super::{
-        OUTPUT_TAIL_CHARS, Row, TurnItem, approval_options, group_rows, row_splice,
-        summarize_group, tail, tool_parts, working_timer,
+        Row, TurnItem, approval_options, group_rows, row_splice, tool_parts, working_timer,
     };
+    use crate::work_rows::summarize as summarize_group;
     use serde_json::{Value, json};
 
     fn item(v: Value) -> TurnItem {
@@ -1295,17 +1069,6 @@ mod tests {
     }
 
     #[test]
-    fn work_rows_and_groups_get_the_web_icons() {
-        let cmd = item(json!({"id": "1", "ordinal": 1, "type": "command_execution"}));
-        let edit = item(json!({"id": "2", "ordinal": 2, "type": "file_change"}));
-        let think = item(json!({"id": "3", "ordinal": 3, "type": "reasoning"}));
-        assert_eq!(super::tool_icon(&cmd), "terminal");
-        assert_eq!(super::group_icon(&[&think, &cmd, &cmd]), "terminal");
-        assert_eq!(super::group_icon(&[&cmd, &edit]), "hammer");
-        assert_eq!(super::group_icon(&[&think]), "brain");
-    }
-
-    #[test]
     fn splices_only_changed_rows() {
         let k = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(row_splice(&k(&["a", "b"]), &k(&["a", "b"])), None);
@@ -1324,19 +1087,7 @@ mod tests {
     }
 
     #[test]
-    fn summarizes_work_items() {
-        let cmd = item(
-            json!({"id": "1", "ordinal": 1, "type": "command_execution", "input": "ls\n-la", "output": "a\nb", "exitCode": 2}),
-        );
-        let (summary, detail) = tool_parts(&cmd);
-        assert_eq!(summary, "$ ls  (exit 2)");
-        assert_eq!(detail.unwrap(), "$ ls\n-la\na\nb");
-
-        let edit = item(
-            json!({"id": "2", "ordinal": 2, "type": "file_change", "fileName": "a.rs", "additions": 3, "deletions": 1}),
-        );
-        assert_eq!(tool_parts(&edit), ("Edited a.rs  +3 −1".to_string(), None));
-
+    fn summarizes_other_items() {
         let unknown = item(json!({"id": "3", "ordinal": 3, "type": "future_thing", "title": null}));
         assert_eq!(tool_parts(&unknown).0, "future thing");
     }
@@ -1355,15 +1106,6 @@ mod tests {
         );
         let labels: Vec<String> = approval_options(&custom).into_iter().map(|o| o.1).collect();
         assert_eq!(labels, ["No", "Stop", "Yes"]);
-    }
-
-    #[test]
-    fn tail_keeps_the_end_on_char_boundaries() {
-        let long = "é".repeat(OUTPUT_TAIL_CHARS + 10);
-        let cut = tail(&long);
-        assert!(cut.starts_with('…'));
-        assert_eq!(cut.chars().count(), OUTPUT_TAIL_CHARS + 1);
-        assert_eq!(tail("short"), "short");
     }
 
     #[test]

@@ -253,7 +253,7 @@ async fn e2e_chat_diff_and_model() {
             .map(|row| match row {
                 crate::timeline::Row::Item(i) => i.kind.clone(),
                 crate::timeline::Row::Group { items, .. } => {
-                    format!("[{}]", crate::timeline::summarize_group(items))
+                    format!("[{}]", crate::work_rows::summarize(items))
                 }
                 crate::timeline::Row::Fold { label, .. } => label.clone(),
             })
@@ -2202,6 +2202,67 @@ async fn e2e_markdown_host_image() {
     let mut body = Vec::new();
     response.into_body().read_to_end(&mut body).await.unwrap();
     assert_eq!(body, png);
+}
+
+/// Work row details: a command's output over `subscribeCommandOutput`, and a tool whose output
+/// the wire withheld through `getTurnItem`, both read the way an opened row reads them.
+#[tokio::test]
+#[ignore]
+async fn e2e_work_row_details() {
+    use crate::work_rows;
+    let env = connect().await;
+    let (thread_id, view) = launch(&env, "showcase", "Show me what you can do").await;
+    wait_idle(&env, &thread_id).await;
+    let items: Vec<crate::model::TurnItem> = view.state.lock().unwrap().items().cloned().collect();
+    let rows: Vec<String> = items
+        .iter()
+        .filter(|i| work_rows::is_work_row(i) && !work_rows::hidden_from_timeline(i))
+        .map(|i| work_rows::label(i, None, true))
+        .collect();
+    println!("work rows: {rows:?}");
+    assert!(rows.iter().any(|r| r == "vp test run"), "{rows:?}");
+
+    let command = items
+        .iter()
+        .find(|i| i.kind == "command_execution" && !work_rows::hidden_from_timeline(i))
+        .unwrap();
+    let (_, mut rx) = env.client.request(
+        "orchestration.subscribeCommandOutput",
+        json!({ "threadId": thread_id, "itemId": command.id }),
+    );
+    let mut output = work_rows::CommandOutput::default();
+    while let Some(frame) = tokio::time::timeout(Duration::from_secs(20), rx.recv())
+        .await
+        .expect("command output frame")
+    {
+        output.apply(&frame.unwrap());
+        if !output.running {
+            break;
+        }
+    }
+    println!("command output: {:?}", output.text);
+    assert!(output.text.contains("12 passed"), "{:?}", output.text);
+
+    let read = items
+        .iter()
+        .find(|i| work_rows::action(i) == "read")
+        .expect("a read row");
+    let detail = if work_rows::needs_fetch(read) {
+        let fetched = env
+            .client
+            .call(
+                "orchestration.getTurnItem",
+                json!({ "threadId": thread_id, "itemId": read.id, "revision": read.str("updatedAt") }),
+            )
+            .await
+            .unwrap();
+        fetched["item"].clone()
+    } else {
+        read.raw.clone()
+    };
+    let text = work_rows::output_text(&detail).unwrap_or_default();
+    println!("read output: {text}");
+    assert!(text.contains("demo"), "{text}");
 }
 
 /// More than 25 settled threads, read through a fresh shell subscribed the way the app does:
